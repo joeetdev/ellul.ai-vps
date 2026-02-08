@@ -10,44 +10,44 @@
   "license": "MIT",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./version": {
-      "import": "./dist/version.js",
-      "types": "./dist/version.d.ts"
+      "types": "./dist/version.d.ts",
+      "default": "./dist/version.js"
     },
     "./ai": {
-      "import": "./dist/configs/ai/index.js",
-      "types": "./dist/configs/ai/index.d.ts"
+      "types": "./dist/configs/ai/index.d.ts",
+      "default": "./dist/configs/ai/index.js"
     },
     "./configs": {
-      "import": "./dist/configs/index.js",
-      "types": "./dist/configs/index.d.ts"
+      "types": "./dist/configs/index.d.ts",
+      "default": "./dist/configs/index.js"
     },
     "./scripts": {
-      "import": "./dist/scripts/index.js",
-      "types": "./dist/scripts/index.d.ts"
+      "types": "./dist/scripts/index.d.ts",
+      "default": "./dist/scripts/index.js"
     },
     "./services": {
-      "import": "./dist/services/index.js",
-      "types": "./dist/services/index.d.ts"
+      "types": "./dist/services/index.d.ts",
+      "default": "./dist/services/index.js"
     },
     "./services/enforcer": {
-      "import": "./dist/services/enforcer/bundle.js",
-      "types": "./dist/services/enforcer/bundle.d.ts"
+      "types": "./dist/services/enforcer/bundle.d.ts",
+      "default": "./dist/services/enforcer/bundle.js"
     },
     "./services/file-api": {
-      "import": "./dist/services/file-api/bundle.js",
-      "types": "./dist/services/file-api/bundle.d.ts"
+      "types": "./dist/services/file-api/bundle.d.ts",
+      "default": "./dist/services/file-api/bundle.js"
     },
     "./services/agent-bridge": {
-      "import": "./dist/services/agent-bridge/bundle.js",
-      "types": "./dist/services/agent-bridge/bundle.d.ts"
+      "types": "./dist/services/agent-bridge/bundle.d.ts",
+      "default": "./dist/services/agent-bridge/bundle.js"
     },
     "./services/sovereign-shield": {
-      "import": "./dist/services/sovereign-shield/bundle.js",
-      "types": "./dist/services/sovereign-shield/bundle.d.ts"
+      "types": "./dist/services/sovereign-shield/bundle.d.ts",
+      "default": "./dist/services/sovereign-shield/bundle.js"
     }
   },
   "scripts": {
