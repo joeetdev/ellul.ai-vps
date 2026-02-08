@@ -1,0 +1,692 @@
+/**
+ * Context manager script - generates AI context for Claude/Codex/Gemini/OpenCode.
+ */
+export function getContextScript(): string {
+  return `#!/bin/bash
+# Detect tier and set paths accordingly
+TIER=$(cat /etc/phonestack/billing-tier 2>/dev/null || echo "paid")
+if [ "$TIER" = "free" ]; then
+  HOME_DIR="/home/coder"
+  USER_NAME="coder"
+else
+  HOME_DIR="/home/dev"
+  USER_NAME="dev"
+fi
+
+TARGET_DIR="\${1:-$HOME_DIR/projects/welcome}"
+CONTEXT_DIR="$HOME_DIR/.phonestack/context"
+GLOBAL_FILE="$CONTEXT_DIR/global.md"
+CURRENT_FILE="$CONTEXT_DIR/current.md"
+
+mkdir -p "$CONTEXT_DIR"
+
+generate_global() {
+  DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "YOUR-DOMAIN")
+
+  if [ "$TIER" = "free" ]; then
+    generate_global_free
+    return
+  fi
+
+  # Build list of deployed apps
+  APPS_DIR="$HOME_DIR/.phonestack/apps"
+  DEPLOYED_LIST=""
+  if [ -d "$APPS_DIR" ]; then
+    for app_file in "$APPS_DIR"/*.json; do
+      [ -f "$app_file" ] || continue
+      APP_NAME=$(jq -r '.name // empty' "$app_file" 2>/dev/null)
+      APP_URL=$(jq -r '.url // empty' "$app_file" 2>/dev/null)
+      APP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
+      if [ -n "$APP_NAME" ]; then
+        DEPLOYED_LIST="$DEPLOYED_LIST
+- $APP_NAME: $APP_URL (port $APP_PORT)"
+      fi
+    done
+  fi
+
+  cat <<GLOBAL_EOF > "$GLOBAL_FILE"
+# Phone Stack Server ($DOMAIN)
+
+## RULES (ALWAYS FOLLOW)
+1. **WORKSPACE BOUNDARY**: All work MUST stay inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
+2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.
+3. **SECURITY**: NEVER touch /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+
+## Deployed Apps (DO NOT re-expose these — they already have DNS + SSL)
+\${DEPLOYED_LIST:-"(none)"}
+If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build && pm2 restart <name>\\\` or run \\\`ship\\\`.
+
+## Project Setup (within your assigned directory)
+1. Create/edit project files
+2. **REQUIRED**: Create \\\`phonestack.json\\\` in the project root (see Metadata below)
+3. **IF Node.js**: Install deps: \\\`npm install\\\`
+4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000, or use \\\`npx serve -l 3000\\\` for static HTML)
+5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
+6. **REQUIRED**: Verify: \\\`curl localhost:3000\\\` → MUST return 200
+7. STOP: Do not report success until step 6 passes!
+8. Deploy: \\\`ship\\\`
+
+## Metadata (CRITICAL - dashboard won't detect app without this)
+ALWAYS create a \\\`phonestack.json\\\` file in the project root:
+\\\`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\\\`
+- type: "frontend" | "backend" | "library"
+- previewable: true if it has a web UI, false otherwise
+- name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
+- summary: brief description of the app
+**IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in phonestack.json.**
+After deployment, \\\`ship\\\` adds: deployedUrl, deployedDomain, deployedPort
+
+## Dev Server Config (CRITICAL)
+Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
+Next.js: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
+Other: bind to 0.0.0.0:3000
+Preview URL: https://dev.$DOMAIN
+
+## STOP: Verification Required Before Completing
+You MUST run these commands and confirm they pass:
+- \\\`pm2 list\\\` → shows your app as "online"
+- \\\`curl localhost:3000\\\` → returns 200 status
+
+If verification fails, fix the issue:
+- Missing deps? Run \\\`npm install\\\`
+- Errors? Check \\\`pm2 logs preview --lines 10 --nostream\\\`
+- Port conflict? Run \\\`pm2 delete preview\\\` and retry
+
+Do NOT report task complete until verification passes!
+
+## Ports
+- Dev/Preview: 3000 (→ https://dev.$DOMAIN)
+- Production: 3001+ (→ https://APPNAME-$DOMAIN)
+- Reserved: 7681-7700
+
+## Secrets
+NEVER create .env files (git hook blocks). Secrets are managed in Dashboard → sync to ~/.phonestack-env → access via process.env.
+
+## Uploads
+Images → public/ | Data → data/ | Dashboard icon → .phonestack/icon.png (copy, don't move)
+
+## Git (Code Backup)
+Git is managed from the Phone Stack dashboard in two steps:
+1. Connect a provider (GitHub/GitLab/Bitbucket) — user links their account via OAuth
+2. Link a repo to this server — this delivers encrypted credentials to the VPS automatically
+To check if git is ready: test if a remote exists with \\\`git remote -v\\\`. If no remote is configured, tell the user to link a repo from the Dashboard → Git tab.
+Once a repo is linked, credentials are pre-configured. Use these commands:
+- git-flow backup: commit all changes + push to remote (fails safely if remote diverged)
+- git-flow force-backup: commit + force push with lease (VPS is source of truth)
+- git-flow pull: pull latest from remote with rebase
+- git-flow save: stage, commit with timestamp, push
+- git-flow ship: merge to main, build, deploy to production via PM2
+- git-flow branch: create and push a feature branch
+Standard git commands also work (git add, git commit, git push, etc.) — credentials are handled automatically.
+NEVER configure git credentials manually (no git config, no SSH keys, no tokens). The dashboard handles everything.
+
+## Commands
+- ship: build + deploy current project
+- phonestack-expose NAME PORT: expose with SSL
+- phonestack-apps: list deployed apps
+- phonestack-install postgres|redis|mysql: install DB
+- pm2 logs|restart|delete NAME: manage processes
+
+## CRITICAL SECURITY - DO NOT MODIFY
+The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
+
+**NEVER modify these files:**
+- /etc/phonestack/.web_locked_activated - Security tier marker (tampering = permanent lockout or security breach)
+- /etc/phonestack/security-tier - Security tier state
+- /etc/phonestack/.terminal_disabled - Terminal access control
+- /etc/phonestack/domain - Server domain configuration
+- /etc/phonestack/server_id - Server identity
+- /home/dev/.ssh/authorized_keys - SSH authentication (tampering = permanent lockout)
+- /var/lib/sovereign-shield/ - Authentication database and state
+
+**NEVER run commands that:**
+- Delete or modify files in /etc/phonestack/
+- Change SSH authorized_keys without explicit user request
+- Stop or disable sovereign-shield, sshd, or core services
+- Modify systemd service files for security services
+
+**Why this matters:**
+If the server is in "Web Locked" mode (passkey + PoP required), tampering with security files can permanently lock out the user with NO recovery path except server rebuild. The security system is designed to fail-secure - if in doubt, it denies access.
+GLOBAL_EOF
+}
+
+generate_global_free() {
+  cat <<GLOBAL_FREE_EOF > "$GLOBAL_FILE"
+# Phone Stack Free Tier ($DOMAIN)
+
+## RULES (ALWAYS FOLLOW)
+1. **WORKSPACE BOUNDARY**: All work MUST stay inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
+2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.
+3. **SECURITY**: NEVER touch /etc/phonestack/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+
+## Project Setup (within your assigned directory)
+1. Create/edit project files
+2. **REQUIRED**: Create \\\`phonestack.json\\\` in the project root (see Metadata below)
+3. **IF Node.js**: Install deps: \\\`npm install\\\`
+4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000, or use \\\`npx serve -l 3000\\\` for static HTML)
+5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
+6. **REQUIRED**: Verify: \\\`curl localhost:3000\\\` → MUST return 200
+7. STOP: Do not report success until step 6 passes!
+
+## Metadata (CRITICAL - dashboard won't detect app without this)
+ALWAYS create a \\\`phonestack.json\\\` file in the project root:
+\\\`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\\\`
+- type: "frontend" | "backend" | "library"
+- previewable: true if it has a web UI, false otherwise
+- name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
+- summary: brief description of the app
+**IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in phonestack.json.**
+
+## Dev Server Config (CRITICAL)
+Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
+Next.js: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
+Other: bind to 0.0.0.0:3000
+Preview URL: https://dev.$DOMAIN
+
+## STOP: Verification Required Before Completing
+You MUST run these commands and confirm they pass:
+- \\\`pm2 list\\\` → shows your app as "online"
+- \\\`curl localhost:3000\\\` → returns 200 status
+
+If verification fails, fix the issue:
+- Missing deps? Run \\\`npm install\\\`
+- Errors? Check \\\`pm2 logs preview --lines 10 --nostream\\\`
+- Port conflict? Run \\\`pm2 delete preview\\\` and retry
+
+Do NOT report task complete until verification passes!
+
+## Ports
+- Dev/Preview: 3000 (→ https://dev.$DOMAIN)
+- Reserved: 7681-7700
+
+## Secrets
+NEVER create .env files (git hook blocks). Secrets are managed in Dashboard → sync to ~/.phonestack-env → access via process.env.
+
+## Uploads
+Images → public/ | Data → data/ | Dashboard icon → .phonestack/icon.png (copy, don't move)
+
+## Git
+Git clone and pull are available for importing code. Push is blocked on the free tier.
+Standard local git commands work (add, commit, log, diff, branch, etc.).
+NEVER configure git credentials manually (no SSH keys, no tokens).
+
+## Free Tier Limitations
+- No deployment — preview only
+- Git: clone and pull only — outbound push is blocked
+- No database installation
+- No SSH access
+- No custom domains
+
+Upgrade to Sovereign for full features: https://coemad.com/pricing
+
+## Commands
+- pm2 start|logs|restart|delete NAME: manage processes
+
+## CRITICAL SECURITY - DO NOT MODIFY
+The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
+
+**NEVER modify these files:**
+- /etc/phonestack/* - Server configuration (tier, domain, server_id)
+- /etc/warden/* - Network proxy rules
+- /var/lib/sovereign-shield/ - Authentication database and state
+
+**NEVER run commands that:**
+- Delete or modify files in /etc/phonestack/ or /etc/warden/
+- Stop or disable sovereign-shield, warden, or core services
+- Modify systemd service files for security services
+GLOBAL_FREE_EOF
+}
+
+generate_current() {
+  cd "$TARGET_DIR" 2>/dev/null || {
+    echo "Error: Directory not found: $TARGET_DIR" >&2
+    exit 1
+  }
+  PROJECT_NAME=$(basename "$TARGET_DIR")
+  PROJECT_TYPE="unknown"
+  FRAMEWORK=""
+  if [ -f "package.json" ]; then
+    PROJECT_TYPE="node"
+    grep -q '"next"' package.json 2>/dev/null && FRAMEWORK="next.js"
+    grep -q '"react"' package.json 2>/dev/null && [ -z "$FRAMEWORK" ] && FRAMEWORK="react"
+    grep -q '"express"' package.json 2>/dev/null && FRAMEWORK="express"
+    grep -q '"hono"' package.json 2>/dev/null && FRAMEWORK="hono"
+  elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+    PROJECT_TYPE="python"
+    [ -f "manage.py" ] && FRAMEWORK="django"
+    grep -q "fastapi" requirements.txt 2>/dev/null && FRAMEWORK="fastapi"
+    grep -q "flask" requirements.txt 2>/dev/null && FRAMEWORK="flask"
+  elif [ -f "go.mod" ]; then
+    PROJECT_TYPE="go"
+  elif [ -f "Cargo.toml" ]; then
+    PROJECT_TYPE="rust"
+  fi
+  GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "none")
+  GIT_CHANGES=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  FILE_TREE=""
+  if command -v tree &>/dev/null; then
+    FILE_TREE=$(tree -L 2 -I 'node_modules|.next|.git|dist|build|__pycache__|.venv' --noreport 2>/dev/null | head -40)
+  else
+    FILE_TREE=$(find . -maxdepth 2 -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.next/*' 2>/dev/null | head -30)
+  fi
+  NPM_SCRIPTS=""
+  if [ -f "package.json" ] && command -v jq &>/dev/null; then
+    NPM_SCRIPTS=$(jq -r '.scripts | to_entries | .[] | "- \\(.key): \\(.value)"' package.json 2>/dev/null | head -10)
+  fi
+  PM2_STATUS=""
+  if command -v pm2 &>/dev/null; then
+    PM2_STATUS=$(pm2 jlist 2>/dev/null | jq -r --arg name "$PROJECT_NAME" '.[] | select(.name | contains($name)) | "\\(.name): \\(.pm2_env.status)"' 2>/dev/null)
+    [ -z "$PM2_STATUS" ] && PM2_STATUS="No PM2 process"
+  fi
+  cat <<CURRENT_EOF > "$CURRENT_FILE"
+# PROJECT: $PROJECT_NAME
+
+Type: $PROJECT_TYPE\${FRAMEWORK:+ ($FRAMEWORK)}
+Branch: $GIT_BRANCH
+Changes: $GIT_CHANGES files
+PM2: $PM2_STATUS
+
+## Structure
+\\\`\\\`\\\`
+$FILE_TREE
+\\\`\\\`\\\`
+CURRENT_EOF
+  if [ -n "$NPM_SCRIPTS" ]; then
+    cat <<SCRIPTS_EOF >> "$CURRENT_FILE"
+
+## Scripts
+$NPM_SCRIPTS
+SCRIPTS_EOF
+  fi
+  if [ -f ".env" ]; then
+    ENV_KEYS=$(grep -E '^[A-Z_]+=' .env 2>/dev/null | cut -d= -f1 | head -10 | tr '\\n' ', ' | sed 's/,$//')
+    if [ -n "$ENV_KEYS" ]; then
+      echo "" >> "$CURRENT_FILE"
+      echo "## Env Vars (in .env)" >> "$CURRENT_FILE"
+      echo "$ENV_KEYS" >> "$CURRENT_FILE"
+    fi
+  fi
+
+  # Check for existing deployment
+  DEPLOYMENT_INFO=$(get_current_deployment)
+  if [ -n "$DEPLOYMENT_INFO" ]; then
+    echo "" >> "$CURRENT_FILE"
+    echo "$DEPLOYMENT_INFO" >> "$CURRENT_FILE"
+  fi
+}
+
+get_current_deployment() {
+  # Scan ~/.phonestack/apps/*.json for a match on projectPath
+  # Free tier has no deployments, skip entirely
+  [ "$TIER" = "free" ] && return 0
+
+  APPS_DIR="$HOME_DIR/.phonestack/apps"
+  CURRENT_PATH="$(pwd)"
+
+  [ -d "$APPS_DIR" ] || return 0
+
+  for app_file in "$APPS_DIR"/*.json; do
+    [ -f "$app_file" ] || continue
+
+    APP_PATH=$(jq -r '.projectPath // empty' "$app_file" 2>/dev/null)
+
+    if [ "$APP_PATH" = "$CURRENT_PATH" ]; then
+      APP_NAME=$(jq -r '.name // empty' "$app_file" 2>/dev/null)
+      APP_URL=$(jq -r '.url // empty' "$app_file" 2>/dev/null)
+      APP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
+      APP_DOMAIN=$(jq -r '.domain // empty' "$app_file" 2>/dev/null)
+
+      echo "## !! LIVE DEPLOYMENT — ALREADY DEPLOYED !!"
+      echo "Name: $APP_NAME"
+      echo "URL: $APP_URL"
+      echo "Port: $APP_PORT"
+      echo ""
+      echo "IMPORTANT: This project is ALREADY deployed. Do NOT run phonestack-expose again."
+      echo "To update: npm run build && pm2 restart $APP_NAME (or run 'ship')"
+      return 0
+    fi
+  done
+
+  return 0
+}
+
+generate_context_files() {
+  # Generate CLAUDE.md, AGENTS.md, and GEMINI.md in the project directory
+  # Uses marker-based approach to preserve user content
+  DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "YOUR-DOMAIN")
+
+  # Read app name from phonestack.json if it exists
+  APP_NAME=""
+  if [ -f "$TARGET_DIR/phonestack.json" ]; then
+    APP_NAME=$(jq -r '.name // empty' "$TARGET_DIR/phonestack.json" 2>/dev/null)
+  fi
+  APP_NAME_LINE=""
+  if [ -n "$APP_NAME" ]; then
+    APP_NAME_LINE="2. **NAME PROTECTION**: This app is named \\"$APP_NAME\\". The \\"name\\" field in phonestack.json is USER-DEFINED. NEVER change it. NEVER change the \\"name\\" field in package.json either."
+  else
+    APP_NAME_LINE="2. **NAME PROTECTION**: The \\"name\\" field in phonestack.json and package.json is USER-DEFINED. NEVER change it."
+  fi
+
+  if [ "$TIER" = "free" ]; then
+    # Free tier: no deploy, no push, no databases, no ship, no git-flow
+    GENERATED_BLOCK="<!-- PHONESTACK:START — Auto-generated rules. Do not edit between these markers. -->
+# Phone Stack Free Tier ($DOMAIN)
+Preview: https://dev.$DOMAIN (port 3000) — deployment not available on free tier.
+
+## RULES (ALWAYS FOLLOW)
+1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
+$APP_NAME_LINE
+3. **SECURITY**: NEVER touch /etc/phonestack/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT with no recovery.
+
+## Setup (within THIS project)
+1. Create/edit project files
+2. If phonestack.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
+   **The \\"name\\" field is USER-DEFINED. If phonestack.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
+3. Node.js: \\\`npm install\\\`
+4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
+5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
+6. Verify: \\\`curl localhost:3000\\\` must return 200
+
+## Dev Server Config (CRITICAL — preview won't work without this)
+Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
+Next.js: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
+Other: bind to 0.0.0.0:3000
+
+## STOP: Verification Required Before Completing
+You MUST run these commands and confirm they pass:
+- \\\`pm2 list\\\` → shows your app as \\"online\\"
+- \\\`curl localhost:3000\\\` → returns 200 status
+If verification fails:
+- Missing deps? \\\`npm install\\\`
+- Errors? \\\`pm2 logs preview --nostream\\\`
+- Port conflict? \\\`pm2 delete preview\\\` and retry
+Do NOT report task complete until verification passes!
+
+## Rules
+- Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
+- Ports: Dev=3000, Reserved=7681-7700
+- Git: clone and pull only — push is blocked on the free tier
+
+## Free Tier Limitations
+Deployment, outbound push, database installation, and SSH are not available.
+Upgrade to Sovereign for full features: https://coemad.com/pricing
+
+## Commands
+pm2 start|logs|restart|delete NAME
+<!-- PHONESTACK:END -->"
+  else
+    # Check if this project is already deployed (paid tier only)
+    APPS_DIR="$HOME_DIR/.phonestack/apps"
+    DEPLOYMENT_SECTION=""
+    if [ -d "$APPS_DIR" ]; then
+      for app_file in "$APPS_DIR"/*.json; do
+        [ -f "$app_file" ] || continue
+        APP_PATH=$(jq -r '.projectPath // empty' "$app_file" 2>/dev/null)
+        if [ "$APP_PATH" = "$TARGET_DIR" ]; then
+          DEP_NAME=$(jq -r '.name // empty' "$app_file" 2>/dev/null)
+          DEP_URL=$(jq -r '.url // empty' "$app_file" 2>/dev/null)
+          DEP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
+          DEPLOYMENT_SECTION="
+## !! LIVE DEPLOYMENT — DO NOT CREATE A NEW ONE !!
+Name: $DEP_NAME | URL: $DEP_URL | Port: $DEP_PORT
+This project is ALREADY deployed. To update: \\\`npm run build && pm2 restart $DEP_NAME\\\` or run \\\`ship\\\`.
+NEVER run phonestack-expose again for this project.
+"
+          break
+        fi
+      done
+    fi
+
+    # Paid tier: full content
+    GENERATED_BLOCK="<!-- PHONESTACK:START — Auto-generated rules. Do not edit between these markers. -->
+# Phone Stack ($DOMAIN)
+Preview: https://dev.$DOMAIN (port 3000) | Production: https://APPNAME-$DOMAIN
+
+## RULES (ALWAYS FOLLOW)
+1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
+$APP_NAME_LINE
+3. **SECURITY**: NEVER touch /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
+$DEPLOYMENT_SECTION
+## Setup (within THIS project)
+1. Create/edit project files
+2. If phonestack.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
+   **The \\"name\\" field is USER-DEFINED. If phonestack.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
+3. Node.js: \\\`npm install\\\`
+4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
+5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
+6. Verify: \\\`curl localhost:3000\\\` must return 200
+7. Deploy: \\\`ship\\\`
+
+## Dev Server Config (CRITICAL — preview won't work without this)
+Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
+Next.js: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
+Other: bind to 0.0.0.0:3000
+
+## STOP: Verification Required Before Completing
+You MUST run these commands and confirm they pass:
+- \\\`pm2 list\\\` → shows your app as \\"online\\"
+- \\\`curl localhost:3000\\\` → returns 200 status
+If verification fails:
+- Missing deps? \\\`npm install\\\`
+- Errors? \\\`pm2 logs preview --nostream\\\`
+- Port conflict? \\\`pm2 delete preview\\\` and retry
+Do NOT report task complete until verification passes!
+
+## Rules
+- Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
+- Ports: Dev=3000, Prod=3001+, Reserved=7681-7700
+- Backend first: expose backend with \\\`phonestack-expose NAME PORT\\\` before frontend depends on it
+- Databases: \\\`phonestack-install postgres|redis|mysql\\\` (warn user about RAM usage)
+- DB GUI: user runs \\\`ssh -L 5432:localhost:5432 dev@$DOMAIN\\\` from their machine
+
+## Git (Code Backup)
+Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.
+\\\`git-flow backup\\\` | \\\`git-flow force-backup\\\` | \\\`git-flow pull\\\` | \\\`git-flow save\\\` | \\\`git-flow ship\\\` | \\\`git-flow branch\\\`
+Standard git commands also work. NEVER configure git credentials manually (no SSH keys, no tokens).
+
+## Commands
+ship | phonestack-expose NAME PORT | phonestack-apps | phonestack-install postgres|redis|mysql | pm2 logs|restart|delete NAME
+<!-- PHONESTACK:END -->"
+  fi
+
+  # Write to each context file using marker-based approach
+  for CTX_FILE in "CLAUDE.md" "AGENTS.md" "GEMINI.md"; do
+    FILE_PATH="$TARGET_DIR/$CTX_FILE"
+    write_marker_file "$FILE_PATH" "$GENERATED_BLOCK"
+    chown $USER_NAME:$USER_NAME "$FILE_PATH" 2>/dev/null || true
+  done
+
+  # Also set up global context files
+  # ~/.gemini/GEMINI.md for global Gemini context
+  GEMINI_GLOBAL_DIR="$HOME_DIR/.gemini"
+  mkdir -p "$GEMINI_GLOBAL_DIR"
+  GEMINI_GLOBAL_FILE="$GEMINI_GLOBAL_DIR/GEMINI.md"
+  write_marker_file "$GEMINI_GLOBAL_FILE" "$GENERATED_BLOCK"
+  chown -R $USER_NAME:$USER_NAME "$GEMINI_GLOBAL_DIR" 2>/dev/null || true
+
+  # AGENTS.md at projects root alongside CLAUDE.md
+  PROJECTS_AGENTS_FILE="$HOME_DIR/projects/AGENTS.md"
+  write_marker_file "$PROJECTS_AGENTS_FILE" "$GENERATED_BLOCK"
+  chown $USER_NAME:$USER_NAME "$PROJECTS_AGENTS_FILE" 2>/dev/null || true
+}
+
+write_marker_file() {
+  # Write generated block to file using PHONESTACK markers
+  # $1 = file path, $2 = generated block content
+  local FILE_PATH="$1"
+  local BLOCK="$2"
+  local MARKER_START="<!-- PHONESTACK:START"
+  local MARKER_END="<!-- PHONESTACK:END -->"
+
+  if [ -f "$FILE_PATH" ]; then
+    if grep -q "$MARKER_START" "$FILE_PATH" 2>/dev/null; then
+      # File exists WITH markers — replace content between markers
+      # Use awk to replace between markers
+      awk -v block="$BLOCK" '
+        /<!-- PHONESTACK:START/ { found=1; print block; next }
+        /<!-- PHONESTACK:END -->/ { found=0; next }
+        !found { print }
+      ' "$FILE_PATH" > "$FILE_PATH.tmp"
+      mv "$FILE_PATH.tmp" "$FILE_PATH"
+    else
+      # File exists WITHOUT markers — prepend generated block above existing content
+      EXISTING=$(cat "$FILE_PATH")
+      printf '%s\\n\\n%s\\n' "$BLOCK" "$EXISTING" > "$FILE_PATH"
+    fi
+  else
+    # File doesn't exist — create new file with generated block
+    printf '%s\\n' "$BLOCK" > "$FILE_PATH"
+  fi
+}
+
+if [ ! -f "$GLOBAL_FILE" ] || [ $(find "$GLOBAL_FILE" -mmin +60 2>/dev/null | wc -l) -gt 0 ]; then
+  generate_global
+fi
+generate_current
+generate_context_files
+chown -R $USER_NAME:$USER_NAME "$CONTEXT_DIR" 2>/dev/null || true
+echo "Context: $GLOBAL_FILE + $CURRENT_FILE + $TARGET_DIR/{CLAUDE,AGENTS,GEMINI}.md"`;
+}
+
+/**
+ * Context system documentation README.
+ */
+export function getContextReadme(): string {
+  return `# Phone Stack Context System
+
+The context system provides AI coding assistants (OpenCode, Claude, Aider, Codex, Gemini) with information about your server, projects, and preferences. This helps them write better code that follows your conventions.
+
+## How It Works
+
+When you send a message through Vibe Mode, the system automatically prepends context to your message before sending it to the AI. The AI sees:
+
+\\\`\\\`\\\`
+<system_context>
+[Global context]
+[Project context if a project is selected]
+</system_context>
+
+User request: [Your message]
+\\\`\\\`\\\`
+
+## Context Hierarchy
+
+### 1. Global Context (Server-wide)
+**File:** \\\`/home/dev/.phonestack/context/global.md\\\`
+
+Applies to ALL projects. Contains:
+- Server URLs and deployment info
+- Project structure requirements
+- App detection rules
+- Commands reference
+- Secrets management
+- Debugging tips
+
+**Edit this to:** Add server-wide rules, conventions, or preferences.
+
+### 2. Custom Context Files
+**Location:** \\\`/home/dev/.phonestack/context/*.md\\\`
+
+Any \\\`.md\\\` file you add here (except \\\`global.md\\\` and \\\`current.md\\\`) will be included in the context.
+
+**Examples:**
+- \\\`coding-style.md\\\` - Your preferred coding conventions
+- \\\`tech-stack.md\\\` - Libraries and frameworks you prefer
+- \\\`api-guidelines.md\\\` - How APIs should be structured
+
+### 3. Project Context (App-specific)
+**Files:** Inside each project folder
+- \\\`CLAUDE.md\\\` - Project-specific instructions
+- \\\`README.md\\\` - First 2000 chars included automatically
+- \\\`package.json\\\` - Scripts and description extracted
+
+**Edit these to:** Add project-specific context like:
+- What the project does
+- Key files and their purposes
+- Specific patterns to follow
+- Known issues or constraints
+
+## Editing Context
+
+### Via Dashboard
+The Context tab in your Phone Stack dashboard lets you view and edit context files.
+
+### Via Terminal
+\\\`\\\`\\\`bash
+# Edit global context
+nano /home/dev/.phonestack/context/global.md
+
+# Add custom context
+nano /home/dev/.phonestack/context/my-preferences.md
+
+# Edit project context
+nano /home/dev/projects/myapp/CLAUDE.md
+\\\`\\\`\\\`
+
+### Via AI
+Ask any AI CLI: "Add to my global context that I prefer TypeScript over JavaScript"
+
+## Context Refresh
+
+Context is cached for 30 seconds for performance. Changes take effect within 30 seconds automatically.
+
+## Example Custom Context
+
+### coding-style.md
+\\\`\\\`\\\`markdown
+# Coding Preferences
+
+## TypeScript
+- Always use strict mode
+- Prefer interfaces over types
+- Use async/await over .then()
+
+## React
+- Use functional components only
+- Prefer Tailwind CSS for styling
+- Use React Query for data fetching
+
+## Code Style
+- Max line length: 100 characters
+- Use 2-space indentation
+- Always add JSDoc comments to functions
+\\\`\\\`\\\`
+
+### api-guidelines.md
+\\\`\\\`\\\`markdown
+# API Guidelines
+
+## REST Conventions
+- Use plural nouns: /users not /user
+- Use HTTP methods correctly (GET, POST, PUT, DELETE)
+- Return 201 for creation, 204 for deletion
+
+## Error Handling
+- Always return { error: string, code: string }
+- Use appropriate HTTP status codes
+- Log errors with context
+
+## Authentication
+- Use Bearer tokens in Authorization header
+- Validate tokens on every request
+- Return 401 for invalid/missing tokens
+\\\`\\\`\\\`
+
+## Tips
+
+1. **Keep context concise** - AI has token limits. Focus on what matters.
+2. **Use project CLAUDE.md** - Put project-specific info there, not in global.
+3. **Update as you go** - When you establish a pattern, add it to context.
+4. **Check what AI sees** - Ask "What context do you have about this project?"
+5. **Remove outdated info** - Stale context can confuse the AI.
+
+## Files Reference
+
+| File | Purpose | Scope |
+|------|---------|-------|
+| \\\`~/.phonestack/context/global.md\\\` | Server rules, URLs, commands | All projects |
+| \\\`~/.phonestack/context/*.md\\\` | Custom preferences | All projects |
+| \\\`~/projects/CLAUDE.md\\\` | Project structure rules | Projects root |
+| \\\`~/projects/{app}/CLAUDE.md\\\` | App-specific context | Single app |
+| \\\`~/projects/{app}/README.md\\\` | Auto-included (2000 chars) | Single app |`;
+}

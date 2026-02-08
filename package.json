@@ -1,0 +1,73 @@
+{
+  "name": "@phone-stack/vps",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Phone Stack VPS - Server provisioning, security, and management",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeetdev/phone-stack-vps.git"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./version": {
+      "import": "./dist/version.js",
+      "types": "./dist/version.d.ts"
+    },
+    "./ai": {
+      "import": "./dist/configs/ai/index.js",
+      "types": "./dist/configs/ai/index.d.ts"
+    },
+    "./configs": {
+      "import": "./dist/configs/index.js",
+      "types": "./dist/configs/index.d.ts"
+    },
+    "./scripts": {
+      "import": "./dist/scripts/index.js",
+      "types": "./dist/scripts/index.d.ts"
+    },
+    "./services": {
+      "import": "./dist/services/index.js",
+      "types": "./dist/services/index.d.ts"
+    },
+    "./services/enforcer": {
+      "import": "./dist/services/enforcer/bundle.js",
+      "types": "./dist/services/enforcer/bundle.d.ts"
+    },
+    "./services/file-api": {
+      "import": "./dist/services/file-api/bundle.js",
+      "types": "./dist/services/file-api/bundle.d.ts"
+    },
+    "./services/agent-bridge": {
+      "import": "./dist/services/agent-bridge/bundle.js",
+      "types": "./dist/services/agent-bridge/bundle.d.ts"
+    },
+    "./services/sovereign-shield": {
+      "import": "./dist/services/sovereign-shield/bundle.js",
+      "types": "./dist/services/sovereign-shield/bundle.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "esbuild": "^0.24.2"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@simplewebauthn/browser": "^11.0.0",
+    "@simplewebauthn/server": "^11.0.0",
+    "@types/better-sqlite3": "^7.6.5",
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.5.13",
+    "better-sqlite3": "^11.0.0",
+    "hono": "^4.6.14",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.2",
+    "ws": "^8.18.0"
+  }
+}
