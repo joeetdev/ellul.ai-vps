@@ -95,7 +95,99 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       return c.json({ authenticated: true, tier, method: 'terminal_gated' }, 200);
     }
 
-    // Standard tier: JWT-based authentication
+    // Shared variables for all non-terminal paths
+    const cookies = parseCookies(c.req.header('cookie'));
+    const forwardedHost = c.req.header('x-forwarded-host') || hostname;
+    const forwardedProto = c.req.header('x-forwarded-proto') || 'https';
+    const originalUrl = `${forwardedProto}://${forwardedHost}${forwardedUri}`;
+
+    // Dev domain (ellul.app): Preview token/session authentication
+    // JWT cookies (.ellul.ai) don't flow cross-domain to .ellul.app,
+    // so dev domains always use preview tokens regardless of tier.
+    const isDevDomainRequest = forwardedHost.endsWith('.ellul.app');
+    if (isDevDomainRequest) {
+      // Check for __Host-preview_session cookie first (set after initial token validation)
+      const previewSessionId = cookies['__Host-preview_session'];
+
+      // Check for _preview_token URL param (initial access from dashboard iframe or redirect)
+      let previewToken: string | undefined;
+      try {
+        const uriParams = new URLSearchParams(forwardedUri.split('?')[1] || '');
+        previewToken = uriParams.get('_preview_token') || undefined;
+      } catch {}
+
+      if (previewSessionId || previewToken) {
+        try {
+          const validateRes = await fetch('http://127.0.0.1:3005/_auth/preview/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              previewSessionId: previewSessionId || undefined,
+              token: previewToken || undefined,
+              ip: getClientIp(c),
+            })
+          });
+          const validateData = await validateRes.json() as {
+            valid?: boolean;
+            previewSessionId?: string;
+            expiresAt?: number;
+            reason?: string;
+          };
+
+          if (validateData.valid) {
+            // If this was a token (not cookie), set the __Host-preview_session cookie
+            // and redirect to clean URL
+            if (previewToken && validateData.previewSessionId) {
+              const maxAge = Math.floor(((validateData.expiresAt || Date.now() + 14400000) - Date.now()) / 1000);
+              // __Host- prefix: origin-locked, browser enforces Secure + Path=/ + no Domain attr
+              // SameSite=Lax: prevents CSRF, .app TLD is on HSTS preload list (always HTTPS)
+              c.header('Set-Cookie',
+                `__Host-preview_session=${validateData.previewSessionId}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
+              );
+
+              // For navigation, redirect to clean URL
+              const acceptHeader = c.req.header('accept') || '';
+              const isApiRequest = acceptHeader.includes('application/json') ||
+                c.req.header('x-requested-with') === 'XMLHttpRequest';
+
+              if (!isApiRequest) {
+                const urlObj = new URL(originalUrl);
+                urlObj.searchParams.delete('_preview_token');
+                return c.redirect(urlObj.toString(), 302);
+              }
+            }
+
+            c.header('X-Auth-User', 'preview-user');
+            c.header('X-Auth-Tier', tier);
+            c.header('X-Auth-Session', previewSessionId || validateData.previewSessionId || 'preview');
+            return c.json({ authenticated: true, tier, method: 'preview' }, 200);
+          }
+        } catch (e) {
+          console.log('[shield] Preview validation error:', (e as Error).message);
+        }
+      }
+
+      // No valid preview credentials — redirect to srv domain for login
+      const acceptHeader = c.req.header('accept') || '';
+      const isApiRequest = acceptHeader.includes('application/json') ||
+        c.req.header('x-requested-with') === 'XMLHttpRequest' ||
+        c.req.header('upgrade')?.toLowerCase() === 'websocket';
+
+      if (isApiRequest) {
+        return c.json({
+          error: 'Preview authentication required',
+          loginUrl: `https://${hostname}/_auth/login?redirect=${encodeURIComponent(originalUrl)}`,
+        }, 401);
+      }
+
+      // Redirect to srv domain for passkey auth, which will redirect back with token
+      return c.redirect(
+        `https://${hostname}/_auth/login?redirect=${encodeURIComponent(originalUrl)}`,
+        302
+      );
+    }
+
+    // Standard tier: JWT-based authentication (for .ellul.ai domains only)
     if (tier === 'standard') {
       const jwtPayload = verifyJwtToken(c.req);
       if (!jwtPayload) {
@@ -109,10 +201,6 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
     }
 
     // Web Locked tier: Passkey + PoP authentication
-    const cookies = parseCookies(c.req.header('cookie'));
-    const forwardedHost = c.req.header('x-forwarded-host') || hostname;
-    const forwardedProto = c.req.header('x-forwarded-proto') || 'https';
-    const originalUrl = `${forwardedProto}://${forwardedHost}${forwardedUri}`;
 
     // Check if this is a code subdomain request
     const isCodeSubdomain = forwardedHost.includes('-code.') || forwardedHost.startsWith('code.');
@@ -225,92 +313,6 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
         }, 401);
       }
       return c.redirect(codeAuthUrl, 302);
-    }
-
-    // Dev domain (ellul.app): Preview token/session authentication
-    // Dev domains are cross-site from srv domain, so shield_session cookie won't flow.
-    // Uses preview tokens (from dashboard) or __Host-preview_session cookie.
-    const isDevDomainRequest = forwardedHost.endsWith('.ellul.app');
-    if (isDevDomainRequest) {
-      // Check for __Host-preview_session cookie first (set after initial token validation)
-      const previewSessionId = cookies['__Host-preview_session'];
-
-      // Check for _preview_token URL param (initial access from dashboard iframe or redirect)
-      let previewToken: string | undefined;
-      try {
-        const uriParams = new URLSearchParams(forwardedUri.split('?')[1] || '');
-        previewToken = uriParams.get('_preview_token') || undefined;
-      } catch {}
-
-      if (previewSessionId || previewToken) {
-        try {
-          const validateRes = await fetch('http://127.0.0.1:3005/_auth/preview/validate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              previewSessionId: previewSessionId || undefined,
-              token: previewToken || undefined,
-              ip: getClientIp(c),
-            })
-          });
-          const validateData = await validateRes.json() as {
-            valid?: boolean;
-            previewSessionId?: string;
-            expiresAt?: number;
-            reason?: string;
-          };
-
-          if (validateData.valid) {
-            // If this was a token (not cookie), set the __Host-preview_session cookie
-            // and redirect to clean URL
-            if (previewToken && validateData.previewSessionId) {
-              const maxAge = Math.floor(((validateData.expiresAt || Date.now() + 14400000) - Date.now()) / 1000);
-              // __Host- prefix: origin-locked, browser enforces Secure + Path=/ + no Domain attr
-              // SameSite=Lax: prevents CSRF, .app TLD is on HSTS preload list (always HTTPS)
-              c.header('Set-Cookie',
-                `__Host-preview_session=${validateData.previewSessionId}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
-              );
-
-              // For navigation, redirect to clean URL
-              const acceptHeader = c.req.header('accept') || '';
-              const isApiRequest = acceptHeader.includes('application/json') ||
-                c.req.header('x-requested-with') === 'XMLHttpRequest';
-
-              if (!isApiRequest) {
-                const urlObj = new URL(originalUrl);
-                urlObj.searchParams.delete('_preview_token');
-                return c.redirect(urlObj.toString(), 302);
-              }
-            }
-
-            c.header('X-Auth-User', 'preview-user');
-            c.header('X-Auth-Tier', 'web_locked');
-            c.header('X-Auth-Session', previewSessionId || validateData.previewSessionId || 'preview');
-            return c.json({ authenticated: true, tier: 'web_locked', method: 'preview' }, 200);
-          }
-        } catch (e) {
-          console.log('[shield] Preview validation error:', (e as Error).message);
-        }
-      }
-
-      // No valid preview credentials — redirect to srv domain for login
-      const acceptHeader = c.req.header('accept') || '';
-      const isApiRequest = acceptHeader.includes('application/json') ||
-        c.req.header('x-requested-with') === 'XMLHttpRequest' ||
-        c.req.header('upgrade')?.toLowerCase() === 'websocket';
-
-      if (isApiRequest) {
-        return c.json({
-          error: 'Preview authentication required',
-          loginUrl: `https://${hostname}/_auth/login?redirect=${encodeURIComponent(originalUrl)}`,
-        }, 401);
-      }
-
-      // Redirect to srv domain for passkey auth, which will redirect back with token
-      return c.redirect(
-        `https://${hostname}/_auth/login?redirect=${encodeURIComponent(originalUrl)}`,
-        302
-      );
     }
 
     // Main domain: Standard passkey + PoP flow
