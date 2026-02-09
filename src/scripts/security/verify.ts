@@ -18,7 +18,7 @@ ROOT_SECURE=true
 
 TTYD_STATUS=$(systemctl is-active ttyd@main 2>/dev/null || echo "inactive")
 CADDY_STATUS=$(systemctl is-active caddy 2>/dev/null || echo "inactive")
-ENFORCER_STATUS=$(systemctl is-active phonestack-enforcer 2>/dev/null || echo "inactive")
+ENFORCER_STATUS=$(systemctl is-active ellulai-enforcer 2>/dev/null || echo "inactive")
 
 if [ "$JSON_OUTPUT" = true ]; then
   echo "{\\"cloudInitHash\\": \\"$CLOUD_INIT_HASH\\", \\"rootSecure\\": $ROOT_SECURE, \\"services\\": {\\"ttyd\\": \\"$TTYD_STATUS\\", \\"caddy\\": \\"$CADDY_STATUS\\", \\"enforcer\\": \\"$ENFORCER_STATUS\\"}}"

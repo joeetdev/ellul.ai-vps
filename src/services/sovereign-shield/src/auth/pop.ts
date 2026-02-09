@@ -380,7 +380,7 @@ export const TERMINAL_WRAPPER_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Terminal - Phone Stack</title>
+  <title>Terminal - ellul.ai</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0a0a; }

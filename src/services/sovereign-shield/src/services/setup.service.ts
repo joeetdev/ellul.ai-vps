@@ -62,7 +62,7 @@ export function validateSetupToken(token: string | undefined | null): boolean {
       return false;
     }
 
-    // Check expiry if expiry file exists (used by phonestack-web-locked)
+    // Check expiry if expiry file exists (used by ellulai-web-locked)
     if (fs.existsSync(SETUP_EXPIRY_FILE)) {
       const expiry = parseInt(fs.readFileSync(SETUP_EXPIRY_FILE, 'utf8').trim(), 10);
       if (Date.now() / 1000 > expiry) {

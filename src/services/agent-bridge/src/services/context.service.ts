@@ -87,11 +87,11 @@ export function loadAppContext(projectName: string | null): string {
         readme.substring(0, 2000) + (readme.length > 2000 ? '\n...(truncated)' : '') + '\n\n';
     }
 
-    // Read phonestack.json for app identity
-    const phonestackPath = path.join(projectPath, 'phonestack.json');
-    if (fs.existsSync(phonestackPath)) {
+    // Read ellulai.json for app identity
+    const ellulaiPath = path.join(projectPath, 'ellulai.json');
+    if (fs.existsSync(ellulaiPath)) {
       try {
-        const pjson = JSON.parse(fs.readFileSync(phonestackPath, 'utf8')) as { name?: string; type?: string; summary?: string };
+        const pjson = JSON.parse(fs.readFileSync(ellulaiPath, 'utf8')) as { name?: string; type?: string; summary?: string };
         if (pjson.name) {
           context += 'App name: ' + pjson.name + ' (USER-DEFINED — do not change)\n';
         }
@@ -147,21 +147,21 @@ export function withContext(
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);
 
-    // Read app name from phonestack.json if available
+    // Read app name from ellulai.json if available
     let appNameLine = '';
     try {
-      const phonestackJsonPath = path.join(projectPath, 'phonestack.json');
-      if (fs.existsSync(phonestackJsonPath)) {
-        const pjson = JSON.parse(fs.readFileSync(phonestackJsonPath, 'utf8')) as { name?: string };
+      const ellulaiJsonPath = path.join(projectPath, 'ellulai.json');
+      if (fs.existsSync(ellulaiJsonPath)) {
+        const pjson = JSON.parse(fs.readFileSync(ellulaiJsonPath, 'utf8')) as { name?: string };
         if (pjson.name) {
-          appNameLine = `The "name" field in phonestack.json is "${pjson.name}" — this is USER-DEFINED. NEVER change the "name" field in phonestack.json or package.json.`;
+          appNameLine = `The "name" field in ellulai.json is "${pjson.name}" — this is USER-DEFINED. NEVER change the "name" field in ellulai.json or package.json.`;
         }
       }
     } catch {}
 
     fullContext += `## MANDATORY RULES
 1. WORKSPACE: You are working ONLY inside: ${projectPath}. ALL file operations MUST stay within this directory. NEVER create new projects. NEVER modify files outside this directory.
-2. APP NAME: ${appNameLine || 'The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.'}
+2. APP NAME: ${appNameLine || 'The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.'}
 3. This is an EXISTING project. Do NOT create a new project, re-scaffold, or re-initialize.
 
 `;

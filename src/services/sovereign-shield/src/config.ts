@@ -5,27 +5,27 @@
  */
 
 // File paths
-export const DB_PATH = '/etc/phonestack/local-auth.db';
-export const SETUP_TOKEN_FILE = '/etc/phonestack/.sovereign-setup-token';
-export const AUTH_SECRET_FILE = '/etc/phonestack/.sovereign-auth-secret';
-export const AUTH_SECRETS_FILE = '/etc/phonestack/auth-secrets.json';
-export const PENDING_SSH_BLOCK_FILE = '/etc/phonestack/.pending-ssh-block';
-export const SOVEREIGN_KEYS_FILE = '/etc/phonestack/.sovereign-keys';
-export const DOMAIN_FILE = '/etc/phonestack/domain';
-export const SSH_TRANSITION_MARKER = '/etc/phonestack/.ssh-only-to-web-locked';
-export const SETUP_EXPIRY_FILE = '/etc/phonestack/.sovereign-setup-expiry';
-export const TERMINAL_DISABLED_FILE = '/etc/phonestack/.terminal-disabled';
-export const TIER_FILE = '/etc/phonestack/security-tier';
-export const SHIELD_MARKER = '/etc/phonestack/.sovereign-shield-active';
-export const ATTESTATION_POLICY_FILE = '/etc/phonestack/attestation-policy.json';
-export const JWT_SECRET_FILE = '/etc/phonestack/jwt-secret';
+export const DB_PATH = '/etc/ellulai/local-auth.db';
+export const SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
+export const AUTH_SECRET_FILE = '/etc/ellulai/.sovereign-auth-secret';
+export const AUTH_SECRETS_FILE = '/etc/ellulai/auth-secrets.json';
+export const PENDING_SSH_BLOCK_FILE = '/etc/ellulai/.pending-ssh-block';
+export const SOVEREIGN_KEYS_FILE = '/etc/ellulai/.sovereign-keys';
+export const DOMAIN_FILE = '/etc/ellulai/domain';
+export const SSH_TRANSITION_MARKER = '/etc/ellulai/.ssh-only-to-web-locked';
+export const SETUP_EXPIRY_FILE = '/etc/ellulai/.sovereign-setup-expiry';
+export const TERMINAL_DISABLED_FILE = '/etc/ellulai/.terminal-disabled';
+export const TIER_FILE = '/etc/ellulai/security-tier';
+export const SHIELD_MARKER = '/etc/ellulai/.sovereign-shield-active';
+export const ATTESTATION_POLICY_FILE = '/etc/ellulai/attestation-policy.json';
+export const JWT_SECRET_FILE = '/etc/ellulai/jwt-secret';
 export const SSH_AUTH_KEYS_PATH = '/home/dev/.ssh/authorized_keys';
-export const SERVER_ID_FILE = '/etc/phonestack/server-id';
-export const API_URL_FILE = '/etc/phonestack/api-url';
+export const SERVER_ID_FILE = '/etc/ellulai/server-id';
+export const API_URL_FILE = '/etc/ellulai/api-url';
 
 // Service configuration
 export const PORT = 3005;
-export const RP_NAME = 'Phone Stack';
+export const RP_NAME = 'ellul.ai';
 
 // Session security constants
 export const SESSION_TTL_MS = 4 * 60 * 60 * 1000;        // 4 hours idle timeout

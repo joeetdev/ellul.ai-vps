@@ -1,5 +1,5 @@
 /**
- * Tmux configuration for Phone Stack terminal sessions.
+ * Tmux configuration for ellul.ai terminal sessions.
  * Mouse OFF so browser handles selection/copy natively.
  */
 export function getTmuxConfig(): string {
@@ -9,7 +9,7 @@ set -g history-limit 50000
 set -g mouse off
 set -g status-position top
 set -g status-style "bg=#0a0a0a,fg=#00ff00"
-set -g status-left "#[fg=#00ff00,bold] PHONESTACK "
+set -g status-left "#[fg=#00ff00,bold] ELLULAI "
 set -g status-right "#[fg=#00ff00] %H:%M "
 set -g pane-border-style "fg=#333333"
 set -g pane-active-border-style "fg=#00ff00"

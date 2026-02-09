@@ -22,10 +22,10 @@ import type { SecurityTier } from '../config';
 // SECURITY: Marker file that indicates web_locked was intentionally activated
 // This file can ONLY be removed via explicit downgrade (SSH or authenticated request)
 // Prevents accidental downgrade if DB is corrupted/cleared
-const WEB_LOCKED_MARKER = '/etc/phonestack/.web_locked_activated';
+const WEB_LOCKED_MARKER = '/etc/ellulai/.web_locked_activated';
 
 // Transition lock file — prevents concurrent tier switches and aids crash recovery
-const TIER_TRANSITION_LOCK = '/etc/phonestack/.tier-transition';
+const TIER_TRANSITION_LOCK = '/etc/ellulai/.tier-transition';
 
 // Database will be injected to avoid circular dependencies
 let db: Database;
@@ -177,10 +177,10 @@ export function getServerCredentials(): ServerCredentials | null {
     const serverId = fs.readFileSync(SERVER_ID_FILE, 'utf8').trim();
     const apiUrl = fs.existsSync(API_URL_FILE)
       ? fs.readFileSync(API_URL_FILE, 'utf8').trim()
-      : 'https://api.phone-stack.app';
+      : 'https://api.ellul.ai';
     // Read token from bashrc
     const bashrc = fs.readFileSync('/home/dev/.bashrc', 'utf8');
-    const tokenMatch = bashrc.match(/PHONESTACK_AI_TOKEN="([^"]+)"/);
+    const tokenMatch = bashrc.match(/ELLULAI_AI_TOKEN="([^"]+)"/);
     const token = tokenMatch && tokenMatch[1] ? tokenMatch[1] : null;
     return { serverId, apiUrl, token };
   } catch {
@@ -403,12 +403,12 @@ export async function executeTierSwitch(
 
       // STEP 1: Start terminal services FIRST (before any destructive changes)
       // Dynamic terminal sessions are provided by agent-bridge and term-proxy
-      execSync('/usr/local/bin/phonestack-unlock 2>&1 || true', { stdio: 'pipe' });
-      execSync('systemctl start phonestack-agent-bridge phonestack-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
+      execSync('/usr/local/bin/ellulai-unlock 2>&1 || true', { stdio: 'pipe' });
+      execSync('systemctl start ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
 
       // STEP 2: Wait and verify terminal services are running BEFORE closing SSH
       await new Promise(r => setTimeout(r, 2000));
-      if (!isServiceRunning('phonestack-agent-bridge') || !isServiceRunning('phonestack-term-proxy')) {
+      if (!isServiceRunning('ellulai-agent-bridge') || !isServiceRunning('ellulai-term-proxy')) {
         console.error('[shield] FATAL: Terminal services failed to start! Aborting downgrade.');
         throw new Error('Terminal services failed to start - downgrade aborted, SSH still available');
       }
@@ -510,11 +510,11 @@ export async function executeTierSwitch(
       fs.chmodSync(TERMINAL_DISABLED_FILE, 0o400);
 
       // STEP 7: Disable passkey gate if active
-      execSync('/usr/local/bin/phonestack-unlock 2>&1 || true', { stdio: 'pipe' });
+      execSync('/usr/local/bin/ellulai-unlock 2>&1 || true', { stdio: 'pipe' });
 
       // STEP 8: FINAL - Only now stop terminal services (SSH verified working)
       // Stop dynamic terminal services (agent-bridge, term-proxy)
-      execSync('systemctl stop phonestack-agent-bridge phonestack-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
+      execSync('systemctl stop ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
       // Also stop any legacy static ttyd services
       execSync('systemctl stop ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true', { stdio: 'pipe' });
       execSync('systemctl disable ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true', { stdio: 'pipe' });

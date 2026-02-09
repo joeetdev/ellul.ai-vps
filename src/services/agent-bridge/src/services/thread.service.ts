@@ -23,7 +23,7 @@ let db: Database;
 
 // Base directory for per-thread isolated state
 import * as os from 'os';
-const THREAD_STATE_DIR = `${os.homedir()}/.phonestack/threads`;
+const THREAD_STATE_DIR = `${os.homedir()}/.ellulai/threads`;
 
 // Simple mutex for thread operations to prevent race conditions
 const threadLocks = new Map<string, Promise<void>>();

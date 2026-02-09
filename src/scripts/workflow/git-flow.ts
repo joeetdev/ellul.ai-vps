@@ -99,7 +99,7 @@ cmd_ship() {
   pm2 save
   success "Shipped to Production!"
   echo ""
-  log "Live at: https://$(cat /etc/phonestack/domain 2>/dev/null || echo 'your-domain')/"
+  log "Live at: https://$(cat /etc/ellulai/domain 2>/dev/null || echo 'your-domain')/"
 }
 
 cmd_backup() {
@@ -114,7 +114,7 @@ cmd_backup() {
     return 0
   fi
   TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-  git commit -m "Backup from Phone Stack ($TIMESTAMP)"
+  git commit -m "Backup from ellul.ai ($TIMESTAMP)"
   success "Committed changes"
   if git remote -v | grep -q origin; then
     if ! git push -u origin HEAD 2>&1; then
@@ -134,7 +134,7 @@ cmd_force_backup() {
   git add -A
   if ! git diff --cached --quiet; then
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-    git commit -m "Backup from Phone Stack ($TIMESTAMP)"
+    git commit -m "Backup from ellul.ai ($TIMESTAMP)"
     success "Committed changes"
   fi
   if git remote -v | grep -q origin; then
@@ -168,7 +168,7 @@ case "$1" in
   pull) cmd_pull_latest ;;
   *)
     echo ""
-    echo -e "\${CYAN}Phone Stack Git Flow\${NC}"
+    echo -e "\${CYAN}ellul.ai Git Flow\${NC}"
     echo ""
     echo "  branch       - Create a feature branch"
     echo "  save         - Commit and sync changes to Git"

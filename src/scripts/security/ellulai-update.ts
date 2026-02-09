@@ -1,7 +1,7 @@
 /**
- * phonestack-update — Verified Git Pull Update Script
+ * ellulai-update — Verified Git Pull Update Script
  *
- * Standalone script at /usr/local/bin/phonestack-update that performs
+ * Standalone script at /usr/local/bin/ellulai-update that performs
  * cryptographically verified updates from a public Git repository.
  *
  * Security model:
@@ -14,21 +14,21 @@
 
 import { RELEASE_GPG_FINGERPRINT } from '../../version';
 
-export function getPhonestackUpdateScript(): string {
+export function getEllulaiUpdateScript(): string {
   return `#!/bin/bash
 set -euo pipefail
 
 # ─── Configuration ──────────────────────────────────────────────────
-PUBKEY_PATH="/etc/phonestack/release.gpg"
+PUBKEY_PATH="/etc/ellulai/release.gpg"
 RELEASE_GPG_FINGERPRINT="${RELEASE_GPG_FINGERPRINT}"
-REPO_DIR="/opt/phonestack"
-VERSION_FILE="/etc/phonestack/current-version"
-GNUPG_HOME="/etc/phonestack/.gnupg"
-LOG_FILE="/var/log/phonestack-update.log"
-LOCK_FILE="/var/run/phonestack-update.lock"
+REPO_DIR="/opt/ellulai"
+VERSION_FILE="/etc/ellulai/current-version"
+GNUPG_HOME="/etc/ellulai/.gnupg"
+LOG_FILE="/var/log/ellulai-update.log"
+LOCK_FILE="/var/run/ellulai-update.lock"
 
 # Services to restart after a successful update
-AGENT_SERVICES="phonestack-sovereign-shield phonestack-file-api phonestack-agent-bridge"
+AGENT_SERVICES="ellulai-sovereign-shield ellulai-file-api ellulai-agent-bridge"
 
 # ─── Helpers ────────────────────────────────────────────────────────
 
@@ -54,8 +54,8 @@ cleanup_lock() {
 TARGET_TAG="\${1:-}"
 
 if [ -z "$TARGET_TAG" ]; then
-  echo "Usage: phonestack-update <tag>"
-  echo "  e.g. phonestack-update v1.2.0"
+  echo "Usage: ellulai-update <tag>"
+  echo "  e.g. ellulai-update v1.2.0"
   exit 1
 fi
 
@@ -81,7 +81,7 @@ trap cleanup_lock EXIT
 
 # ─── Pre-flight Checks ─────────────────────────────────────────────
 
-log "=== phonestack-update: $TARGET_TAG ==="
+log "=== ellulai-update: $TARGET_TAG ==="
 
 if [ ! -f "$PUBKEY_PATH" ]; then
   die "GPG public key not found at $PUBKEY_PATH. Cannot verify updates."
@@ -192,7 +192,7 @@ log "Version check passed: $CURRENT_VERSION -> $TARGET_TAG"
 
 # ─── Step 5: Clean workspace and checkout ───────────────────────────
 # Reset any local modifications. The repo is read-only application code;
-# user data lives elsewhere (/home/dev, /etc/phonestack, etc).
+# user data lives elsewhere (/home/dev, /etc/ellulai, etc).
 
 log "Checking out $TARGET_TAG..."
 
@@ -230,7 +230,7 @@ fi
 # service file, and Node.js bundle from source.
 
 REBUILD_ENTRY="$REPO_DIR/src/scripts/security/rebuild-all.ts"
-REBUILD_OUT="/tmp/phonestack-rebuild-all.js"
+REBUILD_OUT="/tmp/ellulai-rebuild-all.js"
 
 ESBUILD_BIN="$REPO_DIR/node_modules/.bin/esbuild"
 if [ ! -x "$ESBUILD_BIN" ]; then
@@ -286,7 +286,7 @@ chmod 644 "$VERSION_FILE"
 log "Restarting services..."
 
 # Restart all services (not just the 3 Node.js ones)
-AGENT_SERVICES="phonestack-sovereign-shield phonestack-file-api phonestack-agent-bridge phonestack-enforcer phonestack-term-proxy phonestack-perf-monitor"
+AGENT_SERVICES="ellulai-sovereign-shield ellulai-file-api ellulai-agent-bridge ellulai-enforcer ellulai-term-proxy ellulai-perf-monitor"
 
 RESTARTED=0
 for SVC in $AGENT_SERVICES; do

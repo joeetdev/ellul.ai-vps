@@ -12,7 +12,7 @@
  */
 export function getMountVolumeScript(): string {
   return `#!/bin/bash
-# phonestack-mount-volume — Mount a block volume at the service user's home.
+# ellulai-mount-volume — Mount a block volume at the service user's home.
 # Called by file-api via sudo during wake from hibernation.
 # Only allows mounting validated device paths to the home directory.
 set -euo pipefail
@@ -20,9 +20,9 @@ set -euo pipefail
 ACTION="\${1:-}"
 DEVICE="\${2:-}"
 
-# Determine service user/home from phonestack config
-if [ -f /etc/default/phonestack ]; then
-  source /etc/default/phonestack
+# Determine service user/home from ellulai config
+if [ -f /etc/default/ellulai ]; then
+  source /etc/default/ellulai
 fi
 SVC_USER="\${PS_USER:-dev}"
 SVC_HOME="/home/\${SVC_USER}"
@@ -62,7 +62,7 @@ case "\$ACTION" in
       exit 0
     fi
 
-    # Check filesystem and label. Our mkfs uses -L phonestack-home.
+    # Check filesystem and label. Our mkfs uses -L ellulai-home.
     # If label differs (or missing), volume was pre-formatted by cloud provider.
     FSTYPE=\$(blkid -o value -s TYPE "\$DEVICE" 2>/dev/null || echo "")
     LABEL=\$(blkid -o value -s LABEL "\$DEVICE" 2>/dev/null || echo "")
@@ -73,13 +73,13 @@ case "\$ACTION" in
       FIRST_BOOT=true
       SKEL_TMP="/tmp/skel-backup-\$\$"
       cp -a "\${SVC_HOME}/." "\$SKEL_TMP/"
-      mkfs.ext4 -L phonestack-home "\$DEVICE"
-    elif [ "\$LABEL" != "phonestack-home" ]; then
+      mkfs.ext4 -L ellulai-home "\$DEVICE"
+    elif [ "\$LABEL" != "ellulai-home" ]; then
       # Pre-formatted by cloud provider — reformat with skeleton
       FIRST_BOOT=true
       SKEL_TMP="/tmp/skel-backup-\$\$"
       cp -a "\${SVC_HOME}/." "\$SKEL_TMP/"
-      mkfs.ext4 -L phonestack-home "\$DEVICE"
+      mkfs.ext4 -L ellulai-home "\$DEVICE"
     fi
 
     # nosuid: prevent setuid binaries on user volumes (privilege escalation)
@@ -133,7 +133,7 @@ export function getAptInstallScript(): string {
 set -euo pipefail
 
 if [ \$# -eq 0 ]; then
-  echo "Usage: sudo phonestack-apt-install <package> [package ...]"
+  echo "Usage: sudo ellulai-apt-install <package> [package ...]"
   exit 1
 fi
 
@@ -141,12 +141,12 @@ fi
 for arg in "\$@"; do
   # Reject flags
   if [[ "\$arg" == -* ]]; then
-    echo "Error: flags not allowed. Use: sudo phonestack-apt-install <package-name>"
+    echo "Error: flags not allowed. Use: sudo ellulai-apt-install <package-name>"
     exit 1
   fi
   # Reject paths and .deb files
   if [[ "\$arg" == */* ]] || [[ "\$arg" == *.deb ]]; then
-    echo "Error: local paths not allowed. Use: sudo phonestack-apt-install <package-name>"
+    echo "Error: local paths not allowed. Use: sudo ellulai-apt-install <package-name>"
     exit 1
   fi
   # Must match Debian package name pattern

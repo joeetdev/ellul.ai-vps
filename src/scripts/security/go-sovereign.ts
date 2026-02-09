@@ -1,5 +1,5 @@
 /**
- * Go sovereign script - disables web terminal and Phone Stack access.
+ * Go sovereign script - disables web terminal and ellul.ai access.
  * User maintains SSH-only access after running this.
  * Requires SSH key to be installed first (Tier 2B prerequisite).
  *
@@ -9,7 +9,7 @@ export function getGoSovereignScript(): string {
   return `#!/bin/bash
 set -e
 
-SOVEREIGN_MARKER="/etc/phonestack/.sovereign-mode"
+SOVEREIGN_MARKER="/etc/ellulai/.sovereign-mode"
 
 if [ -f "$SOVEREIGN_MARKER" ]; then
   echo "Already in Sovereign Mode."
@@ -61,7 +61,7 @@ echo "    - DISABLE Sovereign Shield if active"
 echo "    - REMOVE all platform communication"
 echo ""
 echo "  After this, SSH is your ONLY way in."
-echo "  Phone Stack cannot help you recover access."
+echo "  ellul.ai cannot help you recover access."
 echo ""
 echo "  Before continuing, verify SSH works in another terminal:"
 echo "    ssh dev@$(hostname -I | awk '{print $1}')"
@@ -77,18 +77,18 @@ systemctl stop 'ttyd@*' 2>/dev/null || true
 systemctl disable 'ttyd@*' 2>/dev/null || true
 
 # 2. Stop and disable enforcer
-systemctl stop phonestack-enforcer 2>/dev/null || true
-systemctl disable phonestack-enforcer 2>/dev/null || true
+systemctl stop ellulai-enforcer 2>/dev/null || true
+systemctl disable ellulai-enforcer 2>/dev/null || true
 
 # 3. Stop Sovereign Shield if running
-systemctl stop phonestack-sovereign-shield 2>/dev/null || true
-systemctl disable phonestack-sovereign-shield 2>/dev/null || true
+systemctl stop ellulai-sovereign-shield 2>/dev/null || true
+systemctl disable ellulai-sovereign-shield 2>/dev/null || true
 
 # 4. Destroy JWT secret
-rm -f /etc/phonestack/jwt-secret
+rm -f /etc/ellulai/jwt-secret
 
 # 5. Destroy synced secrets
-rm -f /home/dev/.phonestack-env
+rm -f /home/dev/.ellulai-env
 
 # 6. Create sovereign mode marker
 touch "$SOVEREIGN_MARKER"
@@ -101,7 +101,7 @@ echo "  JWT secret destroyed."
 echo "  Enforcer daemon disabled."
 echo "  Web terminal disabled."
 echo ""
-echo "  Phone Stack now has ZERO access to this server."
+echo "  ellul.ai now has ZERO access to this server."
 echo "  Your only access: ssh dev@$(hostname -I | awk '{print $1}')"
 echo ""
 echo "  To restore web terminal (via SSH): sudo restore-terminal"`;

@@ -9,7 +9,7 @@ write_local_status() {
   local SESSIONS="$3"
   local TERMINAL_ENABLED="$4"
   local SSH_ENABLED="$5"
-  mkdir -p /home/dev/.phonestack
+  mkdir -p /home/dev/.ellulai
   jq -n \
     --arg cpu "$CPU" \
     --arg ram "$RAM" \
@@ -30,7 +30,7 @@ write_local_status() {
 
 # Get deployed apps list
 get_deployed_apps() {
-  local APPS_DIR="/home/dev/.phonestack/apps"
+  local APPS_DIR="/home/dev/.ellulai/apps"
   if [ -d "$APPS_DIR" ] && ls "$APPS_DIR"/*.json &>/dev/null; then
     echo "["
     local FIRST=true

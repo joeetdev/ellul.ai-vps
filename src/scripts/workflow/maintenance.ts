@@ -138,7 +138,7 @@ get_free_mb() {
 }
 
 echo ""
-echo -e "\${CYAN}PHONE STACK JANITOR\${NC}"
+echo -e "\${CYAN}ELLUL.AI JANITOR\${NC}"
 echo ""
 
 BEFORE_MB=$(get_free_mb)

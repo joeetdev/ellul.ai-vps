@@ -68,12 +68,12 @@ function assembleScript(apiUrl: string): string {
 
   // Assemble complete script
   return `#!/bin/bash
-# Phone Stack State Enforcer Daemon (phonestack-env)
+# ellul.ai State Enforcer Daemon (ellulai-env)
 # Version: ${VERSION.components.daemon}
 # Generated from modular components
 
 API_URL="${apiUrl}"
-TOKEN="$PHONESTACK_AI_TOKEN"
+TOKEN="$ELLULAI_AI_TOKEN"
 DAEMON_VERSION="${VERSION.components.daemon}"
 
 # ============================================
@@ -137,7 +137,7 @@ ${services}
 
 run_daemon() {
   log "============================================"
-  log "Phone Stack Enforcer UPDATED - v\${DAEMON_VERSION}"
+  log "ellul.ai Enforcer UPDATED - v\${DAEMON_VERSION}"
   log "If you see this, the update was successful!"
   log "============================================"
   log "Starting state enforcer daemon v\${DAEMON_VERSION} (heartbeat every \${HEARTBEAT_INTERVAL}s, push via SIGUSR1)..."
@@ -151,7 +151,7 @@ run_daemon() {
   trap 'WAKEUP=1' USR1
 
   # H8 FIX: Check for lockdown markers from previous session (survives reboot)
-  if [ -f /etc/phonestack/.emergency-lockdown ] || [ -f "$LOCKDOWN_MARKER" ]; then
+  if [ -f /etc/ellulai/.emergency-lockdown ] || [ -f "$LOCKDOWN_MARKER" ]; then
     log "STARTUP: Lockdown markers detected from previous session — re-entering lockdown"
     emergency_lockdown
     emergency_lockdown_loop
@@ -227,7 +227,7 @@ case "\$1" in
   apps) get_deployed_apps ;;
   status)
     echo ""
-    echo -e "\\033[32mPhone Stack Status\\033[0m"
+    echo -e "\\033[32mellul.ai Status\\033[0m"
     echo ""
     echo "  Terminal Sessions:"
     for name in main opencode claude codex gemini aider git branch save ship undo logs clean; do
@@ -240,7 +240,7 @@ case "\$1" in
     done
     echo ""
     echo "  Deployed Apps:"
-    APPS_DIR="/home/dev/.phonestack/apps"
+    APPS_DIR="/home/dev/.ellulai/apps"
     if ls "\$APPS_DIR"/*.json &>/dev/null; then
       for f in "\$APPS_DIR"/*.json; do
         [ -f "\$f" ] || continue
@@ -261,14 +261,14 @@ case "\$1" in
   kill)
     SESSION="\$2"
     if [ -z "\$SESSION" ]; then
-      echo "Usage: phonestack-env kill <session>"
+      echo "Usage: ellulai-env kill <session>"
       exit 1
     fi
     log "Manually stopping session: \$SESSION"
     systemctl stop "ttyd@\$SESSION" 2>/dev/null
     echo "Stopped: \$SESSION"
     ;;
-  *) echo "Usage: phonestack-env {sync|heartbeat|daemon|sessions|apps|status|kill <session>}" ;;
+  *) echo "Usage: ellulai-env {sync|heartbeat|daemon|sessions|apps|status|kill <session>}" ;;
 esac
 `;
 }
@@ -276,7 +276,7 @@ esac
 /**
  * Generate the complete VPS enforcer script.
  *
- * @param apiUrl - The Phone Stack API URL for heartbeat/sync calls
+ * @param apiUrl - The ellul.ai API URL for heartbeat/sync calls
  */
 export function getEnforcerScript(apiUrl: string): string {
   // Check cache
@@ -297,21 +297,21 @@ export function getEnforcerScript(apiUrl: string): string {
  */
 export function getEnforcerService(aiProxyToken: string): string {
   return `[Unit]
-Description=Phone Stack State Enforcer
+Description=ellul.ai State Enforcer
 After=network.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/phonestack-env daemon
+ExecStart=/usr/local/bin/ellulai-env daemon
 ExecReload=/bin/kill -USR1 $MAINPID
-PIDFile=/run/phonestack-enforcer.pid
+PIDFile=/run/ellulai-enforcer.pid
 Restart=always
 RestartSec=5
 User=root
-Environment=PHONESTACK_AI_TOKEN=${aiProxyToken}
-StandardOutput=append:/var/log/phonestack-enforcer.log
-StandardError=append:/var/log/phonestack-enforcer.log
+Environment=ELLULAI_AI_TOKEN=${aiProxyToken}
+StandardOutput=append:/var/log/ellulai-enforcer.log
+StandardError=append:/var/log/ellulai-enforcer.log
 
 [Install]
 WantedBy=multi-user.target`;

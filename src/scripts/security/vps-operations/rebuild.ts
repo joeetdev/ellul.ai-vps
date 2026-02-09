@@ -1,5 +1,5 @@
 /**
- * phonestack-rebuild - Rebuild this server with fresh OS
+ * ellulai-rebuild - Rebuild this server with fresh OS
  *
  * Wipes all data and re-provisions. Server resets to Standard tier.
  * Returns new AI proxy token on success.
@@ -9,7 +9,7 @@ import { getScriptPreamble } from "./common";
 
 export function getRebuildScript(apiUrl: string): string {
   const preamble = getScriptPreamble({
-    scriptName: "phonestack-rebuild",
+    scriptName: "ellulai-rebuild",
     apiUrl,
     standardAction: "rebuild this server",
     webLockedAction: "rebuild",

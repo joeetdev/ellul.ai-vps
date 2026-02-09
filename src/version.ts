@@ -31,7 +31,7 @@ export interface ComponentVersions {
 export interface VersionManifest {
   /**
    * The unified release version (e.g., "2.0.0").
-   * Used for user-facing "Phone OS" style version display.
+   * Used for user-facing version display.
    */
   release: string;
 
@@ -64,7 +64,7 @@ export interface VersionManifest {
  *   gpg --fingerprint <KEY_ID>  (copy the fingerprint here)
  *
  * Store the private key OFFLINE (e.g., YubiKey or air-gapped machine).
- * The public key is deployed to VPS at /etc/phonestack/release-signing.gpg
+ * The public key is deployed to VPS at /etc/ellulai/release-signing.gpg
  */
 export const RELEASE_GPG_FINGERPRINT = "F5AC1C503485C8126F33EDAADC097B8D45768452";
 

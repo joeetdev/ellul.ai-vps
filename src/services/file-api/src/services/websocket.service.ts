@@ -37,7 +37,7 @@ let lastStatusHash = '';
 let lastAppsHash = '';
 let lastServerStatusHash = '';
 
-const SERVER_STATUS_FILE = `${os.homedir()}/.phonestack/server-status.json`;
+const SERVER_STATUS_FILE = `${os.homedir()}/.ellulai/server-status.json`;
 
 /**
  * Simple hash for change detection.
@@ -147,7 +147,7 @@ async function computeAndBroadcast(): Promise<void> {
 
     // Apps (detect changes)
     try {
-      const configPath = path.join(ROOT_DIR, '.phonestack.json');
+      const configPath = path.join(ROOT_DIR, '.ellulai.json');
       const configContent = safeReadFile(configPath);
       const config = configContent
         ? (JSON.parse(configContent) as { hidden?: string[] })

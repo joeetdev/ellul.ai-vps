@@ -9,7 +9,7 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { HOME, ROOT_DIR } from '../config';
 
-const CONTEXT_DIR = `${HOME}/.phonestack/context`;
+const CONTEXT_DIR = `${HOME}/.ellulai/context`;
 const GLOBAL_CLAUDE = `${HOME}/CLAUDE.md`;
 
 /**
@@ -144,7 +144,7 @@ export function saveContextFile(
 
   // Run context aggregator
   try {
-    execSync('/usr/local/bin/phonestack-ctx', {
+    execSync('/usr/local/bin/ellulai-ctx', {
       cwd: ROOT_DIR,
       timeout: 5000,
     });

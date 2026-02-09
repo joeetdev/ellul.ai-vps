@@ -9,7 +9,7 @@
  */
 
 interface PreambleOptions {
-  /** Script name for usage messages, e.g. "phonestack-delete" */
+  /** Script name for usage messages, e.g. "ellulai-delete" */
   scriptName: string;
   /** Usage suffix after the script name, e.g. "<cloudflare|direct>" */
   usageSuffix?: string;
@@ -57,9 +57,9 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-SERVER_ID_FILE="/etc/phonestack/server-id"
+SERVER_ID_FILE="/etc/ellulai/server-id"
 API_URL="${opts.apiUrl}"
-TIER_FILE="/etc/phonestack/security-tier"
+TIER_FILE="/etc/ellulai/security-tier"
 
 if [ ! -f "$SERVER_ID_FILE" ]; then
     echo -e "\${RED}Error: Server ID not found\${NC}"
@@ -67,11 +67,11 @@ if [ ! -f "$SERVER_ID_FILE" ]; then
 fi
 SERVER_ID=$(cat "$SERVER_ID_FILE")
 
-TOKEN_FILE="/etc/phonestack/ai-proxy-token"
+TOKEN_FILE="/etc/ellulai/ai-proxy-token"
 if [ -f "$TOKEN_FILE" ]; then
     TOKEN=$(cat "$TOKEN_FILE")
 else
-    TOKEN=$(grep PHONESTACK_AI_TOKEN /home/dev/.bashrc 2>/dev/null | cut -d'"' -f2 || true)
+    TOKEN=$(grep ELLULAI_AI_TOKEN /home/dev/.bashrc 2>/dev/null | cut -d'"' -f2 || true)
 fi
 if [ -z "$TOKEN" ]; then
     echo -e "\${RED}Error: AI proxy token not found\${NC}"

@@ -3,8 +3,8 @@
  */
 export function getAppsScript(): string {
   return `#!/bin/bash
-APPS_DIR="/home/dev/.phonestack/apps"
-DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null)
+APPS_DIR="/home/dev/.ellulai/apps"
+DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null)
 
 GREEN='\\033[32m'
 CYAN='\\033[36m'
@@ -24,7 +24,7 @@ if [ "$1" = "--json" ]; then
   echo "]"
 else
   echo ""
-  echo -e "\${CYAN}Phone Stack Apps\${NC}"
+  echo -e "\${CYAN}ellul.ai Apps\${NC}"
   echo ""
   if ! ls "$APPS_DIR"/*.json &>/dev/null; then
     echo "  No apps deployed yet."
@@ -32,7 +32,7 @@ else
     echo "  To deploy an app:"
     echo "    1. Build your project"
     echo "    2. Start it with PM2 on a unique port"
-    echo "    3. Run: phonestack-expose <name> <port>"
+    echo "    3. Run: ellulai-expose <name> <port>"
     echo ""
   else
     for f in "$APPS_DIR"/*.json; do
@@ -58,7 +58,7 @@ fi`;
  */
 export function getInspectScript(): string {
   return `#!/bin/bash
-APPS_DIR="/home/dev/.phonestack/apps"
+APPS_DIR="/home/dev/.ellulai/apps"
 TARGET_APP="$1"
 
 log() { echo "[inspect] $1"; }
@@ -95,14 +95,14 @@ $(head -30 "$entry" 2>/dev/null)"
     fi
   done
   if [ -z "$CONTEXT" ]; then
-    SUMMARY="A web application running on Phone Stack."
+    SUMMARY="A web application running on ellul.ai."
   else
     PROMPT="Based on this project, write a 1-sentence summary (max 15 words). Focus on what the app DOES, not the tech stack. Reply with ONLY the summary, no quotes.
 
 $CONTEXT"
     SUMMARY=$(echo "$PROMPT" | timeout 30 opencode --no-cache 2>/dev/null | tail -1 | tr -d '\\"' | head -c 150)
     if [ -z "$SUMMARY" ] || [ \${#SUMMARY} -lt 10 ] || [ \${#SUMMARY} -gt 150 ]; then
-      SUMMARY="A custom application deployed on Phone Stack."
+      SUMMARY="A custom application deployed on ellul.ai."
     fi
   fi
   jq --arg summary "$SUMMARY" '.summary = $summary' "$APP_FILE" > "$APP_FILE.tmp" && mv "$APP_FILE.tmp" "$APP_FILE"

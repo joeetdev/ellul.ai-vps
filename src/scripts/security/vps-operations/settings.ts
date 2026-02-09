@@ -1,5 +1,5 @@
 /**
- * phonestack-settings - Toggle server access settings
+ * ellulai-settings - Toggle server access settings
  *
  * Controls SSH and terminal access via platform API.
  * Changes take effect on next daemon heartbeat (~5-10s).
@@ -9,7 +9,7 @@ import { getScriptPreamble } from "./common";
 
 export function getSettingsScript(apiUrl: string): string {
   const preamble = getScriptPreamble({
-    scriptName: "phonestack-settings",
+    scriptName: "ellulai-settings",
     usageSuffix: "<ssh|terminal> <on|off>",
     apiUrl,
     standardAction: "change settings",
@@ -23,15 +23,15 @@ VALUE="$2"
 if [ -z "$SETTING" ] || [ -z "$VALUE" ]; then
     echo -e "\${RED}Error: Missing arguments\${NC}"
     echo ""
-    echo "Usage: sudo phonestack-settings <setting> <on|off>"
+    echo "Usage: sudo ellulai-settings <setting> <on|off>"
     echo ""
     echo "Settings:"
     echo "  ssh       - Toggle SSH access (firewall port 22)"
     echo "  terminal  - Toggle web terminal access"
     echo ""
     echo "Examples:"
-    echo "  sudo phonestack-settings ssh on"
-    echo "  sudo phonestack-settings terminal off"
+    echo "  sudo ellulai-settings ssh on"
+    echo "  sudo ellulai-settings terminal off"
     exit 1
 fi
 

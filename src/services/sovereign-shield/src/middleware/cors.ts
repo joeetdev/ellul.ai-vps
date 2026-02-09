@@ -6,17 +6,17 @@
 
 import type { Context } from 'hono';
 
-export const ALLOWED_ORIGINS = ['https://console.phone-stack.app', 'https://phone-stack.app'];
+export const ALLOWED_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
 
 /**
  * Secure origin validation - prevents spoofing via similar domain names
  */
-export function isValidPhoneStackOrigin(origin: string | undefined): boolean {
+export function isValidEllulAiOrigin(origin: string | undefined): boolean {
   if (!origin) return false;
   if (ALLOWED_ORIGINS.includes(origin)) return true;
-  // Only allow proper subdomains: https://<subdomain>.phone-stack.app
-  // This rejects evil-phone-stack.app and phone-stack.app.attacker.com
-  return /^https:\/\/[a-zA-Z0-9-]+\.phone-stack\.app$/.test(origin);
+  // Only allow proper subdomains of ellul.ai and ellul.app
+  // This rejects evil-ellul.ai and ellul.ai.attacker.com
+  return /^https:\/\/[a-zA-Z0-9-]+\.ellul\.(ai|app)$/.test(origin);
 }
 
 /**
@@ -24,7 +24,7 @@ export function isValidPhoneStackOrigin(origin: string | undefined): boolean {
  */
 export function setCorsHeaders(c: Context): void {
   const origin = c.req.header('origin');
-  const isAllowed = isValidPhoneStackOrigin(origin);
+  const isAllowed = isValidEllulAiOrigin(origin);
   if (isAllowed && origin) {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');

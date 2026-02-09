@@ -22,8 +22,8 @@ export function getCurrentTier(): 'standard' | 'ssh_only' | 'web_locked' {
     }
   } catch {
     // Detect from state
-    if (fs.existsSync('/etc/phonestack/.terminal-disabled')) return 'ssh_only';
-    if (fs.existsSync('/etc/phonestack/.sovereign-shield-active')) return 'web_locked';
+    if (fs.existsSync('/etc/ellulai/.terminal-disabled')) return 'ssh_only';
+    if (fs.existsSync('/etc/ellulai/.sovereign-shield-active')) return 'web_locked';
   }
   return 'standard';
 }
@@ -40,9 +40,9 @@ export function getServerCredentials(): {
     const serverId = fs.readFileSync(PATHS.SERVER_ID, 'utf8').trim();
     const apiUrl = fs.existsSync(PATHS.API_URL)
       ? fs.readFileSync(PATHS.API_URL, 'utf8').trim()
-      : 'https://api.phone-stack.app';
+      : 'https://api.ellul.ai';
     const bashrc = fs.readFileSync(`${os.homedir()}/.bashrc`, 'utf8');
-    const tokenMatch = bashrc.match(/PHONESTACK_AI_TOKEN="([^"]+)"/);
+    const tokenMatch = bashrc.match(/ELLULAI_AI_TOKEN="([^"]+)"/);
     const token = tokenMatch && tokenMatch[1] ? tokenMatch[1] : null;
     return { serverId, apiUrl, token };
   } catch {
@@ -271,7 +271,7 @@ export async function executeTierSwitch(
   if (targetTier === 'ssh_only') {
     // Stop dynamic terminal services
     safeExec(
-      'sudo systemctl stop phonestack-agent-bridge phonestack-term-proxy 2>/dev/null || true'
+      'sudo systemctl stop ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true'
     );
     // Also stop legacy static ttyd services
     safeExec(

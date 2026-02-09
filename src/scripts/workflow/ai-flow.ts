@@ -1,7 +1,7 @@
 /**
  * AI flow script - context-aware save and ship operations.
  *
- * @param apiUrl - The Phone Stack API URL
+ * @param apiUrl - The ellul.ai API URL
  */
 export function getAiFlowScript(apiUrl: string): string {
   return `#!/bin/bash
@@ -15,11 +15,11 @@ YELLOW='\\033[33m'
 RED='\\033[31m'
 NC='\\033[0m'
 
-CONTEXT_DIR="/home/dev/.phonestack/context"
+CONTEXT_DIR="/home/dev/.ellulai/context"
 GLOBAL_CTX="$CONTEXT_DIR/global.md"
 CURRENT_CTX="$CONTEXT_DIR/current.md"
 PROXY_URL="${apiUrl}/api/ai"
-PROXY_TOKEN="$PHONESTACK_AI_TOKEN"
+PROXY_TOKEN="$ELLULAI_AI_TOKEN"
 
 log() { echo -e "\${CYAN}[ai-flow]\${NC} $1"; }
 success() { echo -e "\${GREEN}*\${NC} $1"; }
@@ -30,7 +30,7 @@ cd "$PROJECT_DIR" 2>/dev/null || error "Project not found: $PROJECT_DIR"
 
 refresh_context() {
   log "Generating AI context..."
-  /usr/local/bin/phonestack-ctx "$(pwd)" >/dev/null 2>&1
+  /usr/local/bin/ellulai-ctx "$(pwd)" >/dev/null 2>&1
   success "Context ready"
 }
 
@@ -73,7 +73,7 @@ select_aider_model() {
     log "Using DeepSeek (direct)"
     return 0
   fi
-  log "Using Phone Stack Proxy (free tier)"
+  log "Using ellul.ai Proxy (free tier)"
   export OPENAI_API_BASE="$PROXY_URL"
   export OPENAI_API_KEY="$PROXY_TOKEN"
   AIDER_MODEL="openai/deepseek-chat"
@@ -203,7 +203,7 @@ get_app_name() {
 get_existing_deployment() {
   # Check if current directory already has a deployment
   # Matches by exact projectPath first, then by directory name as fallback
-  local APPS_DIR="/home/dev/.phonestack/apps"
+  local APPS_DIR="/home/dev/.ellulai/apps"
   local CURRENT_PATH="$(pwd)"
   local DIR_NAME=$(basename "$CURRENT_PATH")
 
@@ -286,7 +286,7 @@ cmd_ship() {
         --yes \\
         --auto-commits \\
         --message "
-MISSION: Deploy this NEW app to Phone Stack (multi-app system)
+MISSION: Deploy this NEW app to ellul.ai (multi-app system)
 
 STEPS:
 1. Determine a SHORT unique name for this app (e.g., 'blog', 'shop', 'api', 'dash').
@@ -309,7 +309,7 @@ STEPS:
    pm2 save
 
 6. EXPOSE IT (this maps subdomain -> port):
-   sudo phonestack-expose <app_name> <port>
+   sudo ellulai-expose <app_name> <port>
 
 IMPORTANT:
 - The app will be live at https://<app_name>-<domain>
@@ -330,7 +330,7 @@ IMPORTANT:
 cmd_ship_update() {
   local APP_NAME="$1"
   local PORT="$2"
-  local DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "your-domain")
+  local DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "your-domain")
 
   log "Updating: $APP_NAME (port $PORT)"
   log "Pulling latest..."
@@ -366,7 +366,7 @@ cmd_ship_update() {
 cmd_ship_manual() {
   local APP_NAME=$(get_app_name)
   local PORT=$(find_available_port)
-  local DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "your-domain")
+  local DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "your-domain")
   log "App: $APP_NAME"
   log "Port: $PORT"
   log "Pulling latest..."
@@ -386,7 +386,7 @@ cmd_ship_manual() {
   pm2 start npm --name "$APP_NAME" -- start -- -p "$PORT"
   pm2 save
   log "Exposing to subdomain..."
-  sudo /usr/local/bin/phonestack-expose "$APP_NAME" "$PORT"
+  sudo /usr/local/bin/ellulai-expose "$APP_NAME" "$PORT"
   echo ""
   success "App deployed!"
   echo ""
@@ -396,7 +396,7 @@ cmd_ship_manual() {
 
 cmd_help() {
   echo ""
-  echo -e "\${CYAN}Phone Stack AI Flow\${NC}"
+  echo -e "\${CYAN}ellul.ai AI Flow\${NC}"
   echo ""
   echo "Commands:"
   echo "  save   - AI-powered commit & push"

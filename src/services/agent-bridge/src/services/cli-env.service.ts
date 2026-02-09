@@ -1,7 +1,7 @@
 /**
  * CLI Environment Service
  *
- * Manages CLI API keys stored in ~/.phonestack-env.
+ * Manages CLI API keys stored in ~/.ellulai-env.
  */
 
 import * as fs from 'fs';
@@ -12,7 +12,7 @@ import { CLI_ENV_FILE, CLI_KEY_MAP } from '../config';
 export { CLI_KEY_MAP };
 
 /**
- * Load env vars from ~/.phonestack-env.
+ * Load env vars from ~/.ellulai-env.
  */
 export function loadCliEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -30,7 +30,7 @@ export function loadCliEnv(): Record<string, string> {
 }
 
 /**
- * Save a key to ~/.phonestack-env (creates or updates).
+ * Save a key to ~/.ellulai-env (creates or updates).
  */
 export function saveCliKey(varName: string, value: string): void {
   let lines: string[] = [];
@@ -57,7 +57,7 @@ export function saveCliKey(varName: string, value: string): void {
 }
 
 /**
- * Remove a key from ~/.phonestack-env.
+ * Remove a key from ~/.ellulai-env.
  */
 export function removeCliKey(varName: string): void {
   try {

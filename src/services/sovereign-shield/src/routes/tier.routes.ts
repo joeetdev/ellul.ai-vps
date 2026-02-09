@@ -31,7 +31,7 @@ export function registerTierRoutes(app: Hono): void {
    * This endpoint is called by:
    * - enforcer.ts (bash script via curl to localhost)
    * - file-api.ts (Node.js via fetch to localhost)
-   * - phonestack-downgrade (bash script via curl to localhost)
+   * - ellulai-downgrade (bash script via curl to localhost)
    * - Bridge endpoints (via internal function call)
    */
   app.post('/_auth/tier/switch', async (c) => {

@@ -26,8 +26,8 @@ error() { echo -e "\${RED}x\${NC} $1"; }
 PROVIDER="\${__GIT_PROVIDER:-}"
 TOKEN="\${__GIT_TOKEN:-}"
 REPO_URL="\${__GIT_REPO_URL:-}"
-USER_NAME="\${__GIT_USER_NAME:-Phone Stack User}"
-USER_EMAIL="\${__GIT_USER_EMAIL:-noreply@phone-stack.app}"
+USER_NAME="\${__GIT_USER_NAME:-ellul.ai User}"
+USER_EMAIL="\${__GIT_USER_EMAIL:-noreply@ellul.ai}"
 DEFAULT_BRANCH="\${__GIT_DEFAULT_BRANCH:-main}"
 
 if [ -z "$TOKEN" ]; then
@@ -53,11 +53,11 @@ success "Git identity: $USER_NAME <$USER_EMAIL>"
 # that reads the token from environment variables at runtime.
 # The token only exists in the daemon's process memory — never on disk.
 
-HELPER_PATH="/usr/local/bin/git-credential-phonestack"
+HELPER_PATH="/usr/local/bin/git-credential-ellulai"
 
 cat > "$HELPER_PATH" << 'HELPER_EOF'
 #!/bin/bash
-# Phone Stack Sovereign Credential Helper
+# ellul.ai Sovereign Credential Helper
 # Reads git credentials from environment variables set by the VPS daemon.
 # Token never touches disk — only lives in process memory.
 #
@@ -75,13 +75,13 @@ fi
 cat > /dev/null
 
 # Source secrets if not already in environment (non-interactive shells)
-if [ -f "$HOME/.phonestack-env" ]; then
-  source "$HOME/.phonestack-env"
+if [ -f "$HOME/.ellulai-env" ]; then
+  source "$HOME/.ellulai-env"
 fi
 
 # Resolve per-app secrets: __GIT_TOKEN__MY_APP → __GIT_TOKEN
-if [ -f /etc/phonestack/.active-git-app ]; then
-  _ACTIVE=$(cat /etc/phonestack/.active-git-app 2>/dev/null)
+if [ -f /etc/ellulai/.active-git-app ]; then
+  _ACTIVE=$(cat /etc/ellulai/.active-git-app 2>/dev/null)
   if [ -n "$_ACTIVE" ]; then
     _SUFFIX="__$(echo "$_ACTIVE" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
     _T_VAR="__GIT_TOKEN\${_SUFFIX}"
@@ -114,8 +114,8 @@ rm -f ~/.git-credentials 2>/dev/null
 
 success "Sovereign credential helper installed (no tokens on disk)"
 
-# Find project directory (PHONESTACK_PROJECT_DIR set by enforcement for per-app git)
-PROJECT_DIR="\${PHONESTACK_PROJECT_DIR:-}"
+# Find project directory (ELLULAI_PROJECT_DIR set by enforcement for per-app git)
+PROJECT_DIR="\${ELLULAI_PROJECT_DIR:-}"
 if [ -z "$PROJECT_DIR" ]; then
   if [ -d "/home/dev/projects/welcome" ]; then
     PROJECT_DIR="/home/dev/projects/welcome"
@@ -145,7 +145,7 @@ if [ ! -d ".git" ]; then
   log "Initializing git repository..."
   git init
   git add -A
-  git commit -m "Initial commit from Phone Stack" --allow-empty
+  git commit -m "Initial commit from ellul.ai" --allow-empty
   success "Git repository initialized"
 fi
 

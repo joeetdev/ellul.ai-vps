@@ -45,9 +45,9 @@ import {
 import { generateRecoveryCodes, storeRecoveryCodes } from '../auth/recovery';
 
 // Bootstrap session files
-const BOOTSTRAP_SESSION_FILE = '/etc/phonestack/.bootstrap-session';
-const BOOTSTRAP_TEMP_KEY_FILE = '/etc/phonestack/.bootstrap-temp-key';
-const BOOTSTRAP_TOKEN_FILE = '/etc/phonestack/.bootstrap-token';
+const BOOTSTRAP_SESSION_FILE = '/etc/ellulai/.bootstrap-session';
+const BOOTSTRAP_TEMP_KEY_FILE = '/etc/ellulai/.bootstrap-temp-key';
+const BOOTSTRAP_TOKEN_FILE = '/etc/ellulai/.bootstrap-token';
 const BOOTSTRAP_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
@@ -56,11 +56,11 @@ const BOOTSTRAP_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 export function registerUpgradeRoutes(app: Hono, hostname: string): void {
   const RP_ID = hostname;
   // Accept both deployment model domains (-srv for Cloudflare, -dc for Direct Connect)
-  const shortId = hostname.replace(/-(?:srv|dc)\.phone-stack\.app$/, '');
+  const shortId = hostname.replace(/-(?:srv|dc)\.ellul\.ai$/, '');
   const ORIGINS = [
     `https://${hostname}`,
-    `https://${shortId}-srv.phone-stack.app`,
-    `https://${shortId}-dc.phone-stack.app`,
+    `https://${shortId}-srv.ellul.ai`,
+    `https://${shortId}-dc.ellul.ai`,
   ];
 
   /**
@@ -164,7 +164,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
     const { name } = body;
 
     // Generate WebAuthn registration options
-    const userName = name || 'Phone Stack User';
+    const userName = name || 'ellul.ai User';
 
     // Load attestation policy
     const attestationPolicy = loadAttestationPolicy();
@@ -421,7 +421,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
   <p>A bootstrap session is already in progress. If you've lost the temporary key, wait for it to expire and try again.</p>
   <p>Expires: ${new Date(session.expiresAt).toLocaleString()}</p>
   <p>If you have the key, SSH in and run:</p>
-  <code>phonestack-ssh-setup ~/.ssh/id_ed25519.pub</code>
+  <code>ellulai-ssh-setup ~/.ssh/id_ed25519.pub</code>
 </div>
 </body></html>`);
         }
@@ -437,7 +437,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
     const serverIp = execSync('hostname -I 2>/dev/null || echo "your-server-ip"').toString().trim().split(' ')[0];
 
     try {
-      execSync(`ssh-keygen -t ed25519 -f ${tempKeyPath} -N "" -C "phonestack-bootstrap-temp"`, { stdio: 'pipe' });
+      execSync(`ssh-keygen -t ed25519 -f ${tempKeyPath} -N "" -C "ellulai-bootstrap-temp"`, { stdio: 'pipe' });
 
       const privateKey = fs.readFileSync(tempKeyPath, 'utf8');
       const publicKey = fs.readFileSync(tempKeyPath + '.pub', 'utf8').trim();
@@ -515,23 +515,23 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
 
   <div class="step">
     <h3>Step 2: Set permissions on the key file</h3>
-    <code>chmod 600 /tmp/phonestack_temp_key</code>
+    <code>chmod 600 /tmp/ellulai_temp_key</code>
   </div>
 
   <div class="step">
     <h3>Step 3: SSH into your server</h3>
-    <code>ssh -i /tmp/phonestack_temp_key dev@${serverIp}</code>
+    <code>ssh -i /tmp/ellulai_temp_key dev@${serverIp}</code>
   </div>
 
   <div class="step">
     <h3>Step 4: Run the setup command with YOUR public key</h3>
-    <code>phonestack-ssh-setup ~/.ssh/id_ed25519.pub</code>
+    <code>ellulai-ssh-setup ~/.ssh/id_ed25519.pub</code>
     <p style="color:#888;font-size:0.8rem;margin:0.5rem 0 0 0;">This adds your permanent key and completes the upgrade.</p>
   </div>
 
   <div class="step">
     <h3>Step 5: Delete the temporary key file</h3>
-    <code>rm /tmp/phonestack_temp_key</code>
+    <code>rm /tmp/ellulai_temp_key</code>
   </div>
 
   <p class="expires">This temporary key expires in 30 minutes.</p>
@@ -556,7 +556,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
   });
 
   /**
-   * Complete bootstrap - called by phonestack-ssh-setup script
+   * Complete bootstrap - called by ellulai-ssh-setup script
    */
   app.post('/_auth/bootstrap/complete', async (c) => {
     const body = await c.req.json() as { sessionId?: string; permanentKeyFingerprint?: string };
@@ -590,7 +590,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
     try {
       let content = fs.readFileSync(SSH_AUTH_KEYS_PATH, 'utf8');
       const lines = content.split('\n').filter(line => {
-        if (!line.trim() || line.includes('phonestack-bootstrap-temp')) return false;
+        if (!line.trim() || line.includes('ellulai-bootstrap-temp')) return false;
         return computeSshFingerprint(line) !== tempKeyFingerprint;
       });
       fs.writeFileSync(SSH_AUTH_KEYS_PATH, lines.join('\n') + '\n');
@@ -599,19 +599,19 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
     }
 
     // Disable web terminal for SSH Only mode
-    fs.writeFileSync('/etc/phonestack/.terminal-disabled', '');
-    fs.chmodSync('/etc/phonestack/.terminal-disabled', 0o400);
+    fs.writeFileSync('/etc/ellulai/.terminal-disabled', '');
+    fs.chmodSync('/etc/ellulai/.terminal-disabled', 0o400);
 
     // Disable passkey gate if active
-    execSync('/usr/local/bin/phonestack-unlock 2>&1 || true', { stdio: 'pipe' });
+    execSync('/usr/local/bin/ellulai-unlock 2>&1 || true', { stdio: 'pipe' });
 
     // Stop terminal services (dynamic sessions via agent-bridge + legacy static services)
-    execSync('systemctl stop phonestack-agent-bridge phonestack-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
+    execSync('systemctl stop ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
     execSync('systemctl stop ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true', { stdio: 'pipe' });
     execSync('systemctl disable ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true', { stdio: 'pipe' });
 
     // Update security tier
-    fs.writeFileSync('/etc/phonestack/security-tier', 'ssh_only');
+    fs.writeFileSync('/etc/ellulai/security-tier', 'ssh_only');
 
     // Clean up bootstrap session files
     try { fs.unlinkSync(BOOTSTRAP_SESSION_FILE); } catch {}
@@ -694,7 +694,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
 import { startRegistration } from '/_auth/static/simplewebauthn-browser.js';
 
 const passkeyName = ${JSON.stringify(name)};
-const DASHBOARD_ORIGINS = ['https://console.phone-stack.app', 'https://phone-stack.app'];
+const DASHBOARD_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
 
 function notifyParent(data) {
   DASHBOARD_ORIGINS.forEach(origin => {
@@ -906,13 +906,13 @@ window.startRegistration = async function() {
   });
 
   // SSH Only to Web Locked upgrade files
-  const SSH_SETUP_TOKEN_FILE = '/etc/phonestack/.sovereign-setup-token';
-  const SSH_SETUP_EXPIRY_FILE = '/etc/phonestack/.sovereign-setup-expiry';
-  const SSH_TRANSITION_MARKER = '/etc/phonestack/.ssh-only-to-web-locked';
+  const SSH_SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
+  const SSH_SETUP_EXPIRY_FILE = '/etc/ellulai/.sovereign-setup-expiry';
+  const SSH_TRANSITION_MARKER = '/etc/ellulai/.ssh-only-to-web-locked';
 
   /**
    * SSH Only to Web Locked upgrade - serve registration page
-   * This is accessed via the link generated by phonestack-web-locked script
+   * This is accessed via the link generated by ellulai-web-locked script
    */
   app.get('/_auth/ssh-only-upgrade', async (c) => {
     const token = c.req.query('token');
@@ -921,7 +921,7 @@ window.startRegistration = async function() {
       return c.html(`<!DOCTYPE html>
 <html><head><title>Missing Token</title>
 <style>body{font-family:system-ui;background:#0a0a0a;color:white;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}.container{max-width:400px;text-align:center;padding:2rem;}h2{color:#ef4444;}</style>
-</head><body><div class="container"><h2>Missing Token</h2><p style="color:#888;">Run <code>sudo phonestack-web-locked</code> via SSH to generate a setup link.</p></div></body></html>`, 400);
+</head><body><div class="container"><h2>Missing Token</h2><p style="color:#888;">Run <code>sudo ellulai-web-locked</code> via SSH to generate a setup link.</p></div></body></html>`, 400);
     }
 
     // Verify token
@@ -934,14 +934,14 @@ window.startRegistration = async function() {
       return c.html(`<!DOCTYPE html>
 <html><head><title>No Setup Session</title>
 <style>body{font-family:system-ui;background:#0a0a0a;color:white;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}.container{max-width:400px;text-align:center;padding:2rem;}h2{color:#ef4444;}</style>
-</head><body><div class="container"><h2>No Active Setup</h2><p style="color:#888;">Run <code>sudo phonestack-web-locked</code> via SSH to start the upgrade process.</p></div></body></html>`, 400);
+</head><body><div class="container"><h2>No Active Setup</h2><p style="color:#888;">Run <code>sudo ellulai-web-locked</code> via SSH to start the upgrade process.</p></div></body></html>`, 400);
     }
 
     if (token !== expectedToken) {
       return c.html(`<!DOCTYPE html>
 <html><head><title>Invalid Token</title>
 <style>body{font-family:system-ui;background:#0a0a0a;color:white;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}.container{max-width:400px;text-align:center;padding:2rem;}h2{color:#ef4444;}</style>
-</head><body><div class="container"><h2>Invalid Token</h2><p style="color:#888;">The token is invalid. Run <code>sudo phonestack-web-locked</code> again to generate a new link.</p></div></body></html>`, 400);
+</head><body><div class="container"><h2>Invalid Token</h2><p style="color:#888;">The token is invalid. Run <code>sudo ellulai-web-locked</code> again to generate a new link.</p></div></body></html>`, 400);
     }
 
     if (expiry && Date.now() / 1000 > expiry) {
@@ -952,7 +952,7 @@ window.startRegistration = async function() {
       return c.html(`<!DOCTYPE html>
 <html><head><title>Token Expired</title>
 <style>body{font-family:system-ui;background:#0a0a0a;color:white;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}.container{max-width:400px;text-align:center;padding:2rem;}h2{color:#f59e0b;}</style>
-</head><body><div class="container"><h2>Token Expired</h2><p style="color:#888;">The setup link has expired. Run <code>sudo phonestack-web-locked</code> again via SSH.</p></div></body></html>`, 400);
+</head><body><div class="container"><h2>Token Expired</h2><p style="color:#888;">The setup link has expired. Run <code>sudo ellulai-web-locked</code> again via SSH.</p></div></body></html>`, 400);
     }
 
     // Serve the passkey registration page
@@ -1141,7 +1141,7 @@ function bufferToBase64url(buffer) {
     }
 
     // Generate registration options
-    const userName = name || 'Phone Stack User';
+    const userName = name || 'ellul.ai User';
     const attestationPolicy = loadAttestationPolicy();
 
     const options = await generateRegistrationOptions({

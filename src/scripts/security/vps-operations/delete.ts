@@ -1,5 +1,5 @@
 /**
- * phonestack-delete - Permanently delete this server
+ * ellulai-delete - Permanently delete this server
  *
  * Proves SSH access by requiring terminal execution.
  * Calls platform API to destroy server and cancel subscription.
@@ -9,7 +9,7 @@ import { getScriptPreamble } from "./common";
 
 export function getDeleteScript(apiUrl: string): string {
   const preamble = getScriptPreamble({
-    scriptName: "phonestack-delete",
+    scriptName: "ellulai-delete",
     apiUrl,
     standardAction: "delete this server",
     webLockedAction: "delete",

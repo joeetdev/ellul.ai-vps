@@ -37,6 +37,7 @@ import { registerUpgradeRoutes } from './upgrade.routes';
 import { registerStaticRoutes } from './static.routes';
 import { registerGitRoutes } from './git.routes';
 import { registerWorkflowRoutes } from './workflow.routes';
+import { registerPreviewRoutes } from './preview.routes';
 
 export interface RouteConfig {
   hostname: string;
@@ -92,6 +93,9 @@ export function registerAllRoutes(app: Hono, config: RouteConfig): void {
   // Privileged workflow commands (expose, etc.)
   registerWorkflowRoutes(app);
 
+  // Preview auth (cross-site dev domain token flow)
+  registerPreviewRoutes(app, config.hostname);
+
   // Static assets
   registerStaticRoutes(app);
 }
@@ -113,4 +117,5 @@ export {
   registerStaticRoutes,
   registerGitRoutes,
   registerWorkflowRoutes,
+  registerPreviewRoutes,
 };

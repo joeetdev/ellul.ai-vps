@@ -1,5 +1,5 @@
 /**
- * phonestack-change-tier - Change server billing tier
+ * ellulai-change-tier - Change server billing tier
  *
  * Involves billing changes (Stripe) and potentially infrastructure
  * migration if moving between cloud providers.
@@ -9,7 +9,7 @@ import { getScriptPreamble } from "./common";
 
 export function getChangeTierScript(apiUrl: string): string {
   const preamble = getScriptPreamble({
-    scriptName: "phonestack-change-tier",
+    scriptName: "ellulai-change-tier",
     usageSuffix: "<starter|pro|plus|business|scale>",
     apiUrl,
     standardAction: "change tiers",
@@ -21,7 +21,7 @@ NEW_TIER="$1"
 if [ -z "$NEW_TIER" ]; then
     echo -e "\${RED}Error: No tier specified\${NC}"
     echo ""
-    echo "Usage: sudo phonestack-change-tier <tier>"
+    echo "Usage: sudo ellulai-change-tier <tier>"
     echo ""
     echo "Available tiers:"
     echo "  starter   - 2 GB RAM"

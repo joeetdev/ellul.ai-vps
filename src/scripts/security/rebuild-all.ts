@@ -2,9 +2,9 @@
  * rebuild-all.ts — Regenerate ALL deployed files from source.
  *
  * Standalone entry point: bundled with esbuild during updates, then run as:
- *   node /tmp/phonestack-rebuild-all.js
+ *   node /tmp/ellulai-rebuild-all.js
  *
- * Reads config from /etc/phonestack/ and writes every script, config,
+ * Reads config from /etc/ellulai/ and writes every script, config,
  * service file, and Node.js bundle to their deploy locations.
  */
 
@@ -57,7 +57,7 @@ import {
   getChangeTierScript,
   getSettingsScript,
   getDeploymentScript,
-  getPhonestackUpdateScript,
+  getEllulaiUpdateScript,
 } from '../security';
 
 // ─── Workflow scripts ───────────────────────────────────────────────
@@ -97,7 +97,7 @@ import {
 import { VERSION } from '../../version';
 
 // ─── Constants ──────────────────────────────────────────────────────
-const REPO_DIR = '/opt/phonestack';
+const REPO_DIR = '/opt/ellulai';
 const ENFORCER_LIB_DIR = path.join(REPO_DIR, 'src', 'services', 'enforcer', 'lib');
 
 // ─── Config reading ─────────────────────────────────────────────────
@@ -119,11 +119,11 @@ function readConfig(): VpsConfig {
     }
   };
   return {
-    serverId: read('/etc/phonestack/server-id'),
-    domain: read('/etc/phonestack/domain'),
-    apiUrl: read('/etc/phonestack/api-url'),
-    aiProxyToken: read('/etc/phonestack/ai-proxy-token'),
-    billingTier: read('/etc/phonestack/billing-tier') || 'paid',
+    serverId: read('/etc/ellulai/server-id'),
+    domain: read('/etc/ellulai/domain'),
+    apiUrl: read('/etc/ellulai/api-url'),
+    aiProxyToken: read('/etc/ellulai/ai-proxy-token'),
+    billingTier: read('/etc/ellulai/billing-tier') || 'paid',
   };
 }
 
@@ -146,12 +146,12 @@ function assembleEnforcerScript(apiUrl: string): string {
   });
 
   return `#!/bin/bash
-# Phone Stack State Enforcer Daemon (phonestack-env)
+# ellul.ai State Enforcer Daemon (ellulai-env)
 # Version: ${VERSION.components.daemon}
 # Rebuilt by rebuild-all
 
 API_URL="${apiUrl}"
-TOKEN="$PHONESTACK_AI_TOKEN"
+TOKEN="$ELLULAI_AI_TOKEN"
 DAEMON_VERSION="${VERSION.components.daemon}"
 
 ${sections.join('\n\n')}
@@ -162,7 +162,7 @@ ${sections.join('\n\n')}
 
 run_daemon() {
   log "============================================"
-  log "Phone Stack Enforcer UPDATED - v\${DAEMON_VERSION}"
+  log "ellul.ai Enforcer UPDATED - v\${DAEMON_VERSION}"
   log "If you see this, the update was successful!"
   log "============================================"
   log "Starting state enforcer daemon v\${DAEMON_VERSION} (heartbeat every \${HEARTBEAT_INTERVAL}s, push via SIGUSR1)..."
@@ -237,7 +237,7 @@ case "\$1" in
   apps) get_deployed_apps ;;
   status)
     echo ""
-    echo -e "\\033[32mPhone Stack Status\\033[0m"
+    echo -e "\\033[32mellul.ai Status\\033[0m"
     echo ""
     echo "  Terminal Sessions:"
     for name in main opencode claude codex gemini aider git branch save ship undo logs clean; do
@@ -250,7 +250,7 @@ case "\$1" in
     done
     echo ""
     echo "  Deployed Apps:"
-    APPS_DIR="/home/dev/.phonestack/apps"
+    APPS_DIR="/home/dev/.ellulai/apps"
     if ls "\$APPS_DIR"/*.json &>/dev/null; then
       for f in "\$APPS_DIR"/*.json; do
         [ -f "\$f" ] || continue
@@ -271,14 +271,14 @@ case "\$1" in
   kill)
     SESSION="\$2"
     if [ -z "\$SESSION" ]; then
-      echo "Usage: phonestack-env kill <session>"
+      echo "Usage: ellulai-env kill <session>"
       exit 1
     fi
     log "Manually stopping session: \$SESSION"
     systemctl stop "ttyd@\$SESSION" 2>/dev/null
     echo "Stopped: \$SESSION"
     ;;
-  *) echo "Usage: phonestack-env {sync|heartbeat|daemon|sessions|apps|status|kill <session>}" ;;
+  *) echo "Usage: ellulai-env {sync|heartbeat|daemon|sessions|apps|status|kill <session>}" ;;
 esac
 `;
 }
@@ -298,80 +298,80 @@ function buildManifest(config: VpsConfig): FileEntry[] {
   return [
     // ── Config files ──────────────────────────────────────────────
     { path: '/home/dev/.global_gitignore', content: getGlobalGitignore(), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/.phonestack/hooks/pre-commit', content: getPreCommitHook(), owner: 'dev' },
-    { path: '/etc/ssh/sshd_config.d/phonestack.conf', content: getSshHardeningConfig(), mode: 0o644 },
-    { path: '/etc/fail2ban/jail.d/phonestack.conf', content: getFail2banConfig(), mode: 0o644 },
+    { path: '/home/dev/.ellulai/hooks/pre-commit', content: getPreCommitHook(), owner: 'dev' },
+    { path: '/etc/ssh/sshd_config.d/ellulai.conf', content: getSshHardeningConfig(), mode: 0o644 },
+    { path: '/etc/fail2ban/jail.d/ellulai.conf', content: getFail2banConfig(), mode: 0o644 },
     { path: '/etc/apt/apt.conf.d/50unattended-upgrades', content: getUnattendedUpgradesConfig(), mode: 0o644 },
     { path: '/etc/apt/apt.conf.d/20auto-upgrades', content: getAutoUpgradesConfig(), mode: 0o644 },
     { path: '/home/dev/.tmux.conf', content: getTmuxConfig(), mode: 0o644, owner: 'dev' },
     { path: '/home/dev/.config/starship.toml', content: getStarshipConfig(), mode: 0o644, owner: 'dev' },
-    { path: '/etc/profile.d/99-phonestack-motd.sh', content: getMotdScript() },
+    { path: '/etc/profile.d/99-ellulai-motd.sh', content: getMotdScript() },
     { path: '/etc/profile.d/99-lazy-ai-shims.sh', content: getLazyAiShimsScript(), mode: 0o644 },
 
     // ── Session scripts ───────────────────────────────────────────
-    { path: '/usr/local/bin/phonestack-launch', content: getSessionLauncherScript() },
-    { path: '/usr/local/bin/phonestack-ttyd-wrapper', content: getTtydWrapperScript() },
+    { path: '/usr/local/bin/ellulai-launch', content: getSessionLauncherScript() },
+    { path: '/usr/local/bin/ellulai-ttyd-wrapper', content: getTtydWrapperScript() },
     { path: '/usr/local/bin/pty-wrap', content: getPtyWrapScript() },
 
     // ── Security scripts ──────────────────────────────────────────
     { path: '/usr/local/bin/setup-ssh-key', content: getSetupSshKeyScript() },
-    { path: '/usr/local/bin/phonestack-add-key', content: getAddSshKeyScript() },
+    { path: '/usr/local/bin/ellulai-add-key', content: getAddSshKeyScript() },
     { path: '/usr/local/bin/go-sovereign', content: getGoSovereignScript() },
     { path: '/usr/local/bin/lock-web-only', content: getLockWebOnlyScript() },
-    { path: '/usr/local/bin/phonestack-verify', content: getVerifyScript() },
-    { path: '/usr/local/bin/phonestack-decrypt', content: getDecryptScript() },
+    { path: '/usr/local/bin/ellulai-verify', content: getVerifyScript() },
+    { path: '/usr/local/bin/ellulai-decrypt', content: getDecryptScript() },
     { path: '/usr/local/bin/install-lazy-ai.sh', content: getLazyAiInstallerScript() },
-    { path: '/usr/local/bin/phonestack-update', content: getPhonestackUpdateScript() },
+    { path: '/usr/local/bin/ellulai-update', content: getEllulaiUpdateScript() },
 
     // ── Scripts needing apiUrl ─────────────────────────────────────
-    { path: '/usr/local/bin/phonestack-delete', content: getDeleteScript(apiUrl) },
-    { path: '/usr/local/bin/phonestack-rebuild', content: getRebuildScript(apiUrl) },
-    { path: '/usr/local/bin/phonestack-rollback', content: getRollbackScript(apiUrl) },
-    { path: '/usr/local/bin/phonestack-change-tier', content: getChangeTierScript(apiUrl) },
-    { path: '/usr/local/bin/phonestack-settings', content: getSettingsScript(apiUrl) },
-    { path: '/usr/local/bin/phonestack-deployment', content: getDeploymentScript(apiUrl) },
-    { path: '/usr/local/bin/phonestack-ai-flow', content: getAiFlowScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-delete', content: getDeleteScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-rebuild', content: getRebuildScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-rollback', content: getRollbackScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-change-tier', content: getChangeTierScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-settings', content: getSettingsScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-deployment', content: getDeploymentScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-ai-flow', content: getAiFlowScript(apiUrl) },
 
     // ── Scripts needing apiUrl + aiProxyToken ──────────────────────
     { path: '/usr/local/bin/report-progress', content: getReportProgressScript(apiUrl, aiProxyToken) },
 
     // ── Workflow scripts ──────────────────────────────────────────
-    { path: '/usr/local/bin/phonestack-git-flow', content: getGitFlowScript() },
-    { path: '/usr/local/bin/phonestack-expose', content: getExposeScript() },
-    { path: '/usr/local/bin/phonestack-apps', content: getAppsScript() },
-    { path: '/usr/local/bin/phonestack-inspect', content: getInspectScript() },
-    { path: '/usr/local/bin/phonestack-undo', content: getUndoScript() },
-    { path: '/usr/local/bin/phonestack-clean', content: getCleanScript() },
-    { path: '/usr/local/bin/phonestack-ctx', content: getContextScript() },
-    { path: '/usr/local/bin/phonestack-preview', content: getPreviewScript() },
-    { path: '/usr/local/bin/phonestack-install', content: getServiceInstallerScript() },
-    { path: '/usr/local/bin/phonestack-doctor', content: getDoctorScript() },
-    { path: '/usr/local/bin/phonestack-perf-monitor', content: getPerfMonitorScript() },
-    { path: '/usr/local/bin/phonestack-term-proxy', content: getTermProxyScript() },
+    { path: '/usr/local/bin/ellulai-git-flow', content: getGitFlowScript() },
+    { path: '/usr/local/bin/ellulai-expose', content: getExposeScript() },
+    { path: '/usr/local/bin/ellulai-apps', content: getAppsScript() },
+    { path: '/usr/local/bin/ellulai-inspect', content: getInspectScript() },
+    { path: '/usr/local/bin/ellulai-undo', content: getUndoScript() },
+    { path: '/usr/local/bin/ellulai-clean', content: getCleanScript() },
+    { path: '/usr/local/bin/ellulai-ctx', content: getContextScript() },
+    { path: '/usr/local/bin/ellulai-preview', content: getPreviewScript() },
+    { path: '/usr/local/bin/ellulai-install', content: getServiceInstallerScript() },
+    { path: '/usr/local/bin/ellulai-doctor', content: getDoctorScript() },
+    { path: '/usr/local/bin/ellulai-perf-monitor', content: getPerfMonitorScript() },
+    { path: '/usr/local/bin/ellulai-term-proxy', content: getTermProxyScript() },
 
     // ── Sovereign Shield helper scripts ───────────────────────────
-    { path: '/usr/local/bin/phonestack-downgrade', content: getDowngradeScript() },
-    { path: '/usr/local/bin/phonestack-web-locked', content: getWebLockedSwitchScript() },
-    { path: '/usr/local/bin/phonestack-reset-auth', content: getResetAuthScript() },
-    { path: '/usr/local/bin/phonestack-tier-switch', content: getTierSwitchHelperScript() },
+    { path: '/usr/local/bin/ellulai-downgrade', content: getDowngradeScript() },
+    { path: '/usr/local/bin/ellulai-web-locked', content: getWebLockedSwitchScript() },
+    { path: '/usr/local/bin/ellulai-reset-auth', content: getResetAuthScript() },
+    { path: '/usr/local/bin/ellulai-tier-switch', content: getTierSwitchHelperScript() },
 
     // ── Enforcer (assembled from .sh modules) ─────────────────────
-    { path: '/usr/local/bin/phonestack-env', content: assembleEnforcerScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-env', content: assembleEnforcerScript(apiUrl) },
 
     // ── Systemd service files ─────────────────────────────────────
     { path: '/etc/systemd/system/ttyd@.service', content: getTtydSystemdTemplate(), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-enforcer.service', content: getEnforcerService(aiProxyToken), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-file-api.service', content: getFileApiService(), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-agent-bridge.service', content: getAgentBridgeService(), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-term-proxy.service', content: getTermProxyService(), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-preview.service', content: getPreviewService(), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-sovereign-shield.service', content: getVpsAuthService(), mode: 0o644 },
-    { path: '/etc/systemd/system/phonestack-perf-monitor.service', content: getPerfMonitorService(apiUrl, aiProxyToken), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-enforcer.service', content: getEnforcerService(aiProxyToken), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-file-api.service', content: getFileApiService(), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-agent-bridge.service', content: getAgentBridgeService(), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-term-proxy.service', content: getTermProxyService(), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-preview.service', content: getPreviewService(), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-sovereign-shield.service', content: getVpsAuthService(), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-perf-monitor.service', content: getPerfMonitorService(apiUrl, aiProxyToken), mode: 0o644 },
 
     // ── User config files ─────────────────────────────────────────
     { path: '/home/dev/.bashrc', content: getBashrcConfig(aiProxyToken), mode: 0o644, owner: 'dev' },
     { path: '/home/dev/.config/opencode/config.json', content: getOpencodeConfigJson(apiUrl, aiProxyToken), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/.phonestack/context/README.md', content: getContextReadme(), mode: 0o644, owner: 'dev' },
+    { path: '/home/dev/.ellulai/context/README.md', content: getContextReadme(), mode: 0o644, owner: 'dev' },
 
     // ── Welcome/docs files ────────────────────────────────────────
     { path: '/home/dev/projects/welcome/README.md', content: getWelcomeReadme(), mode: 0o644, owner: 'dev' },
@@ -420,20 +420,20 @@ async function rebuildNodeServices(config: VpsConfig): Promise<number> {
       name: 'sovereign-shield',
       entry: path.join(REPO_DIR, 'src/services/sovereign-shield/src/main.ts'),
       out: path.join(REPO_DIR, 'auth/server.js'),
-      banner: `process.env.PHONESTACK_HOSTNAME = ${JSON.stringify(config.domain)};`,
+      banner: `process.env.ELLULAI_HOSTNAME = ${JSON.stringify(config.domain)};`,
       external: [...NODE_EXTERNALS, 'hono', '@hono/node-server', 'better-sqlite3', '@simplewebauthn/server'],
     },
     {
       name: 'file-api',
       entry: path.join(REPO_DIR, 'src/services/file-api/src/main.ts'),
-      out: '/usr/local/bin/phonestack-file-api',
-      banner: `process.env.PHONESTACK_SERVER_ID = ${JSON.stringify(config.serverId)};`,
+      out: '/usr/local/bin/ellulai-file-api',
+      banner: `process.env.ELLULAI_SERVER_ID = ${JSON.stringify(config.serverId)};`,
       external: [...NODE_EXTERNALS, 'ws', 'chokidar'],
     },
     {
       name: 'agent-bridge',
       entry: path.join(REPO_DIR, 'src/services/agent-bridge/src/main.ts'),
-      out: '/usr/local/bin/phonestack-agent-bridge',
+      out: '/usr/local/bin/ellulai-agent-bridge',
       banner: '',
       external: [...NODE_EXTERNALS, 'ws', 'node-pty'],
     },
@@ -477,9 +477,9 @@ async function rebuildNodeServices(config: VpsConfig): Promise<number> {
 
 function recreateSymlinks(): void {
   const links: [string, string][] = [
-    ['/usr/local/bin/phonestack-ai-flow', '/usr/local/bin/ship'],
-    ['/usr/local/bin/phonestack-git-flow', '/usr/local/bin/save'],
-    ['/usr/local/bin/phonestack-git-flow', '/usr/local/bin/branch'],
+    ['/usr/local/bin/ellulai-ai-flow', '/usr/local/bin/ship'],
+    ['/usr/local/bin/ellulai-git-flow', '/usr/local/bin/save'],
+    ['/usr/local/bin/ellulai-git-flow', '/usr/local/bin/branch'],
   ];
   for (const [target, link] of links) {
     try { fs.unlinkSync(link); } catch {}
@@ -490,12 +490,12 @@ function recreateSymlinks(): void {
 // ─── Main ───────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log(`[rebuild-all] Phone Stack v${VERSION.release} — rebuilding all deployed files`);
+  console.log(`[rebuild-all] ellul.ai v${VERSION.release} — rebuilding all deployed files`);
 
   // 1. Read config
   const config = readConfig();
   if (!config.apiUrl) {
-    console.error('[rebuild-all] FATAL: /etc/phonestack/api-url not found');
+    console.error('[rebuild-all] FATAL: /etc/ellulai/api-url not found');
     process.exit(1);
   }
   console.log(`[rebuild-all] Server: ${config.serverId} Domain: ${config.domain}`);

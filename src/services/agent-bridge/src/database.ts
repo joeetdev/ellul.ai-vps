@@ -67,7 +67,7 @@ console.log('[vibe-chat] Database initialized at', CHAT_DB_PATH);
 // Ensure thread state directory exists
 import * as os from 'os';
 import * as threadFs from 'fs';
-const THREAD_STATE_DIR = `${os.homedir()}/.phonestack/threads`;
+const THREAD_STATE_DIR = `${os.homedir()}/.ellulai/threads`;
 if (!threadFs.existsSync(THREAD_STATE_DIR)) {
   threadFs.mkdirSync(THREAD_STATE_DIR, { recursive: true });
   console.log('[vibe-chat] Created thread state directory at', THREAD_STATE_DIR);

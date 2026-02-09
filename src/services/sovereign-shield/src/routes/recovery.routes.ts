@@ -46,11 +46,11 @@ import { parseCookies } from '../utils/cookie';
 export function registerRecoveryRoutes(app: Hono, hostname: string): void {
   const RP_ID = hostname;
   // Accept both deployment model domains (-srv for Cloudflare, -dc for Direct Connect)
-  const shortId = hostname.replace(/-(?:srv|dc)\.phone-stack\.app$/, '');
+  const shortId = hostname.replace(/-(?:srv|dc)\.ellul\.ai$/, '');
   const ORIGINS = [
     `https://${hostname}`,
-    `https://${shortId}-srv.phone-stack.app`,
-    `https://${shortId}-dc.phone-stack.app`,
+    `https://${shortId}-srv.ellul.ai`,
+    `https://${shortId}-dc.ellul.ai`,
   ];
 
   /**

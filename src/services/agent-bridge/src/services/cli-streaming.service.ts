@@ -14,7 +14,7 @@ import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getCliSpawnEnv } from './cli-env.service';
-import { PROJECTS_DIR, OPENCODE_API_PORT, OPENCODE_BIN, CLI_TIMEOUT_MS, CLI_ONESHOT_TIMEOUT_MS, PHONESTACK_MODELS } from '../config';
+import { PROJECTS_DIR, OPENCODE_API_PORT, OPENCODE_BIN, CLI_TIMEOUT_MS, CLI_ONESHOT_TIMEOUT_MS, ELLULAI_MODELS } from '../config';
 import {
   getThreadOpencodeSession,
   setThreadOpencodeSession,
@@ -419,8 +419,8 @@ function getIsolatedCliEnv(threadId?: string | null): NodeJS.ProcessEnv {
     XDG_STATE_HOME: threadStateDir,
     XDG_CACHE_HOME: path.join(threadStateDir, '.cache'),
     // Preserve real home for reference if needed
-    PHONESTACK_REAL_HOME: realHome,
-    PHONESTACK_THREAD_ID: threadId,
+    ELLULAI_REAL_HOME: realHome,
+    ELLULAI_THREAD_ID: threadId,
   };
 }
 
@@ -441,7 +441,7 @@ function setupThreadSymlinks(threadDir: string, realHome: string): void {
     { src: '.gemini/credentials.json', type: 'file' },
     { src: '.gemini/config.json', type: 'file' },
     // Shared CLI environment
-    { src: '.phonestack-env', type: 'file' },
+    { src: '.ellulai-env', type: 'file' },
   ];
 
   for (const link of symlinks) {
@@ -1366,7 +1366,7 @@ export async function getProviders(): Promise<{
   providers: unknown[];
   connected: unknown[];
   currentModel: string | null;
-  phonestackModels: typeof PHONESTACK_MODELS;
+  ellulaiModels: typeof ELLULAI_MODELS;
 }> {
   const result = await httpRequest({
     hostname: '127.0.0.1',
@@ -1386,7 +1386,7 @@ export async function getProviders(): Promise<{
     providers: data?.all || [],
     connected: data?.connected || [],
     currentModel: configData?.model || null,
-    phonestackModels: PHONESTACK_MODELS,
+    ellulaiModels: ELLULAI_MODELS,
   };
 }
 
@@ -1407,24 +1407,24 @@ export async function setApiKey(provider: string, key: string): Promise<boolean>
 export async function setModel(model: string): Promise<boolean> {
   let configPatch: Record<string, unknown> = { model };
 
-  // If phonestack model, configure the provider with proxy URL and token
-  if (model.startsWith('phonestack/')) {
+  // If ellulai model, configure the provider with proxy URL and token
+  if (model.startsWith('ellulai/')) {
     let domain = '';
     try {
-      domain = fs.readFileSync('/etc/phonestack/domain', 'utf8').trim();
+      domain = fs.readFileSync('/etc/ellulai/domain', 'utf8').trim();
     } catch {}
-    const token = process.env.PHONESTACK_AI_TOKEN || '';
+    const token = process.env.ELLULAI_AI_TOKEN || '';
     if (domain && token) {
       const models: Record<string, { name: string; maxTokens: number }> = {};
-      for (const m of PHONESTACK_MODELS) {
+      for (const m of ELLULAI_MODELS) {
         models[m.id] = { name: m.name, maxTokens: 16384 };
       }
       configPatch = {
         model,
         provider: {
-          phonestack: {
+          ellulai: {
             npm: '@ai-sdk/openai-compatible',
-            name: 'Phone Stack AI',
+            name: 'ellul.ai AI',
             options: {
               baseURL: 'https://code.' + domain + '/api/ai',
               apiKey: token,

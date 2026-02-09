@@ -1,7 +1,7 @@
 /**
  * Sovereign Shield - Main Entry Point
  *
- * WebAuthn/Passkey authentication service for Phone Stack VPS.
+ * WebAuthn/Passkey authentication service for ellul.ai VPS.
  * Runs on port 3005 and provides:
  *
  * - Passkey registration and authentication
@@ -19,6 +19,7 @@ import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { PORT, RP_NAME, DOMAIN_FILE } from './config';
 import { registerAllRoutes } from './routes';
+import { cleanupPreviewData } from './routes/preview.routes';
 import { getCurrentTier } from './services/tier.service';
 // Import database to ensure initialization and migrations run
 import './database';
@@ -41,9 +42,9 @@ app.use('*', cors({
   origin: (origin) => {
     // Allow dashboard origins
     if (!origin) return origin;
-    if (origin === 'https://phone-stack.app') return origin;
-    if (origin === 'https://console.phone-stack.app') return origin;
-    if (origin.endsWith('.phone-stack.app')) return origin;
+    if (origin === 'https://ellul.ai') return origin;
+    if (origin === 'https://console.ellul.ai') return origin;
+    if (origin.endsWith('.ellul.ai') || origin.endsWith('.ellul.app')) return origin;
     // Allow same-origin
     if (origin === `https://${hostname}`) return origin;
     return null;
@@ -101,6 +102,9 @@ serve({
   hostname: '127.0.0.1',
 }, (info) => {
   console.log(`[shield] Sovereign Shield running on http://127.0.0.1:${info.port}`);
+
+  // Periodic cleanup of expired preview tokens/sessions (every 5 minutes)
+  setInterval(cleanupPreviewData, 5 * 60 * 1000);
 });
 
 // Cleanup on exit

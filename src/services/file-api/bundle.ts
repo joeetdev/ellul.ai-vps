@@ -75,10 +75,10 @@ export async function getFileApiScript(serverId: string): Promise<string> {
   const bundledCode = await bundleModular();
 
   return `// File API v${VERSION.components.fileApi}
-// Phone Stack Code Browser Backend
+// ellul.ai Code Browser Backend
 // Generated from modular source
 
-process.env.PHONESTACK_SERVER_ID = ${JSON.stringify(serverId)};
+process.env.ELLULAI_SERVER_ID = ${JSON.stringify(serverId)};
 
 ${bundledCode}
 `;
@@ -92,8 +92,8 @@ export function getFileApiScriptSync(serverId: string): string {
   if (fs.existsSync(preBundledPath)) {
     const bundledCode = fs.readFileSync(preBundledPath, 'utf8');
     return `// File API v${VERSION.components.fileApi}
-// Phone Stack Code Browser Backend
-process.env.PHONESTACK_SERVER_ID = ${JSON.stringify(serverId)};
+// ellul.ai Code Browser Backend
+process.env.ELLULAI_SERVER_ID = ${JSON.stringify(serverId)};
 ${bundledCode}
 `;
   }
@@ -108,7 +108,7 @@ ${bundledCode}
 export function getFileApiService(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `[Unit]
-Description=Phone Stack File API (Code Browser)
+Description=ellul.ai File API (Code Browser)
 After=network.target
 
 [Service]
@@ -120,7 +120,7 @@ Environment=NODE_ENV=production
 Environment=PORT=3002
 Environment=NODE_PATH=${svcHome}/.nvm/versions/node/v20.20.0/lib/node_modules
 Environment=PATH=${svcHome}/.nvm/versions/node/v20.20.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=${svcHome}/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/phonestack-file-api
+ExecStart=${svcHome}/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/ellulai-file-api
 Restart=on-failure
 RestartSec=5
 

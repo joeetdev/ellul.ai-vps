@@ -1,5 +1,5 @@
 /**
- * phonestack-deployment - Switch deployment model
+ * ellulai-deployment - Switch deployment model
  *
  * Switches between Cloudflare Edge (CF terminates TLS) and
  * Direct Connect (VPS terminates TLS via Let's Encrypt).
@@ -9,7 +9,7 @@ import { getScriptPreamble } from "./common";
 
 export function getDeploymentScript(apiUrl: string): string {
   const preamble = getScriptPreamble({
-    scriptName: "phonestack-deployment",
+    scriptName: "ellulai-deployment",
     usageSuffix: "<cloudflare|direct>",
     apiUrl,
     standardAction: "switch deployment",
@@ -21,7 +21,7 @@ MODEL="$1"
 if [ -z "$MODEL" ]; then
     echo -e "\${RED}Error: No deployment model specified\${NC}"
     echo ""
-    echo "Usage: sudo phonestack-deployment <model>"
+    echo "Usage: sudo ellulai-deployment <model>"
     echo ""
     echo "Models:"
     echo "  cloudflare - Cloudflare Edge (CF terminates TLS, DDoS protection)"

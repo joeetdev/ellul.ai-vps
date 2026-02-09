@@ -5,14 +5,14 @@
 export function getPreviewScript(): string {
   return `#!/bin/bash
 # Smart Preview Server - serves user-selected app on port 3000
-# User selects app via Preview tab UI -> writes to ~/.phonestack/preview-app
+# User selects app via Preview tab UI -> writes to ~/.ellulai/preview-app
 # Supports: Next.js, Nuxt, Vite, Vue, CRA, Svelte, Astro, Gatsby, Remix, static HTML
 
 PORT=3000
 PROJECTS_DIR="/home/dev/projects"
 CHECK_INTERVAL=5
-APP_FILE="/home/dev/.phonestack/preview-app"
-SCRIPT_FILE="/home/dev/.phonestack/preview-script"
+APP_FILE="/home/dev/.ellulai/preview-app"
+SCRIPT_FILE="/home/dev/.ellulai/preview-script"
 
 log() { echo "[$(date -Iseconds)] $1"; }
 
@@ -143,13 +143,13 @@ done`;
  */
 export function getPreviewService(): string {
   return `[Unit]
-Description=Phone Stack Preview Server
-After=network.target phonestack-file-api.service
+Description=ellul.ai Preview Server
+After=network.target ellulai-file-api.service
 
 [Service]
 Type=simple
 User=dev
-ExecStart=/usr/local/bin/phonestack-preview
+ExecStart=/usr/local/bin/ellulai-preview
 Restart=always
 RestartSec=5
 Environment=PATH=/home/dev/.nvm/versions/node/v20.20.0/bin:/usr/local/bin:/usr/bin:/bin

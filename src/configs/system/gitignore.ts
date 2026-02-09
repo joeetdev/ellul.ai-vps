@@ -1,5 +1,5 @@
 /**
- * Global gitignore configuration for Phone Stack servers.
+ * Global gitignore configuration for ellul.ai servers.
  * Prevents accidental commits of secrets and common generated files.
  */
 export function getGlobalGitignore(): string {

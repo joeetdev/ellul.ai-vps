@@ -53,7 +53,7 @@ export function registerBridgeRoutes(app: Hono, hostname: string): void {
 <script type="module">
 import { startAuthentication, startRegistration } from '/_auth/static/simplewebauthn-browser.js';
 
-const DASHBOARD_ORIGINS = ['https://console.phone-stack.app', 'https://phone-stack.app'];
+const DASHBOARD_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
 let session = null;
 let pendingAuth = null;
 let popReady = false;
@@ -94,7 +94,7 @@ function isValidOrigin(origin) {
     return false;
   }
   if (DASHBOARD_ORIGINS.includes(origin)) return true;
-  const subdomainPattern = new RegExp('^https:\\\\/\\\\/[a-zA-Z0-9-]+\\\\.phone-stack\\\\.app$');
+  const subdomainPattern = new RegExp('^https:\\\\/\\\\/[a-zA-Z0-9-]+\\\\.ellul\\\\.(ai|app)$');
   return subdomainPattern.test(origin);
 }
 
@@ -682,7 +682,7 @@ initPoP()
     // Read owner ID from immutable lock file (Identity Pinning)
     let ownerId = null;
     try {
-      ownerId = fs.readFileSync('/etc/phonestack/owner.lock', 'utf8').trim();
+      ownerId = fs.readFileSync('/etc/ellulai/owner.lock', 'utf8').trim();
     } catch {
       // owner.lock doesn't exist (shouldn't happen in production)
     }

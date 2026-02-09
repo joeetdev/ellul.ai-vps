@@ -57,18 +57,18 @@ enforce_settings() {
   fi
 
   # Enforce terminal state (skip if in lockdown)
-  if [ -f "$LOCKDOWN_MARKER" ] || [ -f /etc/phonestack/.emergency-lockdown ]; then
+  if [ -f "$LOCKDOWN_MARKER" ] || [ -f /etc/ellulai/.emergency-lockdown ]; then
     log "In lockdown - skipping terminal enforcement"
     return 0
   fi
 
-  local TERMINAL_DISABLED_MARKER="/etc/phonestack/.terminal-disabled"
+  local TERMINAL_DISABLED_MARKER="/etc/ellulai/.terminal-disabled"
   if [ -f "$TERMINAL_DISABLED_MARKER" ]; then
     stop_all_terminals
   elif [ "$TERMINAL_ENABLED" = "false" ]; then
     stop_all_terminals
   elif [ "$TERMINAL_ENABLED" = "true" ]; then
-    if [ -f /etc/phonestack/jwt-secret ] || [ "$TIER" = "web_locked" ]; then
+    if [ -f /etc/ellulai/jwt-secret ] || [ "$TIER" = "web_locked" ]; then
       start_all_terminals
     fi
   fi
@@ -87,8 +87,8 @@ handle_security_action() {
       # DEPRECATED: Use /_auth/upgrade-to-ssh-only instead
       log "SECURITY: [DEPRECATED] bootstrap_ssh_only"
       if [ -n "$SHIELD_TOKEN" ]; then
-        echo "$SHIELD_TOKEN" > /etc/phonestack/.bootstrap-token
-        chmod 600 /etc/phonestack/.bootstrap-token
+        echo "$SHIELD_TOKEN" > /etc/ellulai/.bootstrap-token
+        chmod 600 /etc/ellulai/.bootstrap-token
       fi
       ;;
 
@@ -114,8 +114,8 @@ handle_security_action() {
 
       if echo "$RESPONSE" | grep -q '"success":true'; then
         log "SECURITY: ssh_only tier activated"
-        rm -f /etc/phonestack/.bootstrap-token /etc/phonestack/.bootstrap-session 2>/dev/null || true
-        systemctl stop phonestack-agent-bridge 2>/dev/null || true
+        rm -f /etc/ellulai/.bootstrap-token /etc/ellulai/.bootstrap-session 2>/dev/null || true
+        systemctl stop ellulai-agent-bridge 2>/dev/null || true
         stop_all_terminals
       else
         log "FATAL: Tier switch failed"
@@ -128,8 +128,8 @@ handle_security_action() {
       log "SECURITY: Transitioning to web_locked tier (VPS-initiated)"
 
       if [ -n "$SHIELD_TOKEN" ]; then
-        echo "$SHIELD_TOKEN" > /etc/phonestack/.sovereign-setup-token
-        chmod 600 /etc/phonestack/.sovereign-setup-token
+        echo "$SHIELD_TOKEN" > /etc/ellulai/.sovereign-setup-token
+        chmod 600 /etc/ellulai/.sovereign-setup-token
       fi
 
       if ! curl -s -o /dev/null --max-time 2 http://localhost:3005/health 2>/dev/null; then
@@ -167,8 +167,8 @@ handle_security_action() {
       # M5 FIX: If currently web_locked, require local passkey approval
       # The bridge creates this marker after successful passkey authentication
       # This prevents API from remotely downgrading without passkey verification
-      local CURRENT_TIER=$(cat /etc/phonestack/security-tier 2>/dev/null || echo "standard")
-      local DOWNGRADE_APPROVAL="/etc/phonestack/.downgrade-approved"
+      local CURRENT_TIER=$(cat /etc/ellulai/security-tier 2>/dev/null || echo "standard")
+      local DOWNGRADE_APPROVAL="/etc/ellulai/.downgrade-approved"
 
       if [ "$CURRENT_TIER" = "web_locked" ]; then
         if [ ! -f "$DOWNGRADE_APPROVAL" ]; then
@@ -199,8 +199,8 @@ handle_security_action() {
         log "SECURITY WARNING: standard tier activated via unified endpoint - BREACH PROTECTION REMOVED"
 
         # Additional cleanup after successful switch
-        rm -f /etc/phonestack/.sovereign-shield-active 2>/dev/null || true
-        systemctl start phonestack-agent-bridge 2>/dev/null || true
+        rm -f /etc/ellulai/.sovereign-shield-active 2>/dev/null || true
+        systemctl start ellulai-agent-bridge 2>/dev/null || true
 
         # Disable SSH (web terminal verified working by unified endpoint)
         log "  Disabling SSH access..."
@@ -248,7 +248,7 @@ handle_security_action() {
         log "ERROR: Failed to download shield script"
         return 1
       fi
-      echo "$SCRIPT_CONTENT" > /opt/phonestack/auth/server.js
+      echo "$SCRIPT_CONTENT" > /opt/ellulai/auth/server.js
       log "Shield script updated"
       # Patch Caddyfile: ensure all X-Forwarded headers are present
       local CADDYFILE="/etc/caddy/Caddyfile"
@@ -284,13 +284,13 @@ console.log("Caddyfile headers updated");
         }
       fi
       # Restart Shield service
-      systemctl restart phonestack-sovereign-shield 2>/dev/null || true
+      systemctl restart ellulai-sovereign-shield 2>/dev/null || true
       sleep 2
-      if systemctl is-active --quiet phonestack-sovereign-shield; then
+      if systemctl is-active --quiet ellulai-sovereign-shield; then
         log "Sovereign Shield restarted successfully"
       else
         log "ERROR: Shield failed to restart after update"
-        journalctl -u phonestack-sovereign-shield --no-pager -n 5 >> "$LOG_FILE"
+        journalctl -u ellulai-sovereign-shield --no-pager -n 5 >> "$LOG_FILE"
       fi
       ;;
 
@@ -345,7 +345,7 @@ kill_dev_ports() {
 sync_secrets() {
   local SECRETS="$1"
   if [ "$SECRETS" != "[]" ] && [ "$SECRETS" != "null" ] && [ -n "$SECRETS" ]; then
-    echo "# Phone Stack Environment" > "$ENV_FILE.tmp"
+    echo "# ellul.ai Environment" > "$ENV_FILE.tmp"
     echo "# Synced: $(date -Iseconds)" >> "$ENV_FILE.tmp"
     echo "" >> "$ENV_FILE.tmp"
     echo "$SECRETS" | jq -c '.[]' 2>/dev/null | while read -r SECRET; do
@@ -353,7 +353,7 @@ sync_secrets() {
       ENC_KEY=$(echo "$SECRET" | jq -r '.encryptedKey')
       IV=$(echo "$SECRET" | jq -r '.iv')
       ENC_DATA=$(echo "$SECRET" | jq -r '.encryptedData')
-      VALUE=$(/usr/local/bin/phonestack-decrypt "$ENC_KEY" "$IV" "$ENC_DATA" 2>/dev/null)
+      VALUE=$(/usr/local/bin/ellulai-decrypt "$ENC_KEY" "$IV" "$ENC_DATA" 2>/dev/null)
       [ -n "$VALUE" ] && echo "export $NAME=\"$VALUE\"" >> "$ENV_FILE.tmp"
     done
     mv "$ENV_FILE.tmp" "$ENV_FILE"
@@ -378,8 +378,8 @@ handle_git_action() {
 
   # Persist active git app for credential helper
   if [ -n "$ACTIVE_APP" ] && [ "$ACTIVE_APP" != "null" ]; then
-    echo "$ACTIVE_APP" > /etc/phonestack/.active-git-app
-    chmod 644 /etc/phonestack/.active-git-app
+    echo "$ACTIVE_APP" > /etc/ellulai/.active-git-app
+    chmod 644 /etc/ellulai/.active-git-app
   fi
 
   # Source environment with decrypted secrets
@@ -404,36 +404,36 @@ handle_git_action() {
   case "$ACTION" in
     setup)
       log "Git: Running setup for app '${ACTIVE_APP:-default}'..."
-      if [ -x /usr/local/bin/phonestack-git-setup ]; then
-        sudo -u dev bash -c "source $ENV_FILE && export PHONESTACK_PROJECT_DIR='$PROJECT_DIR' && ${GIT_ENV_CMD} /usr/local/bin/phonestack-git-setup" 2>&1 | while IFS= read -r line; do
+      if [ -x /usr/local/bin/ellulai-git-setup ]; then
+        sudo -u dev bash -c "source $ENV_FILE && export ELLULAI_PROJECT_DIR='$PROJECT_DIR' && ${GIT_ENV_CMD} /usr/local/bin/ellulai-git-setup" 2>&1 | while IFS= read -r line; do
           log "[git-setup] $line"
         done
       else
-        log "Git: phonestack-git-setup not found, skipping"
+        log "Git: ellulai-git-setup not found, skipping"
       fi
       ;;
     push|backup)
       log "Git: Pushing to remote..."
-      sudo -u dev bash -c "source $ENV_FILE && ${GIT_ENV_CMD} cd '$PROJECT_DIR' && /usr/local/bin/phonestack-git-flow backup" 2>&1 | while IFS= read -r line; do
+      sudo -u dev bash -c "source $ENV_FILE && ${GIT_ENV_CMD} cd '$PROJECT_DIR' && /usr/local/bin/ellulai-git-flow backup" 2>&1 | while IFS= read -r line; do
         log "[git-flow] $line"
       done
       ;;
     force-push)
       log "Git: Force-pushing to remote..."
-      sudo -u dev bash -c "source $ENV_FILE && ${GIT_ENV_CMD} cd '$PROJECT_DIR' && /usr/local/bin/phonestack-git-flow force-backup" 2>&1 | while IFS= read -r line; do
+      sudo -u dev bash -c "source $ENV_FILE && ${GIT_ENV_CMD} cd '$PROJECT_DIR' && /usr/local/bin/ellulai-git-flow force-backup" 2>&1 | while IFS= read -r line; do
         log "[git-flow] $line"
       done
       ;;
     pull)
       log "Git: Pulling from remote..."
-      sudo -u dev bash -c "source $ENV_FILE && ${GIT_ENV_CMD} cd '$PROJECT_DIR' && /usr/local/bin/phonestack-git-flow pull" 2>&1 | while IFS= read -r line; do
+      sudo -u dev bash -c "source $ENV_FILE && ${GIT_ENV_CMD} cd '$PROJECT_DIR' && /usr/local/bin/ellulai-git-flow pull" 2>&1 | while IFS= read -r line; do
         log "[git-flow] $line"
       done
       ;;
     teardown)
       log "Git: Tearing down git credentials..."
       sudo -u dev bash -c "cd '$PROJECT_DIR' && git remote remove origin 2>/dev/null; git config --global --unset credential.helper 2>/dev/null" || true
-      rm -f /etc/phonestack/.active-git-app 2>/dev/null
+      rm -f /etc/ellulai/.active-git-app 2>/dev/null
       log "Git: Teardown complete"
       ;;
     *)

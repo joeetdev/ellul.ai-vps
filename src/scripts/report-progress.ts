@@ -1,7 +1,7 @@
 /**
  * Progress reporter script - reports provisioning progress to the API.
  *
- * @param apiUrl - The Phone Stack API URL
+ * @param apiUrl - The ellul.ai API URL
  * @param aiProxyToken - The server's AI proxy token
  */
 export function getReportProgressScript(
@@ -13,5 +13,5 @@ STEP="$1"
 curl -sS -X POST "${apiUrl}/api/servers/provision-progress" \\
   -H "Content-Type: application/json" \\
   -d '{"token": "${aiProxyToken}", "step": "'"$STEP"'"}' \\
-  >> /var/log/phonestack-provision.log 2>&1 || true`;
+  >> /var/log/ellulai-provision.log 2>&1 || true`;
 }

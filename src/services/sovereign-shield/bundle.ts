@@ -78,11 +78,11 @@ export async function getSovereignShieldScript(hostname: string): Promise<string
 
   // Wrap in IIFE with hostname injection
   return `// Sovereign Shield v${VERSION.components.sovereignShield}
-// Phone Stack VPS Authentication Service
+// ellul.ai VPS Authentication Service
 // Generated from modular source
 
 // Hostname configuration
-process.env.PHONESTACK_HOSTNAME = ${JSON.stringify(hostname)};
+process.env.ELLULAI_HOSTNAME = ${JSON.stringify(hostname)};
 
 ${bundledCode}
 `;
@@ -98,8 +98,8 @@ export function getSovereignShieldScriptSync(hostname: string): string {
   if (fs.existsSync(preBundledPath)) {
     const bundledCode = fs.readFileSync(preBundledPath, 'utf8');
     return `// Sovereign Shield v${VERSION.components.sovereignShield}
-// Phone Stack VPS Authentication Service
-process.env.PHONESTACK_HOSTNAME = ${JSON.stringify(hostname)};
+// ellul.ai VPS Authentication Service
+process.env.ELLULAI_HOSTNAME = ${JSON.stringify(hostname)};
 ${bundledCode}
 `;
   }
@@ -113,14 +113,14 @@ ${bundledCode}
  */
 export function getSovereignShieldService(): string {
   return `[Unit]
-Description=Phone Stack Sovereign Shield (Passkey Auth)
+Description=ellul.ai Sovereign Shield (Passkey Auth)
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/phonestack/auth
-ExecStart=/usr/bin/node /opt/phonestack/auth/server.js
+WorkingDirectory=/opt/ellulai/auth
+ExecStart=/usr/bin/node /opt/ellulai/auth/server.js
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -131,14 +131,14 @@ WantedBy=multi-user.target
 }
 
 /**
- * Generate the phonestack-downgrade script.
+ * Generate the ellulai-downgrade script.
  */
 export function getDowngradeScript(): string {
   return `#!/bin/bash
 set -e
 
-TIER_FILE="/etc/phonestack/security-tier"
-LOG_FILE="/var/log/phonestack-enforcer.log"
+TIER_FILE="/etc/ellulai/security-tier"
+LOG_FILE="/var/log/ellulai-enforcer.log"
 SSH_AUTH_KEYS="/home/dev/.ssh/authorized_keys"
 
 log() { echo "[$(date -Iseconds)] DOWNGRADE: $1" >> "$LOG_FILE"; echo "$1"; }
@@ -169,7 +169,7 @@ log "Downgrading from SSH Only to Standard..."
 # Step 1: Enable web terminal FIRST (remove disabled marker)
 # This ensures web access will work once tier switches
 log "Step 1: Enabling web terminal..."
-rm -f /etc/phonestack/.terminal-disabled
+rm -f /etc/ellulai/.terminal-disabled
 
 # Step 2: Switch tier via API - this enables web terminal access
 # If this fails, user still has SSH access (safe state)
@@ -183,7 +183,7 @@ if echo "$SWITCH_RESULT" | grep -q '"error"'; then
   log "ERROR: Tier switch failed: $SWITCH_RESULT"
   log "Aborting - SSH access preserved for safety"
   # Restore terminal disabled marker since we're staying in ssh_only
-  touch /etc/phonestack/.terminal-disabled
+  touch /etc/ellulai/.terminal-disabled
   exit 1
 fi
 
@@ -191,7 +191,7 @@ fi
 # Give services a moment to restart
 log "Step 3: Verifying web access..."
 sleep 2
-systemctl restart phonestack-enforcer 2>/dev/null || true
+systemctl restart ellulai-enforcer 2>/dev/null || true
 sleep 2
 
 # Check that sovereign-shield is responding (web access works)
@@ -205,7 +205,7 @@ fi
 log "Step 4: Removing SSH keys for security..."
 if [ -f "$SSH_AUTH_KEYS" ]; then
   # Backup keys just in case (will be cleaned up by enforcer later)
-  cp "$SSH_AUTH_KEYS" "/etc/phonestack/.ssh-keys-backup-$(date +%s)" 2>/dev/null || true
+  cp "$SSH_AUTH_KEYS" "/etc/ellulai/.ssh-keys-backup-$(date +%s)" 2>/dev/null || true
   rm -f "$SSH_AUTH_KEYS"
   log "SSH authorized_keys removed"
 fi
@@ -230,12 +230,12 @@ export function getWebLockedSwitchScript(): string {
   return `#!/bin/bash
 set -e
 
-TIER_FILE="/etc/phonestack/security-tier"
-DOMAIN_FILE="/etc/phonestack/domain"
-SETUP_TOKEN_FILE="/etc/phonestack/.sovereign-setup-token"
-SETUP_EXPIRY_FILE="/etc/phonestack/.sovereign-setup-expiry"
-SSH_TRANSITION_MARKER="/etc/phonestack/.ssh-only-to-web-locked"
-LOG_FILE="/var/log/phonestack-enforcer.log"
+TIER_FILE="/etc/ellulai/security-tier"
+DOMAIN_FILE="/etc/ellulai/domain"
+SETUP_TOKEN_FILE="/etc/ellulai/.sovereign-setup-token"
+SETUP_EXPIRY_FILE="/etc/ellulai/.sovereign-setup-expiry"
+SSH_TRANSITION_MARKER="/etc/ellulai/.ssh-only-to-web-locked"
+LOG_FILE="/var/log/ellulai-enforcer.log"
 SSH_AUTH_KEYS="/home/dev/.ssh/authorized_keys"
 
 log() { echo "[$(date -Iseconds)] WEB_LOCKED: $1" >> "$LOG_FILE"; echo "$1"; }
@@ -356,9 +356,9 @@ export function getResetAuthScript(): string {
   return `#!/bin/bash
 set -e
 
-AUTH_DB="/etc/phonestack/local-auth.db"
-TIER_FILE="/etc/phonestack/security-tier"
-LOG_FILE="/var/log/phonestack-enforcer.log"
+AUTH_DB="/etc/ellulai/local-auth.db"
+TIER_FILE="/etc/ellulai/security-tier"
+LOG_FILE="/var/log/ellulai-enforcer.log"
 SSH_AUTH_KEYS="/home/dev/.ssh/authorized_keys"
 
 log() { echo "[$(date -Iseconds)] RESET_AUTH: $1" >> "$LOG_FILE"; echo "$1"; }
@@ -391,9 +391,9 @@ if [ "$CURRENT_TIER" = "web_locked" ]; then
     echo "Resetting auth would clear passkeys with no way to log back in."
     echo ""
     echo "To proceed safely:"
-    echo "  1. Add an SSH key first: sudo phonestack-add-ssh-key 'ssh-ed25519 ...'"
+    echo "  1. Add an SSH key first: sudo ellulai-add-ssh-key 'ssh-ed25519 ...'"
     echo "  2. Verify SSH works: ssh dev@\$(hostname -I | awk '{print \$1}')"
-    echo "  3. Then retry: sudo phonestack-reset-auth"
+    echo "  3. Then retry: sudo ellulai-reset-auth"
     exit 1
   fi
   log "SSH access verified - safe to reset auth"
@@ -455,13 +455,13 @@ DELETE FROM pop_nonces;
 EOF
 
 # Remove web_locked marker since passkeys are cleared
-rm -f /etc/phonestack/.web_locked_activated
+rm -f /etc/ellulai/.web_locked_activated
 
 # If in web_locked, downgrade to standard (no passkeys = can't stay web_locked)
 if [ "$CURRENT_TIER" = "web_locked" ]; then
   log "Passkeys cleared - switching to standard tier"
   echo "standard" > "$TIER_FILE"
-  systemctl restart phonestack-enforcer 2>/dev/null || true
+  systemctl restart ellulai-enforcer 2>/dev/null || true
 fi
 
 log "Auth reset complete. All sessions, passkeys, and recovery codes cleared."
@@ -486,8 +486,8 @@ export function getTierSwitchHelperScript(): string {
 
 set -e
 
-TIER_FILE="/etc/phonestack/security-tier"
-LOG_FILE="/var/log/phonestack-enforcer.log"
+TIER_FILE="/etc/ellulai/security-tier"
+LOG_FILE="/var/log/ellulai-enforcer.log"
 NEW_TIER="$1"
 
 log() { echo "[$(date -Iseconds)] TIER_HELPER: $1" >> "$LOG_FILE"; }
@@ -523,7 +523,7 @@ fi
 log "Tier file updated successfully"
 
 # Restart services based on new tier
-systemctl restart phonestack-enforcer 2>/dev/null || {
+systemctl restart ellulai-enforcer 2>/dev/null || {
   log "WARNING: Failed to restart enforcer"
 }
 

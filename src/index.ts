@@ -1,7 +1,7 @@
 /**
- * @phone-stack/vps
+ * @ellul.ai/vps
  *
- * VPS utilities, scripts, and service bundles for Phone Stack servers.
+ * VPS utilities, scripts, and service bundles for ellul.ai servers.
  *
  * This package provides:
  * - Version management for coordinated updates
@@ -9,8 +9,8 @@
  * - Configuration templates and scripts
  *
  * Usage:
- *   import { VERSION } from '@phone-stack/vps';
- *   import { getEnforcerScript } from '@phone-stack/vps/services/enforcer';
+ *   import { VERSION } from '@ellul.ai/vps';
+ *   import { getEnforcerScript } from '@ellul.ai/vps/services/enforcer';
  */
 
 // Version utilities

@@ -10,7 +10,7 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { HOME, ROOT_DIR } from '../config';
 
-const PREVIEW_FILE = `${HOME}/.phonestack/preview-app`;
+const PREVIEW_FILE = `${HOME}/.ellulai/preview-app`;
 
 // Request ordering - ensures only the latest request is processed
 let latestRequestId = 0;
@@ -341,7 +341,7 @@ export function setPreviewApp(
   const requestId = getNextRequestId();
   console.log(`[preview] setPreviewApp called for "${appDirectory}" (request #${requestId})`);
 
-  fs.mkdirSync(`${HOME}/.phonestack`, { recursive: true });
+  fs.mkdirSync(`${HOME}/.ellulai`, { recursive: true });
 
   // Check if we've been superseded before doing any work
   if (!isLatestRequest(requestId)) {
@@ -352,7 +352,7 @@ export function setPreviewApp(
   // Write the directory name - this is quick so we do it even if superseded later
   fs.writeFileSync(PREVIEW_FILE, appDirectory || '');
   if (script) {
-    fs.writeFileSync(`${HOME}/.phonestack/preview-script`, script);
+    fs.writeFileSync(`${HOME}/.ellulai/preview-script`, script);
   }
 
   if (!appDirectory) {

@@ -131,14 +131,14 @@ export function detectApps(): AppInfo[] {
       }
     }
 
-    // Read app-level config: phonestack.json in app root, or phonestack field in package.json
-    const appConfigContent = safeReadFile(path.join(projectPath, 'phonestack.json'));
+    // Read app-level config: ellulai.json in app root, or ellulai field in package.json
+    const appConfigContent = safeReadFile(path.join(projectPath, 'ellulai.json'));
     const appConfig = safeJsonParse<{ type?: string; previewable?: boolean; name?: string; port?: number }>(appConfigContent, {});
-    const pkgPhonestack = (packageJson as Record<string, unknown>).phonestack as
+    const pkgEllulai = (packageJson as Record<string, unknown>).ellulai as
       { type?: string; previewable?: boolean; summary?: string } | undefined;
 
-    // Priority: app-level phonestack.json > package.json phonestack field > framework inference
-    const explicitType = appConfig.type || pkgPhonestack?.type;
+    // Priority: app-level ellulai.json > package.json ellulai field > framework inference
+    const explicitType = appConfig.type || pkgEllulai?.type;
     let type: AppInfo['type'] = explicitType
       ? explicitType as AppInfo['type']
       : getTypeFromFramework(framework);
@@ -164,7 +164,7 @@ export function detectApps(): AppInfo[] {
     }
 
     // Explicit previewable from config, otherwise true for frontend apps
-    const explicitPreviewable = appConfig.previewable ?? pkgPhonestack?.previewable;
+    const explicitPreviewable = appConfig.previewable ?? pkgEllulai?.previewable;
     const previewable = explicitPreviewable !== undefined ? explicitPreviewable : type === 'frontend';
 
     if (appConfig.port) port = appConfig.port;

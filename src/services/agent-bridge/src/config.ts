@@ -10,13 +10,13 @@ import { WATERFALL_MODELS } from '../../../configs/ai';
 const HOME = os.homedir();
 
 export const PORT = 7700;
-export const CHAT_DB_PATH = '/etc/phonestack/vibe-chat.db';
+export const CHAT_DB_PATH = '/etc/ellulai/vibe-chat.db';
 export const OPENCODE_API_PORT = 4096;
 export const OPENCODE_BIN = `${HOME}/.opencode/bin/opencode`;
 export const DEFAULT_SESSION = 'opencode';
 export const PROJECTS_DIR = `${HOME}/projects`;
-export const CONTEXT_DIR = `${HOME}/.phonestack/context`;
-export const CLI_ENV_FILE = `${HOME}/.phonestack-env`;
+export const CONTEXT_DIR = `${HOME}/.ellulai/context`;
+export const CLI_ENV_FILE = `${HOME}/.ellulai-env`;
 
 export const VALID_SESSIONS = ['main', 'opencode', 'claude', 'codex', 'gemini'] as const;
 export type SessionType = (typeof VALID_SESSIONS)[number];
@@ -51,8 +51,8 @@ export const DEFAULT_INTERACTIVE_COMMANDS: Record<string, string> = {
   gemini: 'gemini auth login',
 };
 
-// Phone Stack AI waterfall models (from ai-config.ts)
-export const PHONESTACK_MODELS = WATERFALL_MODELS.map((m) => ({
+// ellul.ai AI waterfall models (from ai-config.ts)
+export const ELLULAI_MODELS = WATERFALL_MODELS.map((m) => ({
   id: m.modelId,
   name: m.name,
   isPaid: m.isPaid,

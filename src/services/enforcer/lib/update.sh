@@ -1,6 +1,6 @@
 #!/bin/bash
 # Enforcer Update Functions
-# Delegates to /usr/local/bin/phonestack-update for verified git-based updates.
+# Delegates to /usr/local/bin/ellulai-update for verified git-based updates.
 #
 # SECURITY MODEL (Verified Git Pull):
 #   - API sends a target tag (e.g., v1.2.0) in the heartbeat response
@@ -34,11 +34,11 @@ check_for_update() {
 
   # Delegate to the standalone update script.
   # It handles: fetch, GPG verify, rollback check, checkout, restart.
-  if [ -x /usr/local/bin/phonestack-update ]; then
-    /usr/local/bin/phonestack-update "$TARGET_TAG" 2>&1 | while IFS= read -r line; do
+  if [ -x /usr/local/bin/ellulai-update ]; then
+    /usr/local/bin/ellulai-update "$TARGET_TAG" 2>&1 | while IFS= read -r line; do
       log "[update] $line"
     done
   else
-    log "ERROR: /usr/local/bin/phonestack-update not found or not executable"
+    log "ERROR: /usr/local/bin/ellulai-update not found or not executable"
   fi
 }

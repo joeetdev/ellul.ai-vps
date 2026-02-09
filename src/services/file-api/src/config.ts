@@ -15,11 +15,11 @@ export const ROOT_DIR = `${HOME}/projects`;
 
 // File paths
 export const PATHS = {
-  TIER: '/etc/phonestack/security-tier',
-  SERVER_ID: '/etc/phonestack/server-id',
-  API_URL: '/etc/phonestack/api-url',
-  AI_PROXY_TOKEN: '/etc/phonestack/ai-proxy-token',
-  DOMAIN: '/etc/phonestack/domain',
+  TIER: '/etc/ellulai/security-tier',
+  SERVER_ID: '/etc/ellulai/server-id',
+  API_URL: '/etc/ellulai/api-url',
+  AI_PROXY_TOKEN: '/etc/ellulai/ai-proxy-token',
+  DOMAIN: '/etc/ellulai/domain',
   SSH_AUTH_KEYS: `${HOME}/.ssh/authorized_keys`,
 } as const;
 
@@ -121,8 +121,8 @@ export const DEFAULT_PORTS: Record<string, number> = {
 
 // CORS allowed origins
 export const ALLOWED_ORIGINS = [
-  'https://phone-stack.app',
-  'https://www.phone-stack.app',
+  'https://ellul.ai',
+  'https://www.ellul.ai',
   'http://localhost:3000',
   'http://localhost:5173',
 ];

@@ -37,7 +37,7 @@ import {
   DEFAULT_SESSION,
   VALID_SESSIONS,
   CONTEXT_CACHE_MS,
-  PHONESTACK_MODELS,
+  ELLULAI_MODELS,
   type SessionType,
 } from './config';
 import { validateAgentToken, extractAgentToken } from './auth';
@@ -517,7 +517,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               providers: result.providers,
               connected: result.connected,
               currentModel: result.currentModel,
-              phonestackModels: PHONESTACK_MODELS,
+              ellulaiModels: ELLULAI_MODELS,
               timestamp: Date.now(),
             })
           );

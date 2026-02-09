@@ -237,7 +237,7 @@ export function registerConfirmRoutes(app: Hono): void {
     const callerIp = getClientIp(c);
     const isLocalCall = callerIp === '127.0.0.1' || callerIp === '::1' || callerIp === 'localhost';
 
-    // Platform IP ranges (Phone Stack infrastructure)
+    // Platform IP ranges (ellul.ai infrastructure)
     // In production, this should be configured via environment or file
     const isPlatformCall = isLocalCall || (
       // Cloudflare ranges or known platform IPs can be added here

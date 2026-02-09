@@ -48,11 +48,11 @@ import {
 export function registerSetupRoutes(app: Hono, hostname: string): void {
   const RP_ID = hostname;
   // Accept both deployment model domains (-srv for Cloudflare, -dc for Direct Connect)
-  const shortId = hostname.replace(/-(?:srv|dc)\.phone-stack\.app$/, '');
+  const shortId = hostname.replace(/-(?:srv|dc)\.ellul\.ai$/, '');
   const ORIGINS = [
     `https://${hostname}`,
-    `https://${shortId}-srv.phone-stack.app`,
-    `https://${shortId}-dc.phone-stack.app`,
+    `https://${shortId}-srv.ellul.ai`,
+    `https://${shortId}-dc.ellul.ai`,
   ];
 
   /**
@@ -140,7 +140,7 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
         const ref = document.referrer;
         if (!ref) return null;
         const origin = new URL(ref).origin;
-        if (origin === 'https://phone-stack.app' || (origin.startsWith('https://') && origin.endsWith('.phone-stack.app'))) return origin;
+        if (origin === 'https://ellul.ai' || (origin.startsWith('https://') && (origin.endsWith('.ellul.ai') || origin.endsWith('.ellul.app')))) return origin;
         return null;
       } catch { return null; }
     }
@@ -446,13 +446,13 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
           }
 
           // Create web_locked activation marker (fail-secure protection)
-          const WEB_LOCKED_MARKER = '/etc/phonestack/.web_locked_activated';
+          const WEB_LOCKED_MARKER = '/etc/ellulai/.web_locked_activated';
           fs.writeFileSync(WEB_LOCKED_MARKER, Date.now().toString());
           fs.chmodSync(WEB_LOCKED_MARKER, 0o400);
           console.log('[shield] Web locked marker created');
 
           // Re-enable web terminal services (dynamic sessions via agent-bridge)
-          execSync('systemctl start phonestack-agent-bridge phonestack-term-proxy 2>/dev/null || true', { stdio: 'ignore' });
+          execSync('systemctl start ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true', { stdio: 'ignore' });
           console.log('[shield] Terminal services (agent-bridge, term-proxy) started');
 
           // Re-verify SSH is still enabled
@@ -558,7 +558,7 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
       </head><body>
         <div style="text-align:center;padding:20px;max-width:400px;">
           <h2 style="color:#ef4444;">Invalid or Expired Token</h2>
-          <p>Run <code style="background:#222;padding:2px 6px;border-radius:4px;">phonestack-web-locked</code> in SSH to get a new setup link.</p>
+          <p>Run <code style="background:#222;padding:2px 6px;border-radius:4px;">ellulai-web-locked</code> in SSH to get a new setup link.</p>
           ${isPopup ? '<p><button onclick="window.close()" style="padding:8px 16px;cursor:pointer;">Close</button></p>' : ''}
         </div>
       </body></html>`, 403);

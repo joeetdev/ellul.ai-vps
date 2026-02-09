@@ -12,7 +12,7 @@ set -e
 ENCRYPTED_KEY_B64="$1"
 IV_B64="$2"
 ENCRYPTED_DATA_B64="$3"
-PRIVATE_KEY="/etc/phonestack/node.key"
+PRIVATE_KEY="/etc/ellulai/node.key"
 
 if [ ! -f "$PRIVATE_KEY" ]; then
   echo "Error: Private key not found" >&2

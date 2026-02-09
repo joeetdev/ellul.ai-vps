@@ -182,11 +182,11 @@ export function getOpencodeConfigJson(apiUrl: string, aiProxyToken: string): str
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
-      model: `phonestack/${model.modelId}`,
+      model: `ellulai/${model.modelId}`,
       provider: {
-        phonestack: {
+        ellulai: {
           npm: "@ai-sdk/openai-compatible",
-          name: "Phone Stack AI",
+          name: "ellul.ai AI",
           options: {
             baseURL: `${apiUrl}/api/ai`,
             apiKey: aiProxyToken,

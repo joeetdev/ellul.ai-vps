@@ -4,7 +4,7 @@
 export function getContextScript(): string {
   return `#!/bin/bash
 # Detect tier and set paths accordingly
-TIER=$(cat /etc/phonestack/billing-tier 2>/dev/null || echo "paid")
+TIER=$(cat /etc/ellulai/billing-tier 2>/dev/null || echo "paid")
 if [ "$TIER" = "free" ]; then
   HOME_DIR="/home/coder"
   USER_NAME="coder"
@@ -14,14 +14,14 @@ else
 fi
 
 TARGET_DIR="\${1:-$HOME_DIR/projects/welcome}"
-CONTEXT_DIR="$HOME_DIR/.phonestack/context"
+CONTEXT_DIR="$HOME_DIR/.ellulai/context"
 GLOBAL_FILE="$CONTEXT_DIR/global.md"
 CURRENT_FILE="$CONTEXT_DIR/current.md"
 
 mkdir -p "$CONTEXT_DIR"
 
 generate_global() {
-  DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "YOUR-DOMAIN")
+  DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "YOUR-DOMAIN")
 
   if [ "$TIER" = "free" ]; then
     generate_global_free
@@ -29,7 +29,7 @@ generate_global() {
   fi
 
   # Build list of deployed apps
-  APPS_DIR="$HOME_DIR/.phonestack/apps"
+  APPS_DIR="$HOME_DIR/.ellulai/apps"
   DEPLOYED_LIST=""
   if [ -d "$APPS_DIR" ]; then
     for app_file in "$APPS_DIR"/*.json; do
@@ -45,12 +45,12 @@ generate_global() {
   fi
 
   cat <<GLOBAL_EOF > "$GLOBAL_FILE"
-# Phone Stack Server ($DOMAIN)
+# ellul.ai Server ($DOMAIN)
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
-2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.
-3. **SECURITY**: NEVER touch /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Deployed Apps (DO NOT re-expose these — they already have DNS + SSL)
 \${DEPLOYED_LIST:-"(none)"}
@@ -58,7 +58,7 @@ If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build 
 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
-2. **REQUIRED**: Create \\\`phonestack.json\\\` in the project root (see Metadata below)
+2. **REQUIRED**: Create \\\`ellulai.json\\\` in the project root (see Metadata below)
 3. **IF Node.js**: Install deps: \\\`npm install\\\`
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000, or use \\\`npx serve -l 3000\\\` for static HTML)
 5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
@@ -67,13 +67,13 @@ If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build 
 8. Deploy: \\\`ship\\\`
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
-ALWAYS create a \\\`phonestack.json\\\` file in the project root:
+ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 \\\`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\\\`
 - type: "frontend" | "backend" | "library"
 - previewable: true if it has a web UI, false otherwise
 - name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
 - summary: brief description of the app
-**IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in phonestack.json.**
+**IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in ellulai.json.**
 After deployment, \\\`ship\\\` adds: deployedUrl, deployedDomain, deployedPort
 
 ## Dev Server Config (CRITICAL)
@@ -100,13 +100,13 @@ Do NOT report task complete until verification passes!
 - Reserved: 7681-7700
 
 ## Secrets
-NEVER create .env files (git hook blocks). Secrets are managed in Dashboard → sync to ~/.phonestack-env → access via process.env.
+NEVER create .env files (git hook blocks). Secrets are managed in Dashboard → sync to ~/.ellulai-env → access via process.env.
 
 ## Uploads
-Images → public/ | Data → data/ | Dashboard icon → .phonestack/icon.png (copy, don't move)
+Images → public/ | Data → data/ | Dashboard icon → .ellulai/icon.png (copy, don't move)
 
 ## Git (Code Backup)
-Git is managed from the Phone Stack dashboard in two steps:
+Git is managed from the ellul.ai dashboard in two steps:
 1. Connect a provider (GitHub/GitLab/Bitbucket) — user links their account via OAuth
 2. Link a repo to this server — this delivers encrypted credentials to the VPS automatically
 To check if git is ready: test if a remote exists with \\\`git remote -v\\\`. If no remote is configured, tell the user to link a repo from the Dashboard → Git tab.
@@ -122,25 +122,25 @@ NEVER configure git credentials manually (no git config, no SSH keys, no tokens)
 
 ## Commands
 - ship: build + deploy current project
-- phonestack-expose NAME PORT: expose with SSL
-- phonestack-apps: list deployed apps
-- phonestack-install postgres|redis|mysql: install DB
+- ellulai-expose NAME PORT: expose with SSL
+- ellulai-apps: list deployed apps
+- ellulai-install postgres|redis|mysql: install DB
 - pm2 logs|restart|delete NAME: manage processes
 
 ## CRITICAL SECURITY - DO NOT MODIFY
 The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
 
 **NEVER modify these files:**
-- /etc/phonestack/.web_locked_activated - Security tier marker (tampering = permanent lockout or security breach)
-- /etc/phonestack/security-tier - Security tier state
-- /etc/phonestack/.terminal_disabled - Terminal access control
-- /etc/phonestack/domain - Server domain configuration
-- /etc/phonestack/server_id - Server identity
+- /etc/ellulai/.web_locked_activated - Security tier marker (tampering = permanent lockout or security breach)
+- /etc/ellulai/security-tier - Security tier state
+- /etc/ellulai/.terminal_disabled - Terminal access control
+- /etc/ellulai/domain - Server domain configuration
+- /etc/ellulai/server_id - Server identity
 - /home/dev/.ssh/authorized_keys - SSH authentication (tampering = permanent lockout)
 - /var/lib/sovereign-shield/ - Authentication database and state
 
 **NEVER run commands that:**
-- Delete or modify files in /etc/phonestack/
+- Delete or modify files in /etc/ellulai/
 - Change SSH authorized_keys without explicit user request
 - Stop or disable sovereign-shield, sshd, or core services
 - Modify systemd service files for security services
@@ -152,16 +152,16 @@ GLOBAL_EOF
 
 generate_global_free() {
   cat <<GLOBAL_FREE_EOF > "$GLOBAL_FILE"
-# Phone Stack Free Tier ($DOMAIN)
+# ellul.ai Free Tier ($DOMAIN)
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
-2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.
-3. **SECURITY**: NEVER touch /etc/phonestack/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
-2. **REQUIRED**: Create \\\`phonestack.json\\\` in the project root (see Metadata below)
+2. **REQUIRED**: Create \\\`ellulai.json\\\` in the project root (see Metadata below)
 3. **IF Node.js**: Install deps: \\\`npm install\\\`
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000, or use \\\`npx serve -l 3000\\\` for static HTML)
 5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
@@ -169,13 +169,13 @@ generate_global_free() {
 7. STOP: Do not report success until step 6 passes!
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
-ALWAYS create a \\\`phonestack.json\\\` file in the project root:
+ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 \\\`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\\\`
 - type: "frontend" | "backend" | "library"
 - previewable: true if it has a web UI, false otherwise
 - name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
 - summary: brief description of the app
-**IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in phonestack.json.**
+**IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in ellulai.json.**
 
 ## Dev Server Config (CRITICAL)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -200,10 +200,10 @@ Do NOT report task complete until verification passes!
 - Reserved: 7681-7700
 
 ## Secrets
-NEVER create .env files (git hook blocks). Secrets are managed in Dashboard → sync to ~/.phonestack-env → access via process.env.
+NEVER create .env files (git hook blocks). Secrets are managed in Dashboard → sync to ~/.ellulai-env → access via process.env.
 
 ## Uploads
-Images → public/ | Data → data/ | Dashboard icon → .phonestack/icon.png (copy, don't move)
+Images → public/ | Data → data/ | Dashboard icon → .ellulai/icon.png (copy, don't move)
 
 ## Git
 Git clone and pull are available for importing code. Push is blocked on the free tier.
@@ -226,12 +226,12 @@ Upgrade to Sovereign for full features: https://coemad.com/pricing
 The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
 
 **NEVER modify these files:**
-- /etc/phonestack/* - Server configuration (tier, domain, server_id)
+- /etc/ellulai/* - Server configuration (tier, domain, server_id)
 - /etc/warden/* - Network proxy rules
 - /var/lib/sovereign-shield/ - Authentication database and state
 
 **NEVER run commands that:**
-- Delete or modify files in /etc/phonestack/ or /etc/warden/
+- Delete or modify files in /etc/ellulai/ or /etc/warden/
 - Stop or disable sovereign-shield, warden, or core services
 - Modify systemd service files for security services
 GLOBAL_FREE_EOF
@@ -316,11 +316,11 @@ SCRIPTS_EOF
 }
 
 get_current_deployment() {
-  # Scan ~/.phonestack/apps/*.json for a match on projectPath
+  # Scan ~/.ellulai/apps/*.json for a match on projectPath
   # Free tier has no deployments, skip entirely
   [ "$TIER" = "free" ] && return 0
 
-  APPS_DIR="$HOME_DIR/.phonestack/apps"
+  APPS_DIR="$HOME_DIR/.ellulai/apps"
   CURRENT_PATH="$(pwd)"
 
   [ -d "$APPS_DIR" ] || return 0
@@ -341,7 +341,7 @@ get_current_deployment() {
       echo "URL: $APP_URL"
       echo "Port: $APP_PORT"
       echo ""
-      echo "IMPORTANT: This project is ALREADY deployed. Do NOT run phonestack-expose again."
+      echo "IMPORTANT: This project is ALREADY deployed. Do NOT run ellulai-expose again."
       echo "To update: npm run build && pm2 restart $APP_NAME (or run 'ship')"
       return 0
     fi
@@ -353,35 +353,35 @@ get_current_deployment() {
 generate_context_files() {
   # Generate CLAUDE.md, AGENTS.md, and GEMINI.md in the project directory
   # Uses marker-based approach to preserve user content
-  DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "YOUR-DOMAIN")
+  DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "YOUR-DOMAIN")
 
-  # Read app name from phonestack.json if it exists
+  # Read app name from ellulai.json if it exists
   APP_NAME=""
-  if [ -f "$TARGET_DIR/phonestack.json" ]; then
-    APP_NAME=$(jq -r '.name // empty' "$TARGET_DIR/phonestack.json" 2>/dev/null)
+  if [ -f "$TARGET_DIR/ellulai.json" ]; then
+    APP_NAME=$(jq -r '.name // empty' "$TARGET_DIR/ellulai.json" 2>/dev/null)
   fi
   APP_NAME_LINE=""
   if [ -n "$APP_NAME" ]; then
-    APP_NAME_LINE="2. **NAME PROTECTION**: This app is named \\"$APP_NAME\\". The \\"name\\" field in phonestack.json is USER-DEFINED. NEVER change it. NEVER change the \\"name\\" field in package.json either."
+    APP_NAME_LINE="2. **NAME PROTECTION**: This app is named \\"$APP_NAME\\". The \\"name\\" field in ellulai.json is USER-DEFINED. NEVER change it. NEVER change the \\"name\\" field in package.json either."
   else
-    APP_NAME_LINE="2. **NAME PROTECTION**: The \\"name\\" field in phonestack.json and package.json is USER-DEFINED. NEVER change it."
+    APP_NAME_LINE="2. **NAME PROTECTION**: The \\"name\\" field in ellulai.json and package.json is USER-DEFINED. NEVER change it."
   fi
 
   if [ "$TIER" = "free" ]; then
     # Free tier: no deploy, no push, no databases, no ship, no git-flow
-    GENERATED_BLOCK="<!-- PHONESTACK:START — Auto-generated rules. Do not edit between these markers. -->
-# Phone Stack Free Tier ($DOMAIN)
+    GENERATED_BLOCK="<!-- ELLULAI:START — Auto-generated rules. Do not edit between these markers. -->
+# ellul.ai Free Tier ($DOMAIN)
 Preview: https://dev.$DOMAIN (port 3000) — deployment not available on free tier.
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
 $APP_NAME_LINE
-3. **SECURITY**: NEVER touch /etc/phonestack/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT with no recovery.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT with no recovery.
 
 ## Setup (within THIS project)
 1. Create/edit project files
-2. If phonestack.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
-   **The \\"name\\" field is USER-DEFINED. If phonestack.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
+2. If ellulai.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
+   **The \\"name\\" field is USER-DEFINED. If ellulai.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
 3. Node.js: \\\`npm install\\\`
 4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
@@ -413,10 +413,10 @@ Upgrade to Sovereign for full features: https://coemad.com/pricing
 
 ## Commands
 pm2 start|logs|restart|delete NAME
-<!-- PHONESTACK:END -->"
+<!-- ELLULAI:END -->"
   else
     # Check if this project is already deployed (paid tier only)
-    APPS_DIR="$HOME_DIR/.phonestack/apps"
+    APPS_DIR="$HOME_DIR/.ellulai/apps"
     DEPLOYMENT_SECTION=""
     if [ -d "$APPS_DIR" ]; then
       for app_file in "$APPS_DIR"/*.json; do
@@ -430,7 +430,7 @@ pm2 start|logs|restart|delete NAME
 ## !! LIVE DEPLOYMENT — DO NOT CREATE A NEW ONE !!
 Name: $DEP_NAME | URL: $DEP_URL | Port: $DEP_PORT
 This project is ALREADY deployed. To update: \\\`npm run build && pm2 restart $DEP_NAME\\\` or run \\\`ship\\\`.
-NEVER run phonestack-expose again for this project.
+NEVER run ellulai-expose again for this project.
 "
           break
         fi
@@ -438,19 +438,19 @@ NEVER run phonestack-expose again for this project.
     fi
 
     # Paid tier: full content
-    GENERATED_BLOCK="<!-- PHONESTACK:START — Auto-generated rules. Do not edit between these markers. -->
-# Phone Stack ($DOMAIN)
+    GENERATED_BLOCK="<!-- ELLULAI:START — Auto-generated rules. Do not edit between these markers. -->
+# ellul.ai ($DOMAIN)
 Preview: https://dev.$DOMAIN (port 3000) | Production: https://APPNAME-$DOMAIN
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
 $APP_NAME_LINE
-3. **SECURITY**: NEVER touch /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
 $DEPLOYMENT_SECTION
 ## Setup (within THIS project)
 1. Create/edit project files
-2. If phonestack.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
-   **The \\"name\\" field is USER-DEFINED. If phonestack.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
+2. If ellulai.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
+   **The \\"name\\" field is USER-DEFINED. If ellulai.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
 3. Node.js: \\\`npm install\\\`
 4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
@@ -475,8 +475,8 @@ Do NOT report task complete until verification passes!
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
 - Ports: Dev=3000, Prod=3001+, Reserved=7681-7700
-- Backend first: expose backend with \\\`phonestack-expose NAME PORT\\\` before frontend depends on it
-- Databases: \\\`phonestack-install postgres|redis|mysql\\\` (warn user about RAM usage)
+- Backend first: expose backend with \\\`ellulai-expose NAME PORT\\\` before frontend depends on it
+- Databases: \\\`ellulai-install postgres|redis|mysql\\\` (warn user about RAM usage)
 - DB GUI: user runs \\\`ssh -L 5432:localhost:5432 dev@$DOMAIN\\\` from their machine
 
 ## Git (Code Backup)
@@ -485,8 +485,8 @@ Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If no
 Standard git commands also work. NEVER configure git credentials manually (no SSH keys, no tokens).
 
 ## Commands
-ship | phonestack-expose NAME PORT | phonestack-apps | phonestack-install postgres|redis|mysql | pm2 logs|restart|delete NAME
-<!-- PHONESTACK:END -->"
+ship | ellulai-expose NAME PORT | ellulai-apps | ellulai-install postgres|redis|mysql | pm2 logs|restart|delete NAME
+<!-- ELLULAI:END -->"
   fi
 
   # Write to each context file using marker-based approach
@@ -511,20 +511,20 @@ ship | phonestack-expose NAME PORT | phonestack-apps | phonestack-install postgr
 }
 
 write_marker_file() {
-  # Write generated block to file using PHONESTACK markers
+  # Write generated block to file using ELLULAI markers
   # $1 = file path, $2 = generated block content
   local FILE_PATH="$1"
   local BLOCK="$2"
-  local MARKER_START="<!-- PHONESTACK:START"
-  local MARKER_END="<!-- PHONESTACK:END -->"
+  local MARKER_START="<!-- ELLULAI:START"
+  local MARKER_END="<!-- ELLULAI:END -->"
 
   if [ -f "$FILE_PATH" ]; then
     if grep -q "$MARKER_START" "$FILE_PATH" 2>/dev/null; then
       # File exists WITH markers — replace content between markers
       # Use awk to replace between markers
       awk -v block="$BLOCK" '
-        /<!-- PHONESTACK:START/ { found=1; print block; next }
-        /<!-- PHONESTACK:END -->/ { found=0; next }
+        /<!-- ELLULAI:START/ { found=1; print block; next }
+        /<!-- ELLULAI:END -->/ { found=0; next }
         !found { print }
       ' "$FILE_PATH" > "$FILE_PATH.tmp"
       mv "$FILE_PATH.tmp" "$FILE_PATH"
@@ -552,7 +552,7 @@ echo "Context: $GLOBAL_FILE + $CURRENT_FILE + $TARGET_DIR/{CLAUDE,AGENTS,GEMINI}
  * Context system documentation README.
  */
 export function getContextReadme(): string {
-  return `# Phone Stack Context System
+  return `# ellul.ai Context System
 
 The context system provides AI coding assistants (OpenCode, Claude, Aider, Codex, Gemini) with information about your server, projects, and preferences. This helps them write better code that follows your conventions.
 
@@ -572,7 +572,7 @@ User request: [Your message]
 ## Context Hierarchy
 
 ### 1. Global Context (Server-wide)
-**File:** \\\`/home/dev/.phonestack/context/global.md\\\`
+**File:** \\\`/home/dev/.ellulai/context/global.md\\\`
 
 Applies to ALL projects. Contains:
 - Server URLs and deployment info
@@ -585,7 +585,7 @@ Applies to ALL projects. Contains:
 **Edit this to:** Add server-wide rules, conventions, or preferences.
 
 ### 2. Custom Context Files
-**Location:** \\\`/home/dev/.phonestack/context/*.md\\\`
+**Location:** \\\`/home/dev/.ellulai/context/*.md\\\`
 
 Any \\\`.md\\\` file you add here (except \\\`global.md\\\` and \\\`current.md\\\`) will be included in the context.
 
@@ -609,15 +609,15 @@ Any \\\`.md\\\` file you add here (except \\\`global.md\\\` and \\\`current.md\\
 ## Editing Context
 
 ### Via Dashboard
-The Context tab in your Phone Stack dashboard lets you view and edit context files.
+The Context tab in your ellul.ai dashboard lets you view and edit context files.
 
 ### Via Terminal
 \\\`\\\`\\\`bash
 # Edit global context
-nano /home/dev/.phonestack/context/global.md
+nano /home/dev/.ellulai/context/global.md
 
 # Add custom context
-nano /home/dev/.phonestack/context/my-preferences.md
+nano /home/dev/.ellulai/context/my-preferences.md
 
 # Edit project context
 nano /home/dev/projects/myapp/CLAUDE.md
@@ -684,8 +684,8 @@ Context is cached for 30 seconds for performance. Changes take effect within 30 
 
 | File | Purpose | Scope |
 |------|---------|-------|
-| \\\`~/.phonestack/context/global.md\\\` | Server rules, URLs, commands | All projects |
-| \\\`~/.phonestack/context/*.md\\\` | Custom preferences | All projects |
+| \\\`~/.ellulai/context/global.md\\\` | Server rules, URLs, commands | All projects |
+| \\\`~/.ellulai/context/*.md\\\` | Custom preferences | All projects |
 | \\\`~/projects/CLAUDE.md\\\` | Project structure rules | Projects root |
 | \\\`~/projects/{app}/CLAUDE.md\\\` | App-specific context | Single app |
 | \\\`~/projects/{app}/README.md\\\` | Auto-included (2000 chars) | Single app |`;

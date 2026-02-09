@@ -123,6 +123,26 @@ db.exec(`
     expires_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_term_sessions_expires ON term_sessions(expires_at);
+
+  -- Preview tokens (short-lived, single-use, for cross-site dev preview auth)
+  CREATE TABLE IF NOT EXISTS preview_tokens (
+    token TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used INTEGER DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_preview_tokens_expires ON preview_tokens(expires_at);
+
+  -- Preview sessions (longer-lived, set as __Host-preview_session cookie on ellul.app)
+  CREATE TABLE IF NOT EXISTS preview_sessions (
+    id TEXT PRIMARY KEY,
+    ip TEXT NOT NULL,
+    shield_session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_preview_sessions_expires ON preview_sessions(expires_at);
 `);
 
 // Drop old session table if it exists (migration from v1)

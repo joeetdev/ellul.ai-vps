@@ -7,7 +7,7 @@ export function getSetupSshKeyScript(): string {
   return `#!/bin/bash
 set -e
 
-LOCK_FILE="/etc/phonestack/.sovereign-keys"
+LOCK_FILE="/etc/ellulai/.sovereign-keys"
 SSH_KEY="$1"
 
 # Check if already locked
@@ -16,7 +16,7 @@ if [ -f "$LOCK_FILE" ]; then
   echo "SSH key installation is permanently disabled via platform."
   echo ""
   echo "To add more keys via SSH:"
-  echo "  phonestack-add-key 'ssh-ed25519 AAAA...'"
+  echo "  ellulai-add-key 'ssh-ed25519 AAAA...'"
   exit 1
 fi
 
@@ -71,7 +71,7 @@ set -e
 SSH_KEY="$1"
 
 if [ -z "$SSH_KEY" ]; then
-  echo "Usage: phonestack-add-key 'ssh-ed25519 AAAA...'"
+  echo "Usage: ellulai-add-key 'ssh-ed25519 AAAA...'"
   exit 1
 fi
 

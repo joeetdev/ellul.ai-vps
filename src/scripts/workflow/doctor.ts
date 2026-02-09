@@ -12,7 +12,7 @@ NC='\\033[0m'
 
 echo ""
 echo -e "\${CYAN}╔════════════════════════════════════════╗\${NC}"
-echo -e "\${CYAN}║     Phone Stack System Diagnostics     ║\${NC}"
+echo -e "\${CYAN}║     ellul.ai System Diagnostics     ║\${NC}"
 echo -e "\${CYAN}╚════════════════════════════════════════╝\${NC}"
 echo ""
 
@@ -44,7 +44,7 @@ echo ""
 
 # 3. Service Status
 echo -e "\${CYAN}[Services]\${NC}"
-for SVC in caddy ttyd phonestack-enforcer phonestack-file-api phonestack-preview; do
+for SVC in caddy ttyd ellulai-enforcer ellulai-file-api ellulai-preview; do
   if systemctl is-active --quiet $SVC 2>/dev/null; then
     echo -e "  \${GREEN}✓\${NC} $SVC"
   else
@@ -88,7 +88,7 @@ echo ""
 
 # 6. DNS Check
 echo -e "\${CYAN}[DNS]\${NC}"
-DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null)
+DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null)
 if [ -n "$DOMAIN" ]; then
   if host "$DOMAIN" &>/dev/null; then
     echo -e "  \${GREEN}OK:\${NC} $DOMAIN resolves"
@@ -100,26 +100,26 @@ else
 fi
 echo ""
 
-echo -e "\${CYAN}Done. Run 'phonestack-doctor' anytime to check system health.\${NC}"
+echo -e "\${CYAN}Done. Run 'ellulai-doctor' anytime to check system health.\${NC}"
 echo ""`;
 }
 
 /**
  * Performance monitor script - reports status for dashboard.
  *
- * @param apiUrl - The Phone Stack API URL
+ * @param apiUrl - The ellul.ai API URL
  * @param aiProxyToken - The server's AI proxy token
  */
 export function getPerfMonitorScript(): string {
   return `#!/bin/bash
 
-# Performance monitor for Phone Stack
+# Performance monitor for ellul.ai
 # - Writes status to JSON file for dashboard to display
 # - Reports active listening ports (for "Ghost Process" detection)
 # - Never auto-kills anything (observability over automation)
 
-STATUS_FILE="/var/lib/phone-stack/perf-status.json"
-mkdir -p /var/lib/phone-stack
+STATUS_FILE="/var/lib/ellul.ai/perf-status.json"
+mkdir -p /var/lib/ellul.ai
 
 # System ports we don't report (not user processes)
 # 22=SSH, 80/443=Caddy, 3002=FileAPI, 7681-7690=Terminal
@@ -233,7 +233,7 @@ done`;
 /**
  * Perf monitor systemd service.
  *
- * @param apiUrl - The Phone Stack API URL
+ * @param apiUrl - The ellul.ai API URL
  * @param aiProxyToken - The server's AI proxy token
  */
 export function getPerfMonitorService(
@@ -241,7 +241,7 @@ export function getPerfMonitorService(
   aiProxyToken: string
 ): string {
   return `[Unit]
-Description=Phone Stack Performance Monitor
+Description=ellul.ai Performance Monitor
 After=network.target
 
 [Service]
@@ -249,7 +249,7 @@ Type=simple
 User=root
 Environment=API_URL=${apiUrl}
 Environment=AI_PROXY_TOKEN=${aiProxyToken}
-ExecStart=/usr/local/bin/phonestack-perf-monitor
+ExecStart=/usr/local/bin/ellulai-perf-monitor
 Restart=always
 RestartSec=30
 

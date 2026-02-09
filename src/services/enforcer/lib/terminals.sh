@@ -20,13 +20,13 @@ stop_all_terminals() {
 # dynamically by agent-bridge with per-project scoping. This function now only
 # ensures agent-bridge and term-proxy are running.
 start_all_terminals() {
-  [ -f "$LOCKDOWN_MARKER" ] || [ -f /etc/phonestack/.emergency-lockdown ] && return 0
-  [ -f /etc/phonestack/.terminal-disabled ] && return 0
+  [ -f "$LOCKDOWN_MARKER" ] || [ -f /etc/ellulai/.emergency-lockdown ] && return 0
+  [ -f /etc/ellulai/.terminal-disabled ] && return 0
 
   # Dynamic terminal sessions are handled by agent-bridge and term-proxy
   # These services create sessions on-demand with proper project scoping
-  systemctl start phonestack-agent-bridge 2>/dev/null || true
-  systemctl start phonestack-term-proxy 2>/dev/null || true
+  systemctl start ellulai-agent-bridge 2>/dev/null || true
+  systemctl start ellulai-term-proxy 2>/dev/null || true
 }
 
 # Get active terminal sessions (queries agent-bridge for dynamic sessions)

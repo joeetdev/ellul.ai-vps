@@ -65,14 +65,14 @@ export function restartServices(tier: string): {
   try {
     if (tier !== 'ssh_only') {
       execSync(
-        'sudo systemctl restart phonestack-agent-bridge 2>/dev/null || sudo systemctl start phonestack-agent-bridge',
+        'sudo systemctl restart ellulai-agent-bridge 2>/dev/null || sudo systemctl start ellulai-agent-bridge',
         { stdio: 'ignore' }
       );
       results.agentBridge = true;
     }
     if (tier === 'standard' || tier === 'web_locked') {
       // Dynamic terminal sessions are handled by term-proxy (not static ttyd services)
-      execSync('sudo systemctl restart phonestack-term-proxy 2>/dev/null || sudo systemctl start phonestack-term-proxy', {
+      execSync('sudo systemctl restart ellulai-term-proxy 2>/dev/null || sudo systemctl start ellulai-term-proxy', {
         stdio: 'ignore',
       });
       results.ttyd = true; // Renamed for backwards compatibility, actually refers to term-proxy now

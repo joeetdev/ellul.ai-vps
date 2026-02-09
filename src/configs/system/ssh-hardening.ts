@@ -1,5 +1,5 @@
 /**
- * SSH hardening configuration for Phone Stack servers.
+ * SSH hardening configuration for ellul.ai servers.
  * Disables password auth and root login, enforces key-based auth.
  */
 export function getSshHardeningConfig(): string {

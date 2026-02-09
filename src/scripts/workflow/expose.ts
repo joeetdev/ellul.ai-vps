@@ -26,14 +26,14 @@ error() { echo -e "\${RED}x\${NC} $1" >&2; exit 1; }
 # ── Usage ─────────────────────────────────────────────────────────
 if [ -z "$NAME" ] || [ -z "$PORT" ]; then
   echo ""
-  echo -e "\${CYAN}Phone Stack Expose\${NC}"
+  echo -e "\${CYAN}ellul.ai Expose\${NC}"
   echo ""
-  echo "Usage: phonestack-expose <app_name> <port> [custom_domain]"
+  echo "Usage: ellulai-expose <app_name> <port> [custom_domain]"
   echo ""
   echo "Examples:"
-  echo "  phonestack-expose blog 3000"
-  echo "  phonestack-expose api 4000"
-  echo "  phonestack-expose shop 3000 shop.example.com"
+  echo "  ellulai-expose blog 3000"
+  echo "  ellulai-expose api 4000"
+  echo "  ellulai-expose shop 3000 shop.example.com"
   echo ""
   exit 1
 fi

@@ -74,7 +74,7 @@ export async function getAgentBridgeScript(): Promise<string> {
   const bundledCode = await bundleModular();
 
   return `// Agent Bridge v${VERSION.components.agentBridge}
-// Phone Stack Vibe Mode WebSocket Server
+// ellul.ai Vibe Mode WebSocket Server
 // Generated from modular source
 
 ${bundledCode}
@@ -89,7 +89,7 @@ export function getAgentBridgeScriptSync(): string {
   if (fs.existsSync(preBundledPath)) {
     const bundledCode = fs.readFileSync(preBundledPath, 'utf8');
     return `// Agent Bridge v${VERSION.components.agentBridge}
-// Phone Stack Vibe Mode WebSocket Server
+// ellul.ai Vibe Mode WebSocket Server
 ${bundledCode}
 `;
   }
@@ -104,7 +104,7 @@ ${bundledCode}
 export function getAgentBridgeService(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `[Unit]
-Description=Phone Stack Agent Bridge (Vibe Mode)
+Description=ellul.ai Agent Bridge (Vibe Mode)
 After=network.target
 
 [Service]
@@ -116,7 +116,7 @@ Environment=NODE_ENV=production
 Environment=PORT=7700
 Environment=NODE_PATH=${svcHome}/.nvm/versions/node/v20.20.0/lib/node_modules
 Environment=PATH=${svcHome}/.nvm/versions/node/v20.20.0/bin:${svcHome}/.opencode/bin:${svcHome}/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=${svcHome}/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/phonestack-agent-bridge
+ExecStart=${svcHome}/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/ellulai-agent-bridge
 Restart=on-failure
 RestartSec=5
 

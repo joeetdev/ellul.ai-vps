@@ -4,7 +4,7 @@
  * Privileged server-side handlers for workflow commands that require
  * root access (writing Caddy configs, reloading services, etc.).
  *
- * The client (e.g. phonestack-expose) is a dumb thin client that
+ * The client (e.g. ellulai-expose) is a dumb thin client that
  * POSTs to these endpoints. All security logic runs server-side.
  *
  * Endpoints:
@@ -16,12 +16,12 @@ import fs from 'fs';
 import { execSync } from 'child_process';
 import type { Hono } from 'hono';
 
-const BILLING_TIER_FILE = '/etc/phonestack/billing-tier';
-const DOMAIN_FILE = '/etc/phonestack/domain';
+const BILLING_TIER_FILE = '/etc/ellulai/billing-tier';
+const DOMAIN_FILE = '/etc/ellulai/domain';
 const SITES_DIR = '/etc/caddy/sites-enabled';
 const CF_CA_FILE = '/etc/caddy/cf-origin-pull-ca.pem';
 
-// Ports reserved for Phone Stack internal services
+// Ports reserved for ellul.ai internal services
 const RESERVED_PORTS = new Set([
   22, 2019, 3002, 3005,
   7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689,
@@ -40,7 +40,7 @@ function getUserInfo(): { user: string; home: string; appsDir: string } {
   const tier = getBillingTier();
   const user = tier === 'free' ? 'coder' : 'dev';
   const home = `/home/${user}`;
-  return { user, home, appsDir: `${home}/.phonestack/apps` };
+  return { user, home, appsDir: `${home}/.ellulai/apps` };
 }
 
 function getServerDomain(): string {
@@ -108,7 +108,7 @@ export function registerWorkflowRoutes(app: Hono): void {
     }
 
     if (RESERVED_PORTS.has(port)) {
-      return c.json({ error: `Port ${port} is reserved for Phone Stack internal services` }, 400);
+      return c.json({ error: `Port ${port} is reserved for ellul.ai internal services` }, 400);
     }
 
     // ── Read billing tier + resolve user paths ──────────────────────
@@ -155,7 +155,8 @@ export function registerWorkflowRoutes(app: Hono): void {
 
     // ── Build domain ─────────────────────────────────────────────────
     const serverDomain = getServerDomain();
-    const appDomain = customDomain || `${name}-${serverDomain}`;
+    const shortId = (serverDomain.match(/^([a-f0-9]{8})-/) || [])[1] || serverDomain.split('.')[0];
+    const appDomain = customDomain || `${name}-${shortId}.ellul.app`;
     const isCustom = !!customDomain;
 
     // ── Generate Caddy config ────────────────────────────────────────
@@ -172,18 +173,18 @@ export function registerWorkflowRoutes(app: Hono): void {
 }
 `;
     } else {
-      // Phone Stack domain — origin cert + Cloudflare Edge
+      // ellul.ai domain — origin cert + Cloudflare Edge
       const cfCaBase64 = getCfCaBase64();
       if (!cfCaBase64) {
         return c.json({
-          error: 'Cloudflare Origin Pull CA not found. Run phonestack-update to fix.',
+          error: 'Cloudflare Origin Pull CA not found. Run ellulai-update to fix.',
         }, 500);
       }
 
       if (isFree) {
         // Free tier: add forward_auth for owner-only preview
         caddyConfig = `${appDomain}:443 {
-    tls /etc/caddy/origin.crt /etc/caddy/origin.key {
+    tls /etc/caddy/origin-app.crt /etc/caddy/origin-app.key {
         client_auth {
             mode require_and_verify
             trusted_ca_cert ${cfCaBase64}
@@ -203,7 +204,7 @@ export function registerWorkflowRoutes(app: Hono): void {
       } else {
         // Paid tier: public access, no forward_auth
         caddyConfig = `${appDomain}:443 {
-    tls /etc/caddy/origin.crt /etc/caddy/origin.key {
+    tls /etc/caddy/origin-app.crt /etc/caddy/origin-app.key {
         client_auth {
             mode require_and_verify
             trusted_ca_cert ${cfCaBase64}
@@ -277,9 +278,9 @@ export function registerWorkflowRoutes(app: Hono): void {
       console.error('[shield] Caddy reload failed after valid config write');
     }
 
-    // ── Update phonestack.json in project root ───────────────────────
+    // ── Update ellulai.json in project root ───────────────────────
     if (projectPath) {
-      const psjsonPath = `${projectPath}/phonestack.json`;
+      const psjsonPath = `${projectPath}/ellulai.json`;
       try {
         if (fs.existsSync(psjsonPath)) {
           execSync(
@@ -295,7 +296,7 @@ export function registerWorkflowRoutes(app: Hono): void {
 
     // ── Kick off background AI inspection ────────────────────────────
     try {
-      execSync(`/usr/local/bin/phonestack-inspect "${name}" 2>/dev/null &`, {
+      execSync(`/usr/local/bin/ellulai-inspect "${name}" 2>/dev/null &`, {
         stdio: 'pipe',
         timeout: 2000,
       });
@@ -334,7 +335,7 @@ export function registerWorkflowRoutes(app: Hono): void {
    * Restores workspace from a snapshot stored in Neon.
    * Called by the API during free→paid upgrade or wake from hibernation.
    *
-   * Reads server config from /etc/phonestack/* to determine:
+   * Reads server config from /etc/ellulai/* to determine:
    * - API URL + auth token for fetching snapshot chunks
    * - Billing tier → target directory (/home/dev for paid, /home/coder for free)
    */
@@ -343,9 +344,9 @@ export function registerWorkflowRoutes(app: Hono): void {
 
     try {
       // ── Read server config ──────────────────────────────────────────
-      const serverId = fs.readFileSync('/etc/phonestack/server-id', 'utf8').trim();
-      const apiUrl = fs.readFileSync('/etc/phonestack/api-url', 'utf8').trim();
-      const aiProxyToken = fs.readFileSync('/etc/phonestack/ai-proxy-token', 'utf8').trim();
+      const serverId = fs.readFileSync('/etc/ellulai/server-id', 'utf8').trim();
+      const apiUrl = fs.readFileSync('/etc/ellulai/api-url', 'utf8').trim();
+      const aiProxyToken = fs.readFileSync('/etc/ellulai/ai-proxy-token', 'utf8').trim();
       const billingTier = getBillingTier();
 
       const targetDir = billingTier === 'free' ? '/home/coder' : '/home/dev';

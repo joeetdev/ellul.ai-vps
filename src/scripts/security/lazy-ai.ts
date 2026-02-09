@@ -4,7 +4,7 @@
 export function getLazyAiInstallerScript(): string {
   return `#!/bin/bash
 LOG="/var/log/lazy-ai-install.log"
-FLAG_DIR="/var/lib/phone-stack"
+FLAG_DIR="/var/lib/ellul.ai"
 FLAG_FILE="$FLAG_DIR/lazy-ai-ready"
 
 log() { echo "[$(date -Iseconds)] $1" >> "$LOG"; }
@@ -26,8 +26,8 @@ wall "AI tools ready" 2>/dev/null || true`;
  */
 export function getLazyAiShimsScript(): string {
   return `#!/bin/bash
-FLAG_FILE="/var/lib/phone-stack/lazy-ai-ready"
-ENV_FILE="$HOME/.phonestack-env"
+FLAG_FILE="/var/lib/ellul.ai/lazy-ai-ready"
+ENV_FILE="$HOME/.ellulai-env"
 
 _reload_secrets() {
   [ -f "$ENV_FILE" ] && source "$ENV_FILE"

@@ -32,7 +32,7 @@ exec /usr/bin/ttyd \\
   -W \\
   -t disableLeaveAlert=true \\
   -t rightClickSelectsWord=true \\
-  /usr/local/bin/phonestack-launch "$SESSION"`;
+  /usr/local/bin/ellulai-launch "$SESSION"`;
 }
 
 /**
@@ -48,9 +48,9 @@ Type=simple
 User=dev
 Group=dev
 WorkingDirectory=/home/dev/projects
-ExecStart=/usr/local/bin/phonestack-ttyd-wrapper %i
+ExecStart=/usr/local/bin/ellulai-ttyd-wrapper %i
 ExecStop=/usr/bin/tmux kill-session -t %i
-ExecStopPost=/bin/bash -c 'pkill -f "phonestack-launch %i" 2>/dev/null || true'
+ExecStopPost=/bin/bash -c 'pkill -f "ellulai-launch %i" 2>/dev/null || true'
 Restart=always
 RestartSec=5
 RestartPreventExitStatus=SIGTERM

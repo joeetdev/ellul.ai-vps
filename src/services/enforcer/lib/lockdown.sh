@@ -10,7 +10,7 @@ emergency_lockdown() {
   log "  Possible causes: Network block by attacker, API down, or misconfiguration."
 
   # Remove JWT secret to block all token verification
-  rm -f /etc/phonestack/jwt-secret
+  rm -f /etc/ellulai/jwt-secret
   log "  EMERGENCY: JWT secret removed."
 
   # Stop all terminal services (disable first to prevent Restart=always from undoing)
@@ -39,8 +39,8 @@ emergency_lockdown() {
   log "  EMERGENCY: User systemd units removed."
 
   # Create lockdown marker for recovery detection
-  echo "$(date -Iseconds)" > /etc/phonestack/.emergency-lockdown
-  chmod 400 /etc/phonestack/.emergency-lockdown
+  echo "$(date -Iseconds)" > /etc/ellulai/.emergency-lockdown
+  chmod 400 /etc/ellulai/.emergency-lockdown
   log "  EMERGENCY: Lockdown marker created. Manual intervention required."
 }
 
@@ -67,7 +67,7 @@ emergency_lockdown_loop() {
 
         if [ -n "$RECOVERY_USER_ID" ] && [ "$RECOVERY_USER_ID" != "null" ] && [ "$RECOVERY_USER_ID" = "$LOCKED_OWNER" ]; then
           log "EMERGENCY RECOVERY: Ownership verified ($RECOVERY_USER_ID). Lifting lockdown..."
-          rm -f /etc/phonestack/.emergency-lockdown
+          rm -f /etc/ellulai/.emergency-lockdown
           reset_failure_count
           # Restart the enforcer to restore normal operation
           exec "$0" daemon

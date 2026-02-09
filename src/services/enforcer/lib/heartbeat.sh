@@ -1,6 +1,6 @@
 #!/bin/bash
 # Enforcer Heartbeat Functions
-# Heartbeat, sync, and communication with Phone Stack API.
+# Heartbeat, sync, and communication with ellul.ai API.
 
 # Get all listening TCP ports (for ghost port detection)
 get_active_ports() {
@@ -10,7 +10,7 @@ get_active_ports() {
 # Get auth token
 get_token() {
   if [ -z "$TOKEN" ]; then
-    TOKEN=$(grep PHONESTACK_AI_TOKEN /home/dev/.bashrc 2>/dev/null | cut -d'"' -f2 || true)
+    TOKEN=$(grep ELLULAI_AI_TOKEN /home/dev/.bashrc 2>/dev/null | cut -d'"' -f2 || true)
   fi
   echo "$TOKEN"
 }
@@ -18,7 +18,7 @@ get_token() {
 # Main heartbeat function
 heartbeat() {
   local TOKEN=$(get_token)
-  [ -z "$TOKEN" ] && { log "Error: PHONESTACK_AI_TOKEN not set"; return 1; }
+  [ -z "$TOKEN" ] && { log "Error: ELLULAI_AI_TOKEN not set"; return 1; }
   local ACTIVE_SESSIONS=$(get_active_sessions)
   local RAM_USAGE=$(get_ram_usage)
   local CPU_USAGE=$(get_cpu_usage)
@@ -77,7 +77,7 @@ heartbeat() {
 # Raw heartbeat with full processing - returns response
 heartbeat_raw() {
   local TOKEN=$(get_token)
-  [ -z "$TOKEN" ] && { log "Error: PHONESTACK_AI_TOKEN not set"; return 1; }
+  [ -z "$TOKEN" ] && { log "Error: ELLULAI_AI_TOKEN not set"; return 1; }
   local ACTIVE_SESSIONS=$(get_active_sessions)
   local RAM_USAGE=$(get_ram_usage)
   local CPU_USAGE=$(get_cpu_usage)
@@ -142,7 +142,7 @@ heartbeat_raw() {
 # Sync all secrets from platform
 sync_all() {
   local TOKEN=$(get_token)
-  [ -z "$TOKEN" ] && { log "Error: PHONESTACK_AI_TOKEN not set"; return 1; }
+  [ -z "$TOKEN" ] && { log "Error: ELLULAI_AI_TOKEN not set"; return 1; }
   RESPONSE=$(curl -sS --connect-timeout 10 --max-time 30 \
     "$API_URL/api/servers/secrets/sync" \
     -H "Authorization: Bearer $TOKEN" \

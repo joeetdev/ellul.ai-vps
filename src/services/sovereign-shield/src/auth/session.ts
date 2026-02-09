@@ -391,15 +391,15 @@ export function refreshSession(
 export function setSessionCookie(c: Context, sessionId: string, _hostname: string): void {
   // __Host- prefix: browser enforces Secure + Path=/ + no Domain (origin-locked)
   // Prevents cross-subdomain cookie tossing between different VPS instances
-  c.header('Set-Cookie', `__Host-shield_session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${Math.floor(ABSOLUTE_MAX_MS / 1000)}`);
+  // SameSite=Lax: srv domains are on ellul.ai (same-site as console.ellul.ai)
+  c.header('Set-Cookie', `__Host-shield_session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(ABSOLUTE_MAX_MS / 1000)}`);
 }
 
 /**
  * Clear session cookie
  */
 export function clearSessionCookie(c: Context, _hostname: string): void {
-  // Clear both old and new cookie names for migration
-  c.header('Set-Cookie', `__Host-shield_session=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0`);
+  c.header('Set-Cookie', `__Host-shield_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`);
 }
 
 /**

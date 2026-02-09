@@ -8,7 +8,7 @@
  * Welcome project README.
  */
 export function getWelcomeReadme(): string {
-  return `# Phone Stack
+  return `# ellul.ai
 
 AI: opencode (ready) | claude, codex, gemini, aider (background)
 Tools: z, bat, rg, fzf, btop
@@ -32,14 +32,14 @@ export function getWelcomeEcosystem(): string {
 export function getWelcomeClaudeMd(domain: string, tier?: string): string {
   if (tier === "starter") {
     const devDomain = domain.replace("-srv.", "-dev.").replace("-dc.", "-ddev.");
-    return `# Phone Stack Sandbox
+    return `# ellul.ai Sandbox
 
 ## You are running in a Sandbox
 This is an isolated cloud workspace at ${domain} for building and previewing web apps.
 Everything you build is instantly previewable — no deploy step needed.
 
 ## SECURITY - DO NOT MODIFY (BRICK RISK)
-NEVER touch: /etc/phonestack/*, /etc/warden/*, /var/lib/sovereign-shield/*
+NEVER touch: /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*
 Tampering with security files = PERMANENT LOCKOUT with no recovery.
 
 ## Preview Your Work
@@ -67,13 +67,13 @@ Upgrade to Sovereign for full features: https://coemad.com/pricing
 - Use process.env for secrets`;
   }
 
-  return `# Phone Stack Server
+  return `# ellul.ai Server
 
-## IMPORTANT: You are running ON the Phone Stack server
+## IMPORTANT: You are running ON the ellul.ai server
 This is a cloud VPS at ${domain}
 
 ## SECURITY - DO NOT MODIFY (BRICK RISK)
-NEVER touch: /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*
+NEVER touch: /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*
 Tampering with security files = PERMANENT LOCKOUT with no recovery.
 
 ## To Deploy This App
@@ -84,12 +84,12 @@ This will build and deploy with auto-SSL.
 ## Manual Deploy
 1. npm run build
 2. pm2 start npm --name APPNAME -- start -- -p 3000
-3. sudo phonestack-expose APPNAME 3000
+3. sudo ellulai-expose APPNAME 3000
 
 ## Key Commands
 - ship - Auto-deploy current project
-- phonestack-apps - List all deployed apps with URLs
-- phonestack-expose NAME PORT - Expose app with SSL
+- ellulai-apps - List all deployed apps with URLs
+- ellulai-expose NAME PORT - Expose app with SSL
 - pm2 logs NAME - View logs
 - pm2 restart NAME - Restart app
 
@@ -106,11 +106,12 @@ This will build and deploy with auto-SSL.
  * @param tier - Billing tier ("starter" or paid tier name)
  */
 export function getGlobalClaudeMd(domain: string, tier?: string): string {
-  // Convert main domain to dev domain: {shortId}-srv.phone-stack.app → {shortId}-dev.phone-stack.app
-  const devDomain = domain.replace("-srv.", "-dev.").replace("-dc.", "-ddev.");
+  // Convert main domain to dev domain on ellul.app (user content isolation)
+  // {shortId}-srv.ellul.ai → {shortId}-dev.ellul.app
+  const devDomain = domain.replace("-srv.", "-dev.").replace("-dc.", "-ddev.").replace(/\.ellul\.ai$/, ".ellul.app");
 
   if (tier === "starter") {
-    return `# Phone Stack Sandbox: ${domain}
+    return `# ellul.ai Sandbox: ${domain}
 
 ## You are running in a Sandbox
 This is an isolated cloud workspace for building and previewing web apps.
@@ -123,7 +124,7 @@ Quick Start: npx create-next-app my-app && cd my-app && npm run dev
 
 ## SECURITY - DO NOT MODIFY (BRICK RISK)
 NEVER touch these files - tampering causes PERMANENT LOCKOUT:
-- /etc/phonestack/* (tier, markers, domain, server_id)
+- /etc/ellulai/* (tier, markers, domain, server_id)
 - /etc/warden/* (network proxy rules)
 - /var/lib/sovereign-shield/*
 - systemd services: sovereign-shield, warden
@@ -148,13 +149,13 @@ Upgrade to Sovereign for full features: https://coemad.com/pricing
 pm2 start|logs|restart|delete NAME`;
   }
 
-  return `# Phone Stack Server: ${domain}
+  return `# ellul.ai Server: ${domain}
 
-## IMPORTANT: You are running ON the Phone Stack server
+## IMPORTANT: You are running ON the ellul.ai server
 This is a cloud VPS at ${domain}
 
 Preview: https://${devDomain} (port 3000)
-Apps: https://APPNAME-${domain} | Custom domains: phonestack-expose NAME PORT mydomain.com
+Apps: https://APPNAME-${domain} | Custom domains: ellulai-expose NAME PORT mydomain.com
 
 ## Available Tools
 AI: opencode (ready) | claude, codex, gemini, aider (install on first use)
@@ -163,7 +164,7 @@ Quick Start: npx create-next-app my-app && cd my-app && npm run dev
 
 ## SECURITY - DO NOT MODIFY (BRICK RISK)
 NEVER touch these files - tampering causes PERMANENT LOCKOUT:
-- /etc/phonestack/* (tier, markers, domain, server_id)
+- /etc/ellulai/* (tier, markers, domain, server_id)
 - /home/dev/.ssh/authorized_keys
 - /var/lib/sovereign-shield/*
 - systemd services: sovereign-shield, sshd
@@ -177,10 +178,10 @@ npm install → pm2 start npm --name preview -- run dev → curl localhost:3000 
 
 ## Deploy
 Run: ship (auto-build + deploy with SSL)
-Manual: npm run build → pm2 start npm --name APPNAME -- start -- -p 3000 → sudo phonestack-expose APPNAME 3000
+Manual: npm run build → pm2 start npm --name APPNAME -- start -- -p 3000 → sudo ellulai-expose APPNAME 3000
 
 ## Commands
-ship | phonestack-expose NAME PORT | phonestack-apps | pm2 logs|restart NAME`;
+ship | ellulai-expose NAME PORT | ellulai-apps | pm2 logs|restart NAME`;
 }
 
 /**
@@ -195,19 +196,19 @@ export function getProjectsClaudeMd(tier?: string): string {
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: Work ONLY inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
-2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.
-3. **SECURITY**: NEVER touch /etc/phonestack/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Structure
 - Each project in its own folder: /home/coder/projects/APPNAME/
-- ALWAYS create a \`phonestack.json\` file in the project root (dashboard won't detect without it)
+- ALWAYS create a \`ellulai.json\` file in the project root (dashboard won't detect without it)
 - \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
 - type: "frontend" | "backend" | "library"
 - previewable: true if it has a web UI, false otherwise
 
 ## Within Your Project
 1. Create/edit project files
-2. **REQUIRED**: Create \`phonestack.json\` in project root with name, type, summary
+2. **REQUIRED**: Create \`ellulai.json\` in project root with name, type, summary
    If it already exists: NEVER change the "name" field
 3. **IF Node.js**: Run \`npm install\` to install dependencies
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000 (or use \`npx serve -l 3000\` for static HTML)
@@ -236,19 +237,19 @@ pm2 start|logs|restart|delete NAME`;
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: Work ONLY inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
-2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.
-3. **SECURITY**: NEVER touch /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Structure
 - Each project in its own folder: /home/dev/projects/APPNAME/
-- ALWAYS create a \`phonestack.json\` file in the project root (dashboard won't detect without it)
+- ALWAYS create a \`ellulai.json\` file in the project root (dashboard won't detect without it)
 - \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
 - type: "frontend" | "backend" | "library"
 - previewable: true if it has a web UI, false otherwise
 
 ## Within Your Project
 1. Create/edit project files
-2. **REQUIRED**: Create \`phonestack.json\` in project root with name, type, summary
+2. **REQUIRED**: Create \`ellulai.json\` in project root with name, type, summary
    If it already exists: NEVER change the "name" field
 3. **IF Node.js**: Run \`npm install\` to install dependencies
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000 (or use \`npx serve -l 3000\` for static HTML)
@@ -265,5 +266,5 @@ Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
 - \`curl localhost:3000\` → returns 200 status
 
 ## Commands
-ship | phonestack-apps | pm2 logs|restart NAME`;
+ship | ellulai-apps | pm2 logs|restart NAME`;
 }

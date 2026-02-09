@@ -4,8 +4,8 @@
 
 # Detect security tier based on system state
 detect_security_tier() {
-  local TERMINAL_DISABLED_MARKER="/etc/phonestack/.terminal-disabled"
-  local SHIELD_ACTIVE=$(systemctl is-active phonestack-sovereign-shield 2>/dev/null || echo "inactive")
+  local TERMINAL_DISABLED_MARKER="/etc/ellulai/.terminal-disabled"
+  local SHIELD_ACTIVE=$(systemctl is-active ellulai-sovereign-shield 2>/dev/null || echo "inactive")
   local HAS_SSH_KEY=false
   local HAS_PASSKEY=false
 
@@ -14,7 +14,7 @@ detect_security_tier() {
   fi
 
   # Check for passkey in local SQLite
-  local CRED_COUNT=$(node -e "try{const d=require('/opt/phonestack/auth/node_modules/better-sqlite3')('/etc/phonestack/local-auth.db');console.log(d.prepare('SELECT COUNT(*) as c FROM credential').get().c)}catch(e){console.log(0)}" 2>/dev/null || echo "0")
+  local CRED_COUNT=$(node -e "try{const d=require('/opt/ellulai/auth/node_modules/better-sqlite3')('/etc/ellulai/local-auth.db');console.log(d.prepare('SELECT COUNT(*) as c FROM credential').get().c)}catch(e){console.log(0)}" 2>/dev/null || echo "0")
   if [ "$CRED_COUNT" -gt 0 ]; then
     HAS_PASSKEY=true
   fi
@@ -64,7 +64,7 @@ verify_owner() {
   fi
 
   local LOCKED_OWNER=$(cat "$OWNER_LOCK_FILE" 2>/dev/null | tr -d '\n')
-  local JWT_SECRET_FILE="/etc/phonestack/jwt-secret"
+  local JWT_SECRET_FILE="/etc/ellulai/jwt-secret"
 
   if [ "$API_USER_ID" != "$LOCKED_OWNER" ]; then
     # MISMATCH: Hard Lockdown - restore to known-good state

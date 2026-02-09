@@ -1,5 +1,5 @@
 /**
- * phonestack-rollback - Rollback to pre-update snapshot
+ * ellulai-rollback - Rollback to pre-update snapshot
  *
  * Restores server to its state before the last update.
  * Snapshots expire after 24 hours.
@@ -9,7 +9,7 @@ import { getScriptPreamble } from "./common";
 
 export function getRollbackScript(apiUrl: string): string {
   const preamble = getScriptPreamble({
-    scriptName: "phonestack-rollback",
+    scriptName: "ellulai-rollback",
     apiUrl,
     standardAction: "rollback",
     webLockedAction: "rollback",

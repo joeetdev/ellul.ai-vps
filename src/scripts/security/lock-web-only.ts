@@ -9,7 +9,7 @@ export function getLockWebOnlyScript(): string {
   return `#!/bin/bash
 set -e
 
-LOCK_FILE="/etc/phonestack/.sovereign-keys"
+LOCK_FILE="/etc/ellulai/.sovereign-keys"
 
 # Check if already locked
 if [ -f "$LOCK_FILE" ]; then

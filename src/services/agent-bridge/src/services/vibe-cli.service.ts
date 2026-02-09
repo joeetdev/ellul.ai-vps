@@ -503,7 +503,7 @@ async function createTmuxCliSession(
     export XDG_DATA_HOME="${threadStateDir}"
     export XDG_STATE_HOME="${threadStateDir}"
     export XDG_CACHE_HOME="${path.join(threadStateDir, '.cache')}"
-    export PHONESTACK_REAL_HOME="${process.env.HOME || '/home/dev'}"
+    export ELLULAI_REAL_HOME="${process.env.HOME || '/home/dev'}"
     exec ${cliCommand}
   `.trim();
 
@@ -833,7 +833,7 @@ function getIsolatedEnv(threadStateDir: string): NodeJS.ProcessEnv {
     XDG_DATA_HOME: threadStateDir,
     XDG_STATE_HOME: threadStateDir,
     XDG_CACHE_HOME: path.join(threadStateDir, '.cache'),
-    PHONESTACK_REAL_HOME: realHome,
+    ELLULAI_REAL_HOME: realHome,
     // Disable interactive prompts
     CI: 'true',
     NONINTERACTIVE: '1',
@@ -857,7 +857,7 @@ function setupAuthSymlinks(threadDir: string, realHome: string): void {
     '.gemini/credentials.json',
     '.gemini/config.json',
     // Shared config
-    '.phonestack-env',
+    '.ellulai-env',
     '.config/gh/hosts.yml', // GitHub CLI auth
   ];
 
@@ -891,8 +891,8 @@ function setupAuthSymlinks(threadDir: string, realHome: string): void {
 }
 
 // Marker constants for context file management
-const MARKER_START = '<!-- PHONESTACK:START';
-const MARKER_END = '<!-- PHONESTACK:END -->';
+const MARKER_START = '<!-- ELLULAI:START';
+const MARKER_END = '<!-- ELLULAI:END -->';
 
 // Context file names that each CLI tool reads
 const CONTEXT_FILES = ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md'] as const;
@@ -930,12 +930,12 @@ function writeMarkerFile(filePath: string, generatedBlock: string): void {
  */
 function buildContextBlock(projectPath: string, domain: string, appName?: string): string {
   const appNameLine = appName
-    ? `2. **NAME PROTECTION**: This app is named "${appName}". The "name" field in phonestack.json is USER-DEFINED. NEVER change it. NEVER change the "name" field in package.json either.`
-    : '2. **NAME PROTECTION**: The "name" field in phonestack.json and package.json is USER-DEFINED. NEVER change it.';
+    ? `2. **NAME PROTECTION**: This app is named "${appName}". The "name" field in ellulai.json is USER-DEFINED. NEVER change it. NEVER change the "name" field in package.json either.`
+    : '2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.';
 
   // Check for deployment info
   let deploymentSection = '';
-  const appsDir = path.join(process.env.HOME || '/home/dev', '.phonestack', 'apps');
+  const appsDir = path.join(process.env.HOME || '/home/dev', '.ellulai', 'apps');
   if (fs.existsSync(appsDir)) {
     try {
       const files = fs.readdirSync(appsDir);
@@ -944,26 +944,26 @@ function buildContextBlock(projectPath: string, domain: string, appName?: string
         const appFile = path.join(appsDir, file);
         const data = JSON.parse(fs.readFileSync(appFile, 'utf8')) as { projectPath?: string; name?: string; url?: string; port?: number };
         if (data.projectPath === projectPath) {
-          deploymentSection = `\n## !! LIVE DEPLOYMENT — DO NOT CREATE A NEW ONE !!\nName: ${data.name} | URL: ${data.url} | Port: ${data.port}\nThis project is ALREADY deployed. To update: \`npm run build && pm2 restart ${data.name}\` or run \`ship\`.\nNEVER run phonestack-expose again for this project.\n`;
+          deploymentSection = `\n## !! LIVE DEPLOYMENT — DO NOT CREATE A NEW ONE !!\nName: ${data.name} | URL: ${data.url} | Port: ${data.port}\nThis project is ALREADY deployed. To update: \`npm run build && pm2 restart ${data.name}\` or run \`ship\`.\nNEVER run ellulai-expose again for this project.\n`;
           break;
         }
       }
     } catch {}
   }
 
-  return `<!-- PHONESTACK:START — Auto-generated rules. Do not edit between these markers. -->
-# Phone Stack (${domain})
+  return `<!-- ELLULAI:START — Auto-generated rules. Do not edit between these markers. -->
+# ellul.ai (${domain})
 Preview: https://dev.${domain} (port 3000) | Production: https://APPNAME-${domain}
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory (${projectPath}). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
 ${appNameLine}
-3. **SECURITY**: NEVER touch /etc/phonestack/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
+3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
 ${deploymentSection}
 ## Setup (within THIS project)
 1. Create/edit project files
-2. If phonestack.json missing: create it with \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
-   **The "name" field is USER-DEFINED. If phonestack.json already exists, NEVER change the "name" field — leave it as the user set it.**
+2. If ellulai.json missing: create it with \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
+   **The "name" field is USER-DEFINED. If ellulai.json already exists, NEVER change the "name" field — leave it as the user set it.**
 3. Node.js: \`npm install\`
 4. Static HTML (no framework): \`npx serve -l 3000\`
 5. PM2: \`pm2 start npm --name preview -- run dev\` or \`pm2 start "npx serve -l 3000" --name preview\`
@@ -988,8 +988,8 @@ Do NOT report task complete until verification passes!
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
 - Ports: Dev=3000, Prod=3001+, Reserved=7681-7700
-- Backend first: expose backend with \`phonestack-expose NAME PORT\` before frontend depends on it
-- Databases: \`phonestack-install postgres|redis|mysql\` (warn user about RAM usage)
+- Backend first: expose backend with \`ellulai-expose NAME PORT\` before frontend depends on it
+- Databases: \`ellulai-install postgres|redis|mysql\` (warn user about RAM usage)
 - DB GUI: user runs \`ssh -L 5432:localhost:5432 dev@${domain}\` from their machine
 
 ## Git (Code Backup)
@@ -998,7 +998,7 @@ Check \`git remote -v\` — if a remote exists, credentials are ready. If not, t
 Standard git commands also work. NEVER configure git credentials manually (no SSH keys, no tokens).
 
 ## Commands
-ship | phonestack-expose NAME PORT | phonestack-apps | phonestack-install postgres|redis|mysql | pm2 logs|restart|delete NAME
+ship | ellulai-expose NAME PORT | ellulai-apps | ellulai-install postgres|redis|mysql | pm2 logs|restart|delete NAME
 ${MARKER_END}`;
 }
 
@@ -1017,7 +1017,7 @@ export function setupContextFiles(project?: string): void {
     // Read domain
     let domain = 'YOUR-DOMAIN';
     try {
-      const domainPath = '/etc/phonestack/domain';
+      const domainPath = '/etc/ellulai/domain';
       if (fs.existsSync(domainPath)) {
         domain = fs.readFileSync(domainPath, 'utf8').trim();
       }
@@ -1028,10 +1028,10 @@ export function setupContextFiles(project?: string): void {
       const projectPath = path.join(PROJECTS_DIR, project);
       if (!fs.existsSync(projectPath)) return;
 
-      // Read app name from phonestack.json
+      // Read app name from ellulai.json
       let appName: string | undefined;
       try {
-        const pjsonPath = path.join(projectPath, 'phonestack.json');
+        const pjsonPath = path.join(projectPath, 'ellulai.json');
         if (fs.existsSync(pjsonPath)) {
           const pjson = JSON.parse(fs.readFileSync(pjsonPath, 'utf8')) as { name?: string };
           appName = pjson.name;

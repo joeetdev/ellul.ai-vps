@@ -4,20 +4,20 @@
  */
 
 // File paths
-export const TIER_FILE = '/etc/phonestack/security-tier';
-export const SERVER_ID_FILE = '/etc/phonestack/server-id';
-export const API_URL_FILE = '/etc/phonestack/api-url';
-export const DOMAIN_FILE = '/etc/phonestack/domain';
-export const OWNER_LOCK_FILE = '/etc/phonestack/owner.lock';
-export const JWT_SECRET_FILE = '/etc/phonestack/jwt-secret';
-export const AUTH_SECRET_FILE = '/etc/phonestack/.sovereign-auth-secret';
-export const AUTH_SECRETS_FILE = '/etc/phonestack/auth-secrets.json';
-export const SETUP_TOKEN_FILE = '/etc/phonestack/.sovereign-setup-token';
-export const SETUP_EXPIRY_FILE = '/etc/phonestack/.sovereign-setup-expiry';
-export const SHIELD_MARKER = '/etc/phonestack/.sovereign-shield-active';
-export const TERMINAL_DISABLED_FILE = '/etc/phonestack/.terminal-disabled';
+export const TIER_FILE = '/etc/ellulai/security-tier';
+export const SERVER_ID_FILE = '/etc/ellulai/server-id';
+export const API_URL_FILE = '/etc/ellulai/api-url';
+export const DOMAIN_FILE = '/etc/ellulai/domain';
+export const OWNER_LOCK_FILE = '/etc/ellulai/owner.lock';
+export const JWT_SECRET_FILE = '/etc/ellulai/jwt-secret';
+export const AUTH_SECRET_FILE = '/etc/ellulai/.sovereign-auth-secret';
+export const AUTH_SECRETS_FILE = '/etc/ellulai/auth-secrets.json';
+export const SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
+export const SETUP_EXPIRY_FILE = '/etc/ellulai/.sovereign-setup-expiry';
+export const SHIELD_MARKER = '/etc/ellulai/.sovereign-shield-active';
+export const TERMINAL_DISABLED_FILE = '/etc/ellulai/.terminal-disabled';
 export const SSH_AUTH_KEYS_PATH = '/home/dev/.ssh/authorized_keys';
-export const DB_PATH = '/etc/phonestack/local-auth.db';
+export const DB_PATH = '/etc/ellulai/local-auth.db';
 
 // Security tiers
 export const TIERS = {

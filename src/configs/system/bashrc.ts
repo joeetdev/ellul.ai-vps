@@ -31,10 +31,10 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \\. "$NVM_DIR/bash_completion"
 
 export PATH="$HOME/.local/bin:$PATH"
-export PHONESTACK_AI_TOKEN="${aiProxyToken}"
+export ELLULAI_AI_TOKEN="${aiProxyToken}"
 export PORT=3000
 
-[ -f ~/.phonestack-env ] && source ~/.phonestack-env
+[ -f ~/.ellulai-env ] && source ~/.ellulai-env
 
 eval "$(starship init bash)"
 eval "$(zoxide init bash)"
@@ -51,7 +51,7 @@ alias c='clear'
 alias projects='cd ~/projects'
 alias grep='rg'
 
-alias reload='source ~/.phonestack-env && echo "Secrets reloaded"'
+alias reload='source ~/.ellulai-env && echo "Secrets reloaded"'
 
 export FZF_DEFAULT_OPTS='--color=fg:#00ff00,bg:#0a0a0a,hl:#00ff00 --color=fg+:#00ff00,bg+:#1a1a1a,hl+:#00ff00 --color=info:#00ff00,prompt:#00ff00,pointer:#00ff00 --color=marker:#00ff00,spinner:#00ff00,header:#00ff00'
 
@@ -64,11 +64,11 @@ cd ~/projects 2>/dev/null || true`;
 export function getMotdScript(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `#!/bin/bash
-SERVER_DOMAIN=$(cat /etc/phonestack/domain 2>/dev/null || echo "$(hostname -I | awk '{print $1}' | tr '.' '-').sslip.io")
-APPS_DIR="${svcHome}/.phonestack/apps"
+SERVER_DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "$(hostname -I | awk '{print $1}' | tr '.' '-').sslip.io")
+APPS_DIR="${svcHome}/.ellulai/apps"
 
 echo ""
-echo -e "  \\033[1;32mPHONE STACK\\033[0m - Multi-App Vibe Coding"
+echo -e "  \\033[1;32mELLUL.AI\\033[0m - Multi-App Vibe Coding"
 echo ""
 
 if ls "$APPS_DIR"/*.json &>/dev/null 2>&1; then
@@ -81,14 +81,14 @@ if ls "$APPS_DIR"/*.json &>/dev/null 2>&1; then
   done
   echo ""
 else
-  echo -e "  \\033[90mNo apps yet. Deploy with: phonestack-expose <name> <port>\\033[0m"
+  echo -e "  \\033[90mNo apps yet. Deploy with: ellulai-expose <name> <port>\\033[0m"
   echo ""
 fi
 
 echo -e "  \\033[32mAI:\\033[0m opencode claude codex gemini aider"
-if [ ! -f /var/lib/phone-stack/lazy-ai-ready ]; then
+if [ ! -f /var/lib/ellul.ai/lazy-ai-ready ]; then
   echo -e "  \\033[33mTools installing...\\033[0m"
 fi
-echo -e "  \\033[32mCmds:\\033[0m phonestack-apps | \\033[32mTools:\\033[0m z, bat, rg, fzf"
+echo -e "  \\033[32mCmds:\\033[0m ellulai-apps | \\033[32mTools:\\033[0m z, bat, rg, fzf"
 echo ""`;
 }

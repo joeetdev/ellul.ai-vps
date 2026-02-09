@@ -88,7 +88,7 @@ function readConfig(): {
   hidden: string[];
   overrides: Record<string, Record<string, unknown>>;
 } {
-  const configPath = path.join(ROOT_DIR, '.phonestack.json');
+  const configPath = path.join(ROOT_DIR, '.ellulai.json');
   try {
     if (fs.existsSync(configPath)) {
       return JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -101,7 +101,7 @@ function readConfig(): {
  * Write config file.
  */
 function writeConfig(config: Record<string, unknown>): void {
-  const configPath = path.join(ROOT_DIR, '.phonestack.json');
+  const configPath = path.join(ROOT_DIR, '.ellulai.json');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
@@ -332,7 +332,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/apps') {
       const detectedApps = detectApps();
       const config = readConfig();
-      const configPath = path.join(ROOT_DIR, '.phonestack.json');
+      const configPath = path.join(ROOT_DIR, '.ellulai.json');
       const hasConfig = fs.existsSync(configPath);
 
       // Filter out hidden apps (check both directory and name for backward compat)
@@ -434,19 +434,19 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (type === 'blank') {
-        // Create blank app - just directory + phonestack.json with unknown type
+        // Create blank app - just directory + ellulai.json with unknown type
         try {
           fs.mkdirSync(appPath, { recursive: true });
 
-          // Create phonestack.json with minimal config
-          const phonestackConfig = {
+          // Create ellulai.json with minimal config
+          const ellulaiConfig = {
             name: name,
             type: 'unknown',
             previewable: false,
           };
           fs.writeFileSync(
-            path.join(appPath, 'phonestack.json'),
-            JSON.stringify(phonestackConfig, null, 2)
+            path.join(appPath, 'ellulai.json'),
+            JSON.stringify(ellulaiConfig, null, 2)
           );
 
           // Return app info
@@ -481,7 +481,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // Read git credentials from config
-        const gitCredsPath = path.join(ROOT_DIR, '.phonestack', 'git-credentials.json');
+        const gitCredsPath = path.join(ROOT_DIR, '.ellulai', 'git-credentials.json');
         let gitCreds: Record<string, { token?: string }> = {};
         try {
           if (fs.existsSync(gitCredsPath)) {
@@ -531,16 +531,16 @@ const server = http.createServer(async (req, res) => {
         const inferredFramework = detected?.framework || 'unknown';
         const inferredPreviewable = detected?.previewable ?? false;
 
-        // Create phonestack.json if not exists
-        const phonestackPath = path.join(appPath, 'phonestack.json');
-        if (!fs.existsSync(phonestackPath)) {
-          const phonestackConfig = {
+        // Create ellulai.json if not exists
+        const ellulaiPath = path.join(appPath, 'ellulai.json');
+        if (!fs.existsSync(ellulaiPath)) {
+          const ellulaiConfig = {
             name: name,
             type: inferredType,
             framework: inferredFramework,
             previewable: inferredPreviewable,
           };
-          fs.writeFileSync(phonestackPath, JSON.stringify(phonestackConfig, null, 2));
+          fs.writeFileSync(ellulaiPath, JSON.stringify(ellulaiConfig, null, 2));
         }
 
         // Run npm install in background (don't block response)
@@ -621,7 +621,7 @@ const server = http.createServer(async (req, res) => {
 
       // Find this app's deployment metadata by matching projectPath
       // This ensures we only clean up resources that belong to THIS specific app
-      const appsMetaDir = `${HOME}/.phonestack/apps`;
+      const appsMetaDir = `${HOME}/.ellulai/apps`;
       let deployedAppName: string | null = null;
       let deployedMetaFile: string | null = null;
 
@@ -670,10 +670,10 @@ const server = http.createServer(async (req, res) => {
           cleanup.push('app-metadata');
         }
 
-        // 4. Clean up app-specific secrets from ~/.phonestack-env
+        // 4. Clean up app-specific secrets from ~/.ellulai-env
         // Use exact matching with the deployed app name (not pattern matching)
         if (deployedAppName) {
-          const envFilePath = `${HOME}/.phonestack-env`;
+          const envFilePath = `${HOME}/.ellulai-env`;
           if (fs.existsSync(envFilePath)) {
             try {
               const envContent = fs.readFileSync(envFilePath, 'utf8');
@@ -702,7 +702,7 @@ const server = http.createServer(async (req, res) => {
 
         // 5. Clean up app-specific git credentials - exact key match only
         if (deployedAppName) {
-          const gitCredsPath = `${HOME}/.phonestack/git-credentials.json`;
+          const gitCredsPath = `${HOME}/.ellulai/git-credentials.json`;
           if (fs.existsSync(gitCredsPath)) {
             try {
               const gitCreds = JSON.parse(fs.readFileSync(gitCredsPath, 'utf8'));
@@ -799,7 +799,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Check for context files
-      const contextDir = `${HOME}/.phonestack/context`;
+      const contextDir = `${HOME}/.ellulai/context`;
       const projectContextPath = path.join(contextDir, `${app.directory}.md`);
       const globalContextPath = path.join(contextDir, 'global.md');
       const hasProjectContext = fs.existsSync(projectContextPath);
@@ -939,7 +939,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // POST /api/app/:directory/git-pull - Pull code from remote using VPS-local credentials
-    // Reads git token from ~/.phonestack-env (synced by daemon). No secrets from frontend.
+    // Reads git token from ~/.ellulai-env (synced by daemon). No secrets from frontend.
     if (req.method === 'POST' && pathname.match(/^\/api\/app\/[^/]+\/git-pull$/)) {
       const parts = pathname.split('/');
       const appIdentifier = decodeURIComponent(parts[3] || '');
@@ -960,7 +960,7 @@ const server = http.createServer(async (req, res) => {
 
       // Read per-app git credentials from daemon-synced env file
       // Secrets are stored as __GIT_TOKEN__MY_APP (suffix = uppercase, alnum + underscore)
-      const envPath = `${HOME}/.phonestack-env`;
+      const envPath = `${HOME}/.ellulai-env`;
       const envVars: Record<string, string> = {};
       try {
         if (fs.existsSync(envPath)) {
@@ -1179,7 +1179,7 @@ const server = http.createServer(async (req, res) => {
       const appPath = path.join(ROOT_DIR, directory);
 
       const searchPaths = [
-        '.phonestack/icon.png',
+        '.ellulai/icon.png',
         'public/favicon.ico',
         'public/logo.png',
         'public/icon.png',
@@ -1252,8 +1252,8 @@ const server = http.createServer(async (req, res) => {
       console.log(`[file-api] Hydrating workspace from snapshot ${snapshotId.slice(0, 8)}...`);
 
       try {
-        // Run hydrate.sh script (packaged at /opt/phonestack/startup-agent/hydrate.sh)
-        const hydratePath = '/opt/phonestack/startup-agent/hydrate.sh';
+        // Run hydrate.sh script (packaged at /opt/ellulai/startup-agent/hydrate.sh)
+        const hydratePath = '/opt/ellulai/startup-agent/hydrate.sh';
         if (!fs.existsSync(hydratePath)) {
           res.writeHead(500);
           res.end(JSON.stringify({ error: 'hydrate.sh not found' }));
@@ -1291,7 +1291,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const { execSync } = await import('child_process');
         const result = execSync(
-          `sudo /usr/local/bin/phonestack-mount-volume mount "${volumeDevice}"`,
+          `sudo /usr/local/bin/ellulai-mount-volume mount "${volumeDevice}"`,
           { timeout: 60_000, encoding: 'utf8' }
         );
         const parsed = JSON.parse(result.trim());
@@ -1312,7 +1312,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const { execSync } = await import('child_process');
         const result = execSync(
-          'sudo /usr/local/bin/phonestack-mount-volume flush',
+          'sudo /usr/local/bin/ellulai-mount-volume flush',
           { timeout: 15_000, encoding: 'utf8' }
         );
         const parsed = JSON.parse(result.trim());
@@ -1330,7 +1330,7 @@ const server = http.createServer(async (req, res) => {
     // POST /api/trigger-sync — Wake enforcer daemon via SIGUSR1 (push-based command dispatch)
     if (req.method === 'POST' && pathname === '/api/trigger-sync') {
       try {
-        const pidStr = fs.readFileSync('/run/phonestack-enforcer.pid', 'utf8').trim();
+        const pidStr = fs.readFileSync('/run/ellulai-enforcer.pid', 'utf8').trim();
         const pid = parseInt(pidStr, 10);
         if (isNaN(pid) || pid <= 0) throw new Error(`Invalid PID: ${pidStr}`);
         process.kill(pid, 'SIGUSR1');
@@ -1378,7 +1378,7 @@ server.on('clientError', (err, socket) => {
 
 // Start server
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Phone Stack File API running on port ${PORT}`);
+  console.log(`ellul.ai File API running on port ${PORT}`);
 });
 
 // Set up WebSocket

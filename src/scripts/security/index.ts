@@ -8,4 +8,4 @@ export { getVerifyScript } from "./verify";
 export { getDecryptScript } from "./decrypt";
 export { getLazyAiInstallerScript, getLazyAiShimsScript } from "./lazy-ai";
 export { getDeleteScript, getRebuildScript, getRollbackScript, getChangeTierScript, getSettingsScript, getDeploymentScript } from "./vps-operations/index";
-export { getPhonestackUpdateScript } from "./phonestack-update";
+export { getEllulaiUpdateScript } from "./ellulai-update";

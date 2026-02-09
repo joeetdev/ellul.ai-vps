@@ -133,9 +133,9 @@ install_mysql() {
 
 if [ -z "$SERVICE" ]; then
   echo ""
-  echo -e "\${CYAN}Phone Stack Service Installer\${NC}"
+  echo -e "\${CYAN}ellul.ai Service Installer\${NC}"
   echo ""
-  echo "Usage: sudo phonestack-install [service]"
+  echo "Usage: sudo ellulai-install [service]"
   echo ""
   echo "Services:"
   echo "  postgres  - PostgreSQL database"

@@ -34,11 +34,11 @@ import {
 export function registerLoginRoutes(app: Hono, hostname: string): void {
   const RP_ID = hostname;
   // Accept both deployment model domains (-srv for Cloudflare, -dc for Direct Connect)
-  const shortId = hostname.replace(/-(?:srv|dc)\.phone-stack\.app$/, '');
+  const shortId = hostname.replace(/-(?:srv|dc)\.ellul\.ai$/, '');
   const ORIGINS = [
     `https://${hostname}`,
-    `https://${shortId}-srv.phone-stack.app`,
-    `https://${shortId}-dc.phone-stack.app`,
+    `https://${shortId}-srv.ellul.ai`,
+    `https://${shortId}-dc.ellul.ai`,
   ];
 
   /**
@@ -112,7 +112,7 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
         const ref = document.referrer;
         if (!ref) return null;
         const origin = new URL(ref).origin;
-        if (origin === 'https://phone-stack.app' || (origin.startsWith('https://') && origin.endsWith('.phone-stack.app'))) return origin;
+        if (origin === 'https://ellul.ai' || (origin.startsWith('https://') && (origin.endsWith('.ellul.ai') || origin.endsWith('.ellul.app')))) return origin;
         return null;
       } catch { return null; }
     }
@@ -143,16 +143,34 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
         const result = await verRes.json();
         const params = new URLSearchParams(window.location.search);
         let redirectUrl = params.get('redirect') || '/';
-        // Append session token to redirect URL for cross-origin iframe contexts
+        // Handle cross-domain redirect for preview (*.ellul.app) vs same-domain (*.ellul.ai)
         if (result.sessionId) {
-          // Remove any existing _shield_session from redirect URL
           try {
             const u = new URL(redirectUrl);
-            u.searchParams.delete('_shield_session');
-            redirectUrl = u.toString();
-          } catch {}
-          const sep = redirectUrl.includes('?') ? '&' : '?';
-          redirectUrl = redirectUrl + sep + '_shield_session=' + encodeURIComponent(result.sessionId);
+            if (u.hostname.endsWith('.ellul.app')) {
+              // Cross-site redirect to dev domain: get a preview token
+              const previewRes = await fetch('/_auth/preview/authorize', {
+                method: 'POST',
+                credentials: 'include',
+              });
+              if (previewRes.ok) {
+                const previewData = await previewRes.json();
+                u.searchParams.delete('_preview_token');
+                u.searchParams.set('_preview_token', previewData.token);
+                redirectUrl = u.toString();
+              }
+            } else {
+              // Same-site redirect: append shield session
+              u.searchParams.delete('_shield_session');
+              redirectUrl = u.toString();
+              const sep = redirectUrl.includes('?') ? '&' : '?';
+              redirectUrl = redirectUrl + sep + '_shield_session=' + encodeURIComponent(result.sessionId);
+            }
+          } catch {
+            // Fallback for relative URLs
+            const sep = redirectUrl.includes('?') ? '&' : '?';
+            redirectUrl = redirectUrl + sep + '_shield_session=' + encodeURIComponent(result.sessionId);
+          }
           // Notify parent frame about the new session
           if (window.parent !== window) {
             const parentOrigin = getParentOrigin();
