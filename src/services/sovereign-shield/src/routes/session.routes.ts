@@ -36,6 +36,7 @@ import {
   TERMINAL_WRAPPER_HTML,
 } from '../auth/pop';
 import { parseCookies } from '../utils/cookie';
+import { validatePreviewCredentials } from './preview.routes';
 
 /**
  * Register session routes on Hono app
@@ -117,53 +118,44 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       } catch {}
 
       if (previewSessionId || previewToken) {
-        try {
-          const validateRes = await fetch('http://127.0.0.1:3005/_auth/preview/validate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              previewSessionId: previewSessionId || undefined,
-              token: previewToken || undefined,
-              ip: getClientIp(c),
-            })
-          });
-          const validateData = await validateRes.json() as {
-            valid?: boolean;
-            previewSessionId?: string;
-            expiresAt?: number;
-            reason?: string;
-          };
+        const validateData = validatePreviewCredentials({
+          previewSessionId: previewSessionId || undefined,
+          token: previewToken || undefined,
+          ip: getClientIp(c),
+        });
 
-          if (validateData.valid) {
-            // If this was a token (not cookie), set the __Host-preview_session cookie
-            // and redirect to clean URL
-            if (previewToken && validateData.previewSessionId) {
-              const maxAge = Math.floor(((validateData.expiresAt || Date.now() + 14400000) - Date.now()) / 1000);
-              // __Host- prefix: origin-locked, browser enforces Secure + Path=/ + no Domain attr
-              // SameSite=Lax: prevents CSRF, .app TLD is on HSTS preload list (always HTTPS)
-              c.header('Set-Cookie',
-                `__Host-preview_session=${validateData.previewSessionId}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`
-              );
+        if (validateData.valid) {
+          // If this was a token (not cookie), set the __Host-preview_session cookie
+          // and redirect to clean URL
+          if (previewToken && validateData.previewSessionId) {
+            const maxAge = Math.floor((validateData.expiresAt - Date.now()) / 1000);
+            // __Host- prefix: origin-locked (Secure + Path=/ + no Domain attr)
+            // SameSite=None: REQUIRED for cross-site iframe (parent console.ellul.ai, iframe *.ellul.app)
+            //   SameSite=Lax only sends on top-level navigations, NOT iframe subresource loads
+            // Partitioned (CHIPS): Cookie is keyed to (top-level-site, iframe-origin) pair.
+            //   Exempt from Safari ITP and Chrome's third-party cookie deprecation.
+            //   Supported: Safari 17+, Chrome 114+, Firefox 131+.
+            //   Older browsers ignore the attribute and fall back to regular SameSite=None.
+            c.header('Set-Cookie',
+              `__Host-preview_session=${validateData.previewSessionId}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned; Max-Age=${maxAge}`
+            );
 
-              // For navigation, redirect to clean URL
-              const acceptHeader = c.req.header('accept') || '';
-              const isApiRequest = acceptHeader.includes('application/json') ||
-                c.req.header('x-requested-with') === 'XMLHttpRequest';
+            // For navigation, redirect to clean URL (strips token from browser URL)
+            const acceptHeader = c.req.header('accept') || '';
+            const isApiRequest = acceptHeader.includes('application/json') ||
+              c.req.header('x-requested-with') === 'XMLHttpRequest';
 
-              if (!isApiRequest) {
-                const urlObj = new URL(originalUrl);
-                urlObj.searchParams.delete('_preview_token');
-                return c.redirect(urlObj.toString(), 302);
-              }
+            if (!isApiRequest) {
+              const urlObj = new URL(originalUrl);
+              urlObj.searchParams.delete('_preview_token');
+              return c.redirect(urlObj.toString(), 302);
             }
-
-            c.header('X-Auth-User', 'preview-user');
-            c.header('X-Auth-Tier', tier);
-            c.header('X-Auth-Session', previewSessionId || validateData.previewSessionId || 'preview');
-            return c.json({ authenticated: true, tier, method: 'preview' }, 200);
           }
-        } catch (e) {
-          console.log('[shield] Preview validation error:', (e as Error).message);
+
+          c.header('X-Auth-User', 'preview-user');
+          c.header('X-Auth-Tier', tier);
+          c.header('X-Auth-Session', previewSessionId || validateData.previewSessionId || 'preview');
+          return c.json({ authenticated: true, tier, method: 'preview' }, 200);
         }
       }
 

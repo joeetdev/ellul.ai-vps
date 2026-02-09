@@ -36,6 +36,78 @@ const PREVIEW_TOKEN_TTL_MS = 60 * 1000; // 60 seconds — single-use, short-live
 const PREVIEW_SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours — matches shield session
 
 /**
+ * Validate a preview token or preview session cookie.
+ * Direct function call — avoids HTTP self-fetch from forward_auth handler.
+ * Used by both the /_auth/preview/validate endpoint and session.routes.ts forward_auth.
+ */
+export function validatePreviewCredentials(opts: {
+  token?: string;
+  previewSessionId?: string;
+  ip?: string;
+}): { valid: true; previewSessionId: string; expiresAt: number } | { valid: false; reason: string } {
+  // Validate preview session cookie
+  if (opts.previewSessionId) {
+    const session = db.prepare(`
+      SELECT id, ip, created_at, expires_at FROM preview_sessions
+      WHERE id = ? AND expires_at > ?
+    `).get(opts.previewSessionId, Date.now()) as {
+      id: string; ip: string; created_at: number; expires_at: number;
+    } | undefined;
+
+    if (session) {
+      return { valid: true, previewSessionId: session.id, expiresAt: session.expires_at };
+    }
+    return { valid: false, reason: 'session_expired' };
+  }
+
+  // Validate single-use preview token
+  if (opts.token) {
+    const tokenRow = db.prepare(`
+      SELECT token, session_id, expires_at, used FROM preview_tokens
+      WHERE token = ?
+    `).get(opts.token) as {
+      token: string; session_id: string; expires_at: number; used: number;
+    } | undefined;
+
+    if (!tokenRow) {
+      return { valid: false, reason: 'token_not_found' };
+    }
+
+    if (tokenRow.used) {
+      return { valid: false, reason: 'token_already_used' };
+    }
+
+    if (tokenRow.expires_at < Date.now()) {
+      db.prepare('DELETE FROM preview_tokens WHERE token = ?').run(opts.token);
+      return { valid: false, reason: 'token_expired' };
+    }
+
+    // Mark as used (single-use)
+    db.prepare('UPDATE preview_tokens SET used = 1 WHERE token = ?').run(opts.token);
+
+    // Create a preview session for subsequent requests
+    const previewSessionId = crypto.randomBytes(32).toString('hex');
+    const now = Date.now();
+    const expiresAt = now + PREVIEW_SESSION_TTL_MS;
+
+    db.prepare(`
+      INSERT INTO preview_sessions (id, ip, shield_session_id, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(previewSessionId, opts.ip || '', tokenRow.session_id, now, expiresAt);
+
+    logAuditEvent({
+      type: 'preview_session_created',
+      ip: opts.ip || 'unknown',
+      details: { previewSessionId: previewSessionId.slice(0, 8) + '...' }
+    });
+
+    return { valid: true, previewSessionId, expiresAt };
+  }
+
+  return { valid: false, reason: 'no_credentials' };
+}
+
+/**
  * Register preview auth routes
  */
 export function registerPreviewRoutes(app: Hono, hostname: string): void {
@@ -127,70 +199,8 @@ export function registerPreviewRoutes(app: Hono, hostname: string): void {
       ip?: string;
     };
 
-    // Validate preview session cookie
-    if (body.previewSessionId) {
-      const session = db.prepare(`
-        SELECT id, ip, created_at, expires_at FROM preview_sessions
-        WHERE id = ? AND expires_at > ?
-      `).get(body.previewSessionId, Date.now()) as {
-        id: string; ip: string; created_at: number; expires_at: number;
-      } | undefined;
-
-      if (session) {
-        return c.json({ valid: true, sessionId: session.id });
-      }
-      return c.json({ valid: false, reason: 'session_expired' });
-    }
-
-    // Validate single-use preview token
-    if (body.token) {
-      const tokenRow = db.prepare(`
-        SELECT token, session_id, expires_at, used FROM preview_tokens
-        WHERE token = ?
-      `).get(body.token) as {
-        token: string; session_id: string; expires_at: number; used: number;
-      } | undefined;
-
-      if (!tokenRow) {
-        return c.json({ valid: false, reason: 'token_not_found' });
-      }
-
-      if (tokenRow.used) {
-        return c.json({ valid: false, reason: 'token_already_used' });
-      }
-
-      if (tokenRow.expires_at < Date.now()) {
-        // Clean up expired token
-        db.prepare('DELETE FROM preview_tokens WHERE token = ?').run(body.token);
-        return c.json({ valid: false, reason: 'token_expired' });
-      }
-
-      // Mark as used (single-use)
-      db.prepare('UPDATE preview_tokens SET used = 1 WHERE token = ?').run(body.token);
-
-      // Create a preview session for subsequent requests
-      const previewSessionId = crypto.randomBytes(32).toString('hex');
-      const now = Date.now();
-
-      db.prepare(`
-        INSERT INTO preview_sessions (id, ip, shield_session_id, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(previewSessionId, body.ip || '', tokenRow.session_id, now, now + PREVIEW_SESSION_TTL_MS);
-
-      logAuditEvent({
-        type: 'preview_session_created',
-        ip: body.ip || 'unknown',
-        details: { previewSessionId: previewSessionId.slice(0, 8) + '...' }
-      });
-
-      return c.json({
-        valid: true,
-        previewSessionId,
-        expiresAt: now + PREVIEW_SESSION_TTL_MS,
-      });
-    }
-
-    return c.json({ valid: false, reason: 'no_credentials' });
+    const result = validatePreviewCredentials(body);
+    return c.json(result);
   });
 }
 
