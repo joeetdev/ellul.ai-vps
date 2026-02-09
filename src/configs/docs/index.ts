@@ -76,6 +76,17 @@ This is a cloud VPS at ${domain}
 NEVER touch: /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*
 Tampering with security files = PERMANENT LOCKOUT with no recovery.
 
+## Recommended Stack (New Apps)
+- Framework: Next.js 14 (App Router)
+  \`npx create-next-app@latest my-app --typescript --tailwind --app\`
+- Database: Drizzle ORM + PostgreSQL (via Supabase)
+  \`npm i drizzle-orm postgres\` + \`npm i -D drizzle-kit\`
+- Schema: Define in \`src/db/schema.ts\`, config in \`drizzle.config.ts\`
+- Migrations: \`npx drizzle-kit push\` (dev) or \`npx drizzle-kit migrate\` (prod)
+
+Unless the user specifies otherwise, always default to Next.js for new web apps
+and Drizzle + PostgreSQL for database schemas.
+
 ## To Deploy This App
 Run: ship
 

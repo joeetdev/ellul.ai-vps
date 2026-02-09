@@ -148,6 +148,33 @@ The following files and directories are security-critical. Modifying, deleting, 
 **Why this matters:**
 If the server is in "Web Locked" mode (passkey + PoP required), tampering with security files can permanently lock out the user with NO recovery path except server rebuild. The security system is designed to fail-secure - if in doubt, it denies access.
 GLOBAL_EOF
+
+  # Detect Vercel integration
+  if [ -f "$HOME_DIR/.ellulai/vercel-linked" ]; then
+    cat <<'VERCEL_EOF' >> "$GLOBAL_FILE"
+
+## Deployment (Vercel)
+This project deploys to Vercel. Push to git → auto-deploy.
+Or deploy from the ellul.ai dashboard.
+For Next.js: do NOT set output: 'standalone' (Vercel handles builds).
+Environment variables: set via ellul.ai dashboard integrations.
+VERCEL_EOF
+  fi
+
+  # Detect DATABASE_URL (Supabase or any PostgreSQL)
+  if grep -q "DATABASE_URL" "$HOME_DIR/.ellulai-env" 2>/dev/null; then
+    cat <<'DB_EOF' >> "$GLOBAL_FILE"
+
+## Database (PostgreSQL via Supabase)
+DATABASE_URL is configured in the environment. Use Drizzle ORM with postgres adapter:
+- \\\`import { drizzle } from 'drizzle-orm/postgres-js'\\\`
+- \\\`import postgres from 'postgres'\\\`
+- \\\`const client = postgres(process.env.DATABASE_URL!)\\\`
+- \\\`const db = drizzle(client)\\\`
+Schema: \\\`src/db/schema.ts\\\` | Config: \\\`drizzle.config.ts\\\`
+Push: \\\`npx drizzle-kit push\\\`
+DB_EOF
+  fi
 }
 
 generate_global_free() {
