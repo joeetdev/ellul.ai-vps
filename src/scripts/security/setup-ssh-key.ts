@@ -7,6 +7,10 @@ export function getSetupSshKeyScript(): string {
   return `#!/bin/bash
 set -e
 
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+
 LOCK_FILE="/etc/ellulai/.sovereign-keys"
 SSH_KEY="$1"
 
@@ -32,14 +36,14 @@ if ! echo "$SSH_KEY" | grep -qE '^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp256) '; the
 fi
 
 # Install the key
-mkdir -p /home/dev/.ssh
-chmod 700 /home/dev/.ssh
-echo "$SSH_KEY" >> /home/dev/.ssh/authorized_keys
-chmod 600 /home/dev/.ssh/authorized_keys
-chown -R dev:dev /home/dev/.ssh
+mkdir -p \$SVC_HOME/.ssh
+chmod 700 \$SVC_HOME/.ssh
+echo "$SSH_KEY" >> \$SVC_HOME/.ssh/authorized_keys
+chmod 600 \$SVC_HOME/.ssh/authorized_keys
+chown -R \$SVC_USER:\$SVC_USER \$SVC_HOME/.ssh
 
 # Lock down authorized_keys (prevents tampering even by root)
-chattr +i /home/dev/.ssh/authorized_keys 2>/dev/null || true
+chattr +i \$SVC_HOME/.ssh/authorized_keys 2>/dev/null || true
 
 # Create the sovereign lock (prevents future platform key injection)
 touch "$LOCK_FILE"
@@ -57,7 +61,7 @@ echo "Sovereign Lock engaged (no further keys can be added via platform)."
 echo "authorized_keys locked (chattr +i). Use sudo chattr -i to modify."
 echo "Port 22 opened."
 echo ""
-echo "Connect with: ssh dev@$PUBLIC_IP"`;
+echo "Connect with: ssh \$SVC_USER@$PUBLIC_IP"`;
 }
 
 /**
@@ -81,8 +85,8 @@ if ! echo "$SSH_KEY" | grep -qE '^(ssh-(rsa|ed25519)|ecdsa-sha2-nistp256) '; the
   exit 1
 fi
 
-sudo chattr -i /home/dev/.ssh/authorized_keys
-echo "$SSH_KEY" >> /home/dev/.ssh/authorized_keys
-sudo chattr +i /home/dev/.ssh/authorized_keys
+sudo chattr -i \$HOME/.ssh/authorized_keys
+echo "$SSH_KEY" >> \$HOME/.ssh/authorized_keys
+sudo chattr +i \$HOME/.ssh/authorized_keys
 echo "Key added and file re-locked."`;
 }

@@ -14,7 +14,7 @@ import { PATHS, TIERS, type SecurityTier } from './config';
 export function getCurrentTier(): SecurityTier {
   try {
     const tier = fs.readFileSync(PATHS.TIER, 'utf8').trim();
-    if (tier === 'standard' || tier === 'ssh_only' || tier === 'web_locked') {
+    if (tier === 'standard' || tier === 'web_locked') {
       return tier;
     }
   } catch {}

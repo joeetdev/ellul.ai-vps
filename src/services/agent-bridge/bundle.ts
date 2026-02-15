@@ -114,9 +114,9 @@ Group=${svcUser}
 WorkingDirectory=${svcHome}
 Environment=NODE_ENV=production
 Environment=PORT=7700
-Environment=NODE_PATH=${svcHome}/.nvm/versions/node/v20.20.0/lib/node_modules
-Environment=PATH=${svcHome}/.nvm/versions/node/v20.20.0/bin:${svcHome}/.opencode/bin:${svcHome}/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=${svcHome}/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/ellulai-agent-bridge
+Environment=NODE_PATH=${svcHome}/.node/lib/node_modules
+Environment=PATH=${svcHome}/.node/bin:${svcHome}/.opencode/bin:${svcHome}/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=${svcHome}/.node/bin/node /usr/local/bin/ellulai-agent-bridge
 Restart=on-failure
 RestartSec=5
 

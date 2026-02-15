@@ -48,6 +48,14 @@
     "./services/sovereign-shield": {
       "types": "./dist/services/sovereign-shield/bundle.d.ts",
       "default": "./dist/services/sovereign-shield/bundle.js"
+    },
+    "./services/caddy-gen": {
+      "types": "./dist/services/caddy-gen/bundle.d.ts",
+      "default": "./dist/services/caddy-gen/bundle.js"
+    },
+    "./services/watchdog": {
+      "types": "./dist/services/watchdog/index.d.ts",
+      "default": "./dist/services/watchdog/index.js"
     }
   },
   "scripts": {

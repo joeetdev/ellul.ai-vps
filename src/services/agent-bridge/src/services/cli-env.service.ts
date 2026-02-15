@@ -84,7 +84,7 @@ export function checkCliNeedsSetup(session: string): boolean {
     switch (session) {
       case 'claude': {
         // Claude stores auth in ~/.claude.json
-        const home = process.env.HOME || '/home/dev';
+        const home = process.env.HOME || '/home/' + (process.env.USER || 'dev');
         const claudeJson = path.join(home, '.claude.json');
         if (!fs.existsSync(claudeJson)) return true;
         const config = JSON.parse(fs.readFileSync(claudeJson, 'utf8')) as {
@@ -111,13 +111,13 @@ export function checkCliNeedsSetup(session: string): boolean {
       }
       case 'codex': {
         // Codex stores auth via OpenAI config
-        const codexAuth = path.join(process.env.HOME || '/home/dev', '.codex', 'auth.json');
+        const codexAuth = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.codex', 'auth.json');
         const openaiKey = process.env.OPENAI_API_KEY || loadCliEnv()['OPENAI_API_KEY'];
         return !fs.existsSync(codexAuth) && !openaiKey;
       }
       case 'gemini': {
         // Gemini stores auth in ~/.config/gemini or uses GEMINI_API_KEY
-        const geminiConfig = path.join(process.env.HOME || '/home/dev', '.config', 'gemini');
+        const geminiConfig = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.config', 'gemini');
         const geminiKey = process.env.GEMINI_API_KEY || loadCliEnv()['GEMINI_API_KEY'];
         return !fs.existsSync(geminiConfig) && !geminiKey;
       }

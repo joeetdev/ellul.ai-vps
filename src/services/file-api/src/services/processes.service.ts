@@ -63,13 +63,11 @@ export function restartServices(tier: string): {
   const results = { agentBridge: false, ttyd: false, tier, success: true };
 
   try {
-    if (tier !== 'ssh_only') {
-      execSync(
-        'sudo systemctl restart ellulai-agent-bridge 2>/dev/null || sudo systemctl start ellulai-agent-bridge',
-        { stdio: 'ignore' }
-      );
-      results.agentBridge = true;
-    }
+    execSync(
+      'sudo systemctl restart ellulai-agent-bridge 2>/dev/null || sudo systemctl start ellulai-agent-bridge',
+      { stdio: 'ignore' }
+    );
+    results.agentBridge = true;
     if (tier === 'standard' || tier === 'web_locked') {
       // Dynamic terminal sessions are handled by term-proxy (not static ttyd services)
       execSync('sudo systemctl restart ellulai-term-proxy 2>/dev/null || sudo systemctl start ellulai-term-proxy', {

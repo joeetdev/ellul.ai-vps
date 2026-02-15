@@ -4,6 +4,21 @@
  * All constants, file paths, and security configuration.
  */
 
+import * as fs from 'fs';
+
+// Derive service user from /etc/default/ellulai (set during provisioning)
+function getServiceUser(): string {
+  try {
+    const content = fs.readFileSync('/etc/default/ellulai', 'utf8');
+    const match = content.match(/PS_USER=(\w+)/);
+    if (match?.[1]) return match[1];
+  } catch {}
+  return 'dev';
+}
+
+export const SVC_USER = getServiceUser();
+export const SVC_HOME = `/home/${SVC_USER}`;
+
 // File paths
 export const DB_PATH = '/etc/ellulai/local-auth.db';
 export const SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
@@ -19,7 +34,7 @@ export const TIER_FILE = '/etc/ellulai/security-tier';
 export const SHIELD_MARKER = '/etc/ellulai/.sovereign-shield-active';
 export const ATTESTATION_POLICY_FILE = '/etc/ellulai/attestation-policy.json';
 export const JWT_SECRET_FILE = '/etc/ellulai/jwt-secret';
-export const SSH_AUTH_KEYS_PATH = '/home/dev/.ssh/authorized_keys';
+export const SSH_AUTH_KEYS_PATH = `${SVC_HOME}/.ssh/authorized_keys`;
 export const SERVER_ID_FILE = '/etc/ellulai/server-id';
 export const API_URL_FILE = '/etc/ellulai/api-url';
 
@@ -95,4 +110,4 @@ export const STABLE_FINGERPRINT_HEADERS = [
 ] as const;
 
 // Security tiers
-export type SecurityTier = 'standard' | 'ssh_only' | 'web_locked';
+export type SecurityTier = 'standard' | 'web_locked';

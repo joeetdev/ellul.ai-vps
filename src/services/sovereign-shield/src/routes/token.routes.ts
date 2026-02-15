@@ -92,16 +92,11 @@ setInterval(() => {
 export function registerTokenRoutes(app: Hono): void {
   /**
    * Authorize terminal access - returns short-lived token
-   * Tier-aware: standard (JWT), web_locked (passkey+PoP), ssh_only (blocked)
+   * Tier-aware: standard (JWT), web_locked (passkey+PoP)
    */
   app.post('/_auth/terminal/authorize', async (c) => {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
-
-    // SSH Only tier: No web terminal access
-    if (tier === 'ssh_only') {
-      return c.json({ error: 'Web terminal disabled', tier: 'ssh_only' }, 403);
-    }
 
     // Standard tier: JWT-based authentication
     if (tier === 'standard') {
@@ -310,16 +305,11 @@ export function registerTokenRoutes(app: Hono): void {
 
   /**
    * Authorize code browser access - returns short-lived token
-   * Tier-aware: standard (JWT), web_locked (passkey+PoP), ssh_only (blocked)
+   * Tier-aware: standard (JWT), web_locked (passkey+PoP)
    */
   app.post('/_auth/code/authorize', async (c) => {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
-
-    // SSH Only tier: No web code browser access
-    if (tier === 'ssh_only') {
-      return c.json({ error: 'Web code browser disabled', tier: 'ssh_only' }, 403);
-    }
 
     // Standard tier: JWT-based authentication
     if (tier === 'standard') {
@@ -433,11 +423,6 @@ export function registerTokenRoutes(app: Hono): void {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
 
-    // SSH Only tier: No web code browser access
-    if (tier === 'ssh_only') {
-      return c.json({ error: 'Web code browser disabled', tier: 'ssh_only' }, 403);
-    }
-
     // Standard tier: JWT-based authentication - create code session
     if (tier === 'standard') {
       const jwtPayload = verifyJwtToken(c.req);
@@ -550,16 +535,11 @@ export function registerTokenRoutes(app: Hono): void {
 
   /**
    * Authorize agent bridge access - returns short-lived token
-   * Tier-aware: standard (JWT), web_locked (passkey+PoP), ssh_only (blocked)
+   * Tier-aware: standard (JWT), web_locked (passkey+PoP)
    */
   app.post('/_auth/agent/authorize', async (c) => {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
-
-    // SSH Only tier: No web agent access
-    if (tier === 'ssh_only') {
-      return c.json({ error: 'Web agent access disabled', tier: 'ssh_only' }, 403);
-    }
 
     // Standard tier: JWT-based authentication
     if (tier === 'standard') {

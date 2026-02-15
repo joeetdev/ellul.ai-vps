@@ -14,11 +14,22 @@
  * - POST /_auth/bridge/upgrade-to-web-locked   - Upgrade from Standard
  * - POST /_auth/bridge/downgrade-to-standard   - Downgrade from Web Locked
  * - POST /_auth/bridge/switch-tier             - Switch security tier
+ * - GET  /_auth/bridge/settings               - Get local settings state
+ * - POST /_auth/bridge/toggle-terminal        - Toggle terminal (passkey-only)
+ * - POST /_auth/bridge/toggle-ssh             - Toggle SSH (passkey-only)
+ * - POST /_auth/bridge/kill-ports             - Kill processes on dev ports (passkey-only)
+ * - POST /_auth/bridge/git-action             - Execute git operation (passkey-only)
+ * - POST /_auth/bridge/switch-deployment      - Switch deployment model (passkey-only)
+ * - POST /_auth/bridge/confirm-infra          - Get infra confirmation token (passkey-only)
+ * - GET  /_auth/bridge/audit-log             - Read cryptographic audit log (passkey-only)
+ * - POST /_internal/validate-infra-token      - Validate infra token (localhost-only)
  */
 
 import type { Hono } from 'hono';
 import fs from 'fs';
+import BRIDGE_HTML from '../static/bridge-page.html';
 import { db } from '../database';
+import { SSH_AUTH_KEYS_PATH } from '../config';
 import { getDeviceFingerprint, getClientIp } from '../auth/fingerprint';
 import { validateSession, refreshSession, setSessionCookie } from '../auth/session';
 import type { Session } from '../auth/session';
@@ -29,9 +40,17 @@ import {
   getCurrentTier,
   executeTierSwitch,
   notifyPlatformPasskeyRemoved,
+  notifyPlatformSettingsChange,
+  notifyPlatformHeartbeatKeyReset,
 } from '../services/tier.service';
+import { readSettings, applyTierOverrides, toggleTerminal, toggleSsh } from '../services/settings.service';
+import { killPorts, DEV_PORTS } from '../services/process.service';
+import { executeGitAction, type GitAction } from '../services/git.service';
+import { switchDeployment, type DeploymentSwitchOpts } from '../services/deployment.service';
 import { getSshKeys } from './keys.routes';
 import { parseCookies } from '../utils/cookie';
+import { createConfirmation, validateConfirmation } from '../services/infra-confirm.service';
+import { cryptoAudit, readAuditLog, getChainHead } from '../services/crypto-audit.service';
 
 /**
  * Register bridge routes on Hono app
@@ -44,525 +63,8 @@ export function registerBridgeRoutes(app: Hono, hostname: string): void {
   app.get('/_auth/bridge', async (c) => {
     c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
     c.header('Pragma', 'no-cache');
-    return c.html(`<!DOCTYPE html>
-<html>
-<head><title>Auth Bridge</title></head>
-<body>
-<!-- Load PoP script to add signature headers to fetch requests -->
-<script src="/_auth/static/session-pop.js"></script>
-<script type="module">
-import { startAuthentication, startRegistration } from '/_auth/static/simplewebauthn-browser.js';
-
-const DASHBOARD_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
-let session = null;
-let pendingAuth = null;
-let popReady = false;
-
-// SECURITY: Capture the exact parent origin when iframe loads
-let PARENT_ORIGIN = null;
-try {
-  if (document.referrer) {
-    const referrerUrl = new URL(document.referrer);
-    PARENT_ORIGIN = referrerUrl.origin;
-    console.log('[Bridge] Parent origin captured:', PARENT_ORIGIN);
-  }
-} catch (e) {
-  console.warn('[Bridge] Could not parse referrer:', e.message);
-}
-
-// Initialize PoP before signaling ready
-async function initPoP() {
-  if (popReady) return;
-  if (typeof SESSION_POP === 'undefined') {
-    throw new Error('SESSION_POP not available');
-  }
-  await SESSION_POP.initialize();
-  if (!window.__popFetchWrapped) {
-    SESSION_POP.wrapFetch();
-    window.__popFetchWrapped = true;
-  }
-  popReady = true;
-  console.log('[Bridge] PoP initialized');
-}
-
-// Secure origin validation
-function isValidOrigin(origin) {
-  if (PARENT_ORIGIN) {
-    if (origin === PARENT_ORIGIN) return true;
-    if (DASHBOARD_ORIGINS.includes(origin)) return true;
-    console.warn('[Bridge] Rejected message from non-parent origin:', origin);
-    return false;
-  }
-  if (DASHBOARD_ORIGINS.includes(origin)) return true;
-  const subdomainPattern = new RegExp('^https:\\\\/\\\\/[a-zA-Z0-9-]+\\\\.ellul\\\\.(ai|app)$');
-  return subdomainPattern.test(origin);
-}
-
-// Listen for dashboard messages
-window.addEventListener('message', async (event) => {
-  if (!isValidOrigin(event.origin)) return;
-
-  const { type, requestId, ...data } = event.data;
-
-  try {
-    const result = await handleMessage(type, data);
-    respond(event.origin, requestId, { success: true, ...result });
-  } catch (err) {
-    respond(event.origin, requestId, { success: false, error: err.message });
-  }
-});
-
-// Shared token fetch with PoP error recovery
-// Retries on any PoP-related failure, reinitializing PoP between attempts
-async function fetchTokenWithPopRecovery(endpoint, label) {
-  await requireSession();
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch(endpoint, { method: 'POST', credentials: 'include' });
-    if (res.ok) return await res.json();
-    const err = await res.json().catch(() => ({}));
-    const isPopError = err.reason && (
-      err.reason === 'pop_not_bound' ||
-      err.reason.includes('pop') ||
-      err.reason === 'missing_pop_headers'
-    );
-    if (isPopError && attempt < 3) {
-      // PoP key may be stale/missing - reinitialize before retry
-      popReady = false;
-      try { await initPoP(); } catch {}
-      await new Promise(r => setTimeout(r, 500 * attempt));
-      continue;
-    }
-    throw new Error(err.error || 'Failed to get ' + label);
-  }
-  throw new Error('Failed to get ' + label + ' after retries');
-}
-
-async function handleMessage(type, data) {
-  switch (type) {
-    case 'check_session':
-      return { hasSession: await checkSession() };
-
-    case 'get_ssh_keys':
-      await requireSession();
-      return { keys: await fetchKeys() };
-
-    case 'add_ssh_key':
-      await requireSession();
-      return await addKey(data.name, data.publicKey);
-
-    case 'remove_ssh_key':
-      await requireSession();
-      return await removeKey(data.fingerprint);
-
-    case 'get_passkeys':
-      await requireSession();
-      return { passkeys: await fetchPasskeys() };
-
-    case 'register_passkey':
-      return await registerPasskey(data.name);
-
-    case 'remove_passkey':
-      await requireSession();
-      return await removePasskey(data.credentialId);
-
-    case 'upgrade_to_web_locked':
-      return await upgradeToWebLocked(data.name);
-
-    case 'downgrade_to_standard':
-      await requireSession();
-      return await downgradeToStandard();
-
-    case 'switch_to_ssh_only':
-      await requireSession();
-      return await switchToSshOnly();
-
-    case 'switch_to_web_locked':
-      return await switchToWebLocked(data.name);
-
-    case 'get_current_tier':
-      return await getCurrentTierInfo();
-
-    case 'confirm_operation':
-      await requireSession();
-      return await confirmOperation(data.operation);
-
-    case 'get_code_token':
-      return await fetchTokenWithPopRecovery('/_auth/code/authorize', 'code token');
-
-    case 'get_code_session':
-      return await fetchTokenWithPopRecovery('/_auth/code/session', 'code session');
-
-    case 'get_agent_token':
-      return await fetchTokenWithPopRecovery('/_auth/agent/authorize', 'agent token');
-
-    case 'get_terminal_token':
-      return await fetchTokenWithPopRecovery('/_auth/terminal/authorize', 'terminal token');
-
-    case 'get_preview_token':
-      return await fetchTokenWithPopRecovery('/_auth/preview/authorize', 'preview token');
-
-    case 'reauthenticate':
-      // Force fresh passkey authentication and reinitialize PoP
-      // Step 1: Clear the local PoP key from IndexedDB
-      if (typeof SESSION_POP !== 'undefined') {
-        await SESSION_POP.clearKeyPair();
-        console.log('[Bridge] Cleared PoP key from IndexedDB');
-      }
-      // Step 2: Logout to clear the session (forces new session on reauth)
-      try {
-        await fetch('/_auth/logout', { method: 'POST', credentials: 'include' });
-        console.log('[Bridge] Logged out to clear session');
-      } catch (e) {
-        console.log('[Bridge] Logout failed (may not exist):', e.message);
-      }
-      // Step 3: Clear local session state
-      session = null;
-      popReady = false;
-      // Step 4: Do fresh passkey auth (creates new session)
-      await doPasskeyAuth();
-      // Step 5: Initialize PoP with fresh key
-      await initPoP();
-      console.log('[Bridge] Reauthentication complete');
-      return { success: true, authenticated: true };
-
-    case 'authorize_git_link':
-      await requireSession();
-      return await authorizeGitLink(data.repoFullName, data.provider);
-
-    case 'authorize_git_unlink':
-      await requireSession();
-      return await authorizeGitUnlink();
-
-    default:
-      throw new Error('Unknown message type: ' + type);
-  }
-}
-
-async function checkSession() {
-  try {
-    const res = await fetch('/_auth/bridge/session', { credentials: 'include' });
-    if (res.ok) {
-      session = await res.json();
-      return true;
-    }
-  } catch {}
-  session = null;
-  return false;
-}
-
-async function requireSession() {
-  if (pendingAuth) {
-    await pendingAuth;
-    return;
-  }
-  if (session) {
-    if (!popReady) {
-      try { await initPoP(); } catch (e) { console.warn('[Bridge] PoP init failed:', e.message); }
-    }
-    return;
-  }
-  const hasSession = await checkSession();
-  if (hasSession) {
-    if (!popReady) {
-      try { await initPoP(); } catch (e) { console.warn('[Bridge] PoP init failed:', e.message); }
-    }
-    return;
-  }
-  // Don't auto-trigger passkey auth - let the dashboard show an auth wall
-  // The user must explicitly click "Login with Passkey" to authenticate
-  throw new Error('Authentication required');
-}
-
-async function doPasskeyAuth() {
-  const optionsRes = await fetch('/_auth/login/options', {
-    method: 'POST',
-    credentials: 'include'
-  });
-  if (!optionsRes.ok) throw new Error('Failed to get auth options');
-  const options = await optionsRes.json();
-  const credential = await startAuthentication({ optionsJSON: options });
-  const verifyRes = await fetch('/_auth/login/verify', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ assertion: credential }),
-  });
-  if (!verifyRes.ok) {
-    const err = await verifyRes.json();
-    throw new Error(err.error || 'Passkey verification failed');
-  }
-  session = await verifyRes.json();
-  popReady = false; // Reset so initPoP() re-binds to the new session
-}
-
-async function fetchKeys() {
-  const res = await fetch('/_auth/bridge/keys', { credentials: 'include' });
-  if (!res.ok) throw new Error('Failed to fetch keys');
-  return res.json();
-}
-
-async function addKey(name, publicKey) {
-  const res = await fetch('/_auth/keys', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, publicKey }),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to add key');
-  }
-  return res.json();
-}
-
-async function removeKey(fingerprint) {
-  const res = await fetch('/_auth/keys/' + encodeURIComponent(fingerprint), {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to remove key');
-  }
-  return { fingerprint };
-}
-
-async function fetchPasskeys() {
-  const res = await fetch('/_auth/bridge/passkeys', { credentials: 'include' });
-  if (!res.ok) throw new Error('Failed to fetch passkeys');
-  return res.json();
-}
-
-async function switchTier(targetTier) {
-  const res = await fetch('/_auth/bridge/switch-tier', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetTier }),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to switch tier');
-  }
-  return res.json();
-}
-
-async function registerPasskey(name) {
-  const optionsRes = await fetch('/_auth/register/options', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name || 'Passkey' }),
-  });
-  if (!optionsRes.ok) {
-    const err = await optionsRes.json();
-    throw new Error(err.error || 'Failed to get registration options');
-  }
-  const options = await optionsRes.json();
-  const credential = await startRegistration({ optionsJSON: options });
-  const verifyRes = await fetch('/_auth/register/verify', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ attestation: credential, name: name || 'Passkey' }),
-  });
-  if (!verifyRes.ok) {
-    const err = await verifyRes.json();
-    throw new Error(err.error || 'Passkey registration failed');
-  }
-  const result = await verifyRes.json();
-  session = result;
-  return { credentialId: result.credentialId, name: name || 'Passkey' };
-}
-
-async function removePasskey(credentialId) {
-  const res = await fetch('/_auth/bridge/passkey/' + encodeURIComponent(credentialId), {
-    method: 'DELETE',
-    credentials: 'include',
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to remove passkey');
-  }
-  return { credentialId };
-}
-
-async function upgradeToWebLocked(name) {
-  // WebAuthn registration requires user activation and can't work in cross-origin iframe
-  // Return a popup URL for the dashboard to open
-  const encodedName = encodeURIComponent(name || 'Passkey');
-  return {
-    requiresPopup: true,
-    popupUrl: '/_auth/standard-upgrade?name=' + encodedName,
-    message: 'Open popup to register passkey'
-  };
-}
-
-async function downgradeToStandard() {
-  const res = await fetch('/_auth/bridge/downgrade-to-standard', {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to downgrade to Standard');
-  }
-  return res.json();
-}
-
-async function switchToSshOnly() {
-  const keys = await fetchKeys();
-  if (!keys || keys.length === 0) {
-    throw new Error('SSH Only requires at least one SSH key configured');
-  }
-  const res = await fetch('/_auth/bridge/switch-tier', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetTier: 'ssh_only' }),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to switch to SSH Only');
-  }
-  return res.json();
-}
-
-async function switchToWebLocked(name) {
-  const tierInfo = await getCurrentTierInfo();
-  if (tierInfo.passkeys.length === 0 && tierInfo.tier === 'ssh_only') {
-    return {
-      requiresRegistration: true,
-      registrationUrl: '/_auth/ssh-only-upgrade',
-      message: 'Open popup to register passkey'
-    };
-  }
-  if (!session && tierInfo.passkeys.length > 0) {
-    throw new Error('Authentication required');
-  }
-  if (tierInfo.passkeys.length === 0) {
-    await registerPasskey(name);
-  }
-  const res = await fetch('/_auth/bridge/switch-tier', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targetTier: 'web_locked' }),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    throw new Error(error.error || 'Failed to switch to Web Locked');
-  }
-  return { tier: 'web_locked' };
-}
-
-async function getCurrentTierInfo() {
-  const res = await fetch('/_auth/bridge/tier', { credentials: 'include' });
-  if (!res.ok) throw new Error('Failed to get tier info');
-  return res.json();
-}
-
-async function confirmOperation(operation) {
-  const VALID_OPERATIONS = ['delete', 'rebuild', 'update', 'rollback', 'deployment', 'change-tier', 'settings'];
-  if (!operation || !VALID_OPERATIONS.includes(operation)) {
-    throw new Error('Invalid operation. Must be one of: ' + VALID_OPERATIONS.join(', '));
-  }
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch('/_auth/confirm-operation', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ operation }),
-    });
-    if (res.ok) {
-      return await res.json();
-    }
-    const error = await res.json().catch(() => ({}));
-    if (error.reason === 'pop_not_bound' && attempt < 3) {
-      // PoP not bound yet — try to bind it before retrying
-      if (!popReady) {
-        try { await initPoP(); } catch (e) { console.warn('[Bridge] PoP init failed:', e.message); }
-      }
-      await new Promise(r => setTimeout(r, 500 * attempt));
-      continue;
-    }
-    if (error.needsAuth) {
-      throw new Error('Authentication required');
-    }
-    throw new Error(error.error || 'Failed to confirm operation');
-  }
-  throw new Error('Failed to confirm operation after retries');
-}
-
-async function authorizeGitLink(repoFullName, provider) {
-  if (!repoFullName || !provider) {
-    throw new Error('repoFullName and provider are required');
-  }
-  const res = await fetch('/_auth/git/authorize-link', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoFullName, provider }),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    if (error.needsAuth) {
-      throw new Error('Authentication required');
-    }
-    throw new Error(error.error || 'Failed to authorize git link');
-  }
-  return res.json();
-}
-
-async function authorizeGitUnlink() {
-  const res = await fetch('/_auth/git/authorize-unlink', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
-  });
-  if (!res.ok) {
-    const error = await res.json();
-    if (error.needsAuth) {
-      throw new Error('Authentication required');
-    }
-    throw new Error(error.error || 'Failed to authorize git unlink');
-  }
-  return res.json();
-}
-
-function respond(origin, requestId, data) {
-  parent.postMessage({ requestId, ...data }, origin);
-}
-
-// Send message to parent - prefer captured PARENT_ORIGIN to avoid postMessage mismatches
-function notifyParent(data) {
-  if (PARENT_ORIGIN) {
-    try { parent.postMessage(data, PARENT_ORIGIN); } catch {}
-  } else {
-    // Fallback: try all known origins if referrer wasn't captured
-    DASHBOARD_ORIGINS.forEach(origin => {
-      try { parent.postMessage(data, origin); } catch {}
-    });
-  }
-}
-
-// Initialize PoP then signal ready to dashboard
-initPoP()
-  .then(() => {
-    notifyParent({ type: 'bridge_ready', pop: true });
-  })
-  .catch((err) => {
-    console.error('[Bridge] PoP initialization failed:', err);
-    notifyParent({
-      type: 'bridge_ready',
-      pop: false,
-      error: err.message || 'pop_init_failed'
-    });
-  });
-</script>
-</body>
-</html>`);
+    const tier = getCurrentTier();
+    return c.html(BRIDGE_HTML.replace('__SECURITY_TIER__', tier));
   });
 
   /**
@@ -807,8 +309,8 @@ initPoP()
     }
 
     // Check for SSH keys as recovery backup
-    const hasSSHKeys = fs.existsSync('/home/dev/.ssh/authorized_keys') &&
-      fs.readFileSync('/home/dev/.ssh/authorized_keys', 'utf8').trim().length > 0;
+    const hasSSHKeys = fs.existsSync(SSH_AUTH_KEYS_PATH) &&
+      fs.readFileSync(SSH_AUTH_KEYS_PATH, 'utf8').trim().length > 0;
 
     // If no SSH keys, require explicit acknowledgment of permanent lockout risk
     const body = await c.req.json().catch(() => ({})) as { acknowledgeNoRecovery?: boolean };
@@ -917,16 +419,8 @@ initPoP()
     const body = await c.req.json() as { targetTier?: string; acknowledgeNoRecovery?: boolean };
     const { targetTier } = body;
 
-    if (!targetTier || !['standard', 'ssh_only', 'web_locked'].includes(targetTier)) {
+    if (!targetTier || !['standard', 'web_locked'].includes(targetTier)) {
       return c.json({ error: 'Invalid target tier' }, 400);
-    }
-
-    // For ssh_only, require at least one SSH key
-    if (targetTier === 'ssh_only') {
-      const keys = getSshKeys();
-      if (keys.length === 0) {
-        return c.json({ error: 'SSH Only requires at least one SSH key' }, 400);
-      }
     }
 
     // For web_locked without SSH, warn about permanent lockout risk
@@ -944,10 +438,403 @@ initPoP()
 
     // Execute tier switch and notify platform
     try {
-      await executeTierSwitch(targetTier as 'standard' | 'ssh_only' | 'web_locked', ip, c.req.header('user-agent') || 'unknown');
+      await executeTierSwitch(targetTier as 'standard' | 'web_locked', ip, c.req.header('user-agent') || 'unknown');
       return c.json({ success: true, tier: targetTier });
     } catch (e) {
       return c.json({ error: (e as Error).message || 'Failed to switch tier' }, 500);
     }
+  });
+
+  // =========================================================================
+  // Settings endpoints — PASSKEY-ONLY auth (no JWT, no bearer token)
+  //
+  // SECURITY: Settings changes require physical device attestation via WebAuthn.
+  // Architecturally impossible for AI agents to bypass.
+  // =========================================================================
+
+  /**
+   * Authenticate settings requests. PASSKEY ONLY — no JWT, no bearer token.
+   * Returns null if valid, or a Response object for error cases.
+   */
+  function requirePasskeySession(c: any, ip: string): { valid: boolean; error?: string; status?: number; requiresPasskey?: boolean } {
+    const cookies = parseCookies(c.req.header('cookie'));
+    const sessionId = cookies.shield_session;
+
+    if (!sessionId) {
+      // Check if user has any passkeys registered
+      const passkeys = db.prepare('SELECT id FROM credential').all();
+      if (passkeys.length === 0) {
+        return {
+          valid: false,
+          error: 'Register a passkey to manage settings',
+          status: 403,
+          requiresPasskey: true,
+        };
+      }
+      return { valid: false, error: 'Passkey authentication required', status: 401 };
+    }
+
+    const fingerprintData = getDeviceFingerprint(c);
+    const result = validateSession(sessionId, ip, fingerprintData, c.req.path);
+    if (!result.valid) {
+      return { valid: false, error: result.reason || 'Session expired', status: 401 };
+    }
+
+    return { valid: true };
+  }
+
+  /**
+   * Bridge API: Get local settings state
+   */
+  app.get('/_auth/bridge/settings', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const settings = readSettings();
+    const effective = applyTierOverrides(settings);
+    return c.json(effective);
+  });
+
+  /**
+   * Bridge API: Toggle terminal
+   */
+  app.post('/_auth/bridge/toggle-terminal', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ error: 'enabled must be boolean' }, 400);
+    }
+
+    try {
+      const result = toggleTerminal(body.enabled);
+      logAuditEvent({ type: 'settings_changed', ip, details: { field: 'terminal', enabled: result.terminalEnabled } });
+      cryptoAudit('setting_changed', 'passkey', { field: 'terminal', enabled: body.enabled });
+      // Fire-and-forget webhook (non-blocking — heartbeat reconciles on failure)
+      notifyPlatformSettingsChange(result, ip, c.req.header('user-agent') || 'unknown')
+        .catch(e => console.warn('[shield] Settings webhook failed:', e.message));
+      return c.json({ success: true, ...result });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  /**
+   * Bridge API: Toggle SSH
+   */
+  app.post('/_auth/bridge/toggle-ssh', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { enabled?: boolean };
+    if (typeof body.enabled !== 'boolean') {
+      return c.json({ error: 'enabled must be boolean' }, 400);
+    }
+
+    try {
+      const result = toggleSsh(body.enabled);
+      logAuditEvent({ type: 'settings_changed', ip, details: { field: 'ssh', enabled: result.sshEnabled } });
+      cryptoAudit('setting_changed', 'passkey', { field: 'ssh', enabled: body.enabled });
+      // Fire-and-forget webhook (non-blocking — heartbeat reconciles on failure)
+      notifyPlatformSettingsChange(result, ip, c.req.header('user-agent') || 'unknown')
+        .catch(e => console.warn('[shield] Settings webhook failed:', e.message));
+      return c.json({ success: true, ...result });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  // =========================================================================
+  //  OPERATIONS — Kill Ports, Git, Deployment
+  //
+  //  Bridge-routed operations (Phase 4). Previously dispatched via heartbeat
+  //  response commands. Now executed directly on VPS via passkey-authenticated
+  //  bridge endpoints. Dashboard gets instant feedback via postMessage.
+  // =========================================================================
+
+  /**
+   * Bridge API: Kill processes on dev ports
+   */
+  app.post('/_auth/bridge/kill-ports', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { ports?: number[] };
+    const ports = Array.isArray(body.ports) ? body.ports : DEV_PORTS;
+
+    try {
+      const result = killPorts(ports);
+      logAuditEvent({ type: 'operation', ip, details: { action: 'kill_ports', ports, killed: result.killed, skipped: result.skipped } });
+      cryptoAudit('ports_killed', 'passkey', { ports, killed: result.killed });
+      return c.json({ success: true, ...result });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  /**
+   * Bridge API: Execute git operation
+   */
+  app.post('/_auth/bridge/git-action', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { action?: string; appName?: string };
+    const validActions: GitAction[] = ['push', 'pull', 'force-push', 'setup', 'teardown'];
+    if (!body.action || !validActions.includes(body.action as GitAction)) {
+      return c.json({ error: `Invalid action. Must be one of: ${validActions.join(', ')}` }, 400);
+    }
+
+    try {
+      const result = executeGitAction(body.action as GitAction, body.appName);
+      logAuditEvent({ type: 'operation', ip, details: { action: 'git', gitAction: body.action, appName: body.appName } });
+      cryptoAudit('git_action', 'passkey', { action: body.action, appName: body.appName });
+      return c.json({ success: true, action: body.action, output: result.output });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  /**
+   * Bridge API: Switch deployment model
+   */
+  app.post('/_auth/bridge/switch-deployment', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({})) as Partial<DeploymentSwitchOpts>;
+    const validModels = ['cloudflare', 'direct', 'gateway'];
+    if (!body.model || !validModels.includes(body.model) || !body.domain) {
+      return c.json({ error: 'model (cloudflare|direct|gateway) and domain are required' }, 400);
+    }
+
+    try {
+      const result = switchDeployment(body as DeploymentSwitchOpts);
+      if (!result.success) {
+        return c.json({ error: result.error }, 500);
+      }
+      logAuditEvent({ type: 'operation', ip, details: { action: 'switch_deployment', model: body.model, domain: body.domain } });
+      cryptoAudit('deployment_switched', 'passkey', { model: body.model, domain: body.domain });
+      return c.json({ success: true });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  // =========================================================================
+  //  INFRASTRUCTURE CONFIRMATION — Passkey-gated one-time tokens
+  //
+  //  Dangerous daemon operations (migrate/pack, migrate/pull) require a
+  //  passkey-approved confirmation token. The dashboard obtains a token via
+  //  this endpoint, then the platform API includes it in X-Infra-Confirm
+  //  when calling the daemon. file-api validates via /_internal/validate-infra-token.
+  // =========================================================================
+
+  /**
+   * Bridge API: Create infrastructure confirmation token
+   */
+  app.post('/_auth/bridge/confirm-infra', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { operation?: string };
+    const validOperations = ['hibernate', 'migrate', 'maintenance'];
+    if (!body.operation || !validOperations.includes(body.operation)) {
+      return c.json({ error: `Invalid operation. Must be one of: ${validOperations.join(', ')}` }, 400);
+    }
+
+    const confirmation = createConfirmation(body.operation);
+    logAuditEvent({ type: 'operation', ip, details: { action: 'infra_confirm', operation: body.operation } });
+    cryptoAudit('infra_confirmed', 'passkey', { operation: body.operation });
+    return c.json(confirmation);
+  });
+
+  // =========================================================================
+  //  HEARTBEAT RESET — Manual recovery for broken heartbeat auth
+  // =========================================================================
+
+  /**
+   * Bridge API: Regenerate Ed25519 heartbeat keypair
+   * Use case: manual recovery when heartbeat auth is broken
+   */
+  app.post('/_auth/bridge/reset-heartbeat', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) return c.json({ error: 'Rate limit exceeded' }, 429);
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    try {
+      const { execSync } = await import('child_process');
+
+      // Regenerate Ed25519 keypair
+      execSync('openssl genpkey -algorithm Ed25519 -out /etc/ellulai/heartbeat.key', { timeout: 5_000 });
+      execSync('openssl pkey -in /etc/ellulai/heartbeat.key -pubout -out /etc/ellulai/heartbeat.pub', { timeout: 5_000 });
+      execSync('chmod 600 /etc/ellulai/heartbeat.key && chmod 644 /etc/ellulai/heartbeat.pub', { timeout: 5_000 });
+
+      // Notify platform to clear stored public key (TOFU will re-register on next heartbeat)
+      await notifyPlatformHeartbeatKeyReset();
+
+      // Restart enforcer to pick up new keypair immediately
+      execSync('systemctl restart ellulai-enforcer 2>/dev/null || true', { timeout: 10_000 });
+
+      logAuditEvent({ type: 'operation', ip, details: { action: 'heartbeat_key_reset' } });
+      cryptoAudit('heartbeat_key_reset', 'passkey', {});
+      return c.json({ success: true });
+    } catch (e) {
+      return c.json({ success: false, error: (e as Error).message }, 500);
+    }
+  });
+
+  // =========================================================================
+  //  AUDIT LOG — Cryptographic hash-chained audit trail
+  // =========================================================================
+
+  /**
+   * Bridge API: Read cryptographic audit log
+   * Returns hash-chained, Ed25519-signed audit entries for remote verification.
+   * Query param `since` filters entries with seq > since (default 0).
+   * Limited to last 100 entries.
+   */
+  app.get('/_auth/bridge/audit-log', async (c) => {
+    const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+
+    const auth = requirePasskeySession(c, ip);
+    if (!auth.valid) {
+      return c.json(
+        { error: auth.error, ...(auth.requiresPasskey ? { requiresPasskey: true } : {}) },
+        (auth.status || 401) as any,
+      );
+    }
+
+    const sinceParam = c.req.query('since');
+    const since = sinceParam ? parseInt(sinceParam, 10) || 0 : 0;
+
+    const entries = readAuditLog(since, 100);
+    const chainHeadValue = getChainHead();
+
+    return c.json({ entries, chainHead: chainHeadValue });
+  });
+
+  /**
+   * Internal API: Validate infrastructure confirmation token
+   * Localhost-only — called by file-api to verify X-Infra-Confirm headers.
+   * No passkey session required (already validated at token creation time).
+   */
+  app.post('/_internal/validate-infra-token', async (c) => {
+    // Restrict to localhost only
+    const ip = getClientIp(c);
+    if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { token?: string; operation?: string };
+    if (!body.token || !body.operation) {
+      return c.json({ error: 'Missing token or operation' }, 400);
+    }
+
+    const valid = validateConfirmation(body.token, body.operation);
+    if (!valid) {
+      return c.json({ error: 'Invalid or expired confirmation token' }, 403);
+    }
+
+    return c.json({ valid: true });
   });
 }

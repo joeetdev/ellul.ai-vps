@@ -1,399 +1,98 @@
 #!/bin/bash
 # Enforcer Deployment Functions
-# Handles switching between Cloudflare Edge and Direct Connect deployment models.
+# Ensures daemon API port (3006) is available in Caddyfile.
+#
+# Phase 4 cleanup: switch_deployment_model() was moved to the sovereign-shield
+# bridge and is no longer processed by the enforcer. Deployment model switching
+# (Cloudflare Edge / Direct Connect) is now handled via WebSocket bridge commands
+# routed through sovereign-shield (port 3005) instead of heartbeat polling.
 
-# Switch deployment model based on heartbeat response
-switch_deployment_model() {
-  local RESPONSE="$1"
-  local NEW_MODEL=$(echo "$RESPONSE" | jq -r '.switchDeploymentModel // ""')
-  [ -z "$NEW_MODEL" ] && return 0
+# Ensure daemon API port (3006) is available for callDaemon RPC.
+# Called on every heartbeat to bootstrap existing servers that were
+# provisioned before daemon port was added to the payload.
+# Uses origin cert (*.ellul.ai) for TLS when available.
+# Auto-upgrades from tls internal → origin cert when available.
+ensure_daemon_port() {
+  local NEEDS_RELOAD=false
+  mkdir -p /etc/caddy/sites-enabled
 
-  local NEW_DOMAIN=$(echo "$RESPONSE" | jq -r '.newDomain // ""')
-  local CF_ORIGIN_CERT=$(echo "$RESPONSE" | jq -r '.cfOriginCert // ""')
-  local CF_ORIGIN_KEY=$(echo "$RESPONSE" | jq -r '.cfOriginKey // ""')
+  # Detect public IP for TLS cert SAN (fallback mode only)
+  local MY_IP=$(curl -sf --connect-timeout 2 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null \
+    || curl -sf --connect-timeout 2 "http://169.254.169.254/hetzner/v1/metadata/public-ipv4" 2>/dev/null \
+    || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
 
-  log "DEPLOYMENT: Switching to $NEW_MODEL model (domain: $NEW_DOMAIN)"
-
-  # Update stored domain
-  echo "$NEW_DOMAIN" > /etc/ellulai/domain
-
-  # Restart sovereign-shield to pick up new domain for WebAuthn + CORS
-  log "DEPLOYMENT: Restarting sovereign-shield for new domain..."
-  systemctl restart ellulai-sovereign-shield 2>/dev/null || true
-  sleep 2
-
-  # Compute code and dev domains from new domain
-  local SHORT_ID=$(cat /etc/ellulai/server-id | head -c8)
-  if [ "$NEW_MODEL" = "direct" ]; then
-    local CODE_DOMAIN="${SHORT_ID}-dcode.ellul.ai"
-    local DEV_DOMAIN="${SHORT_ID}-ddev.ellul.app"
-  else
-    local CODE_DOMAIN="${SHORT_ID}-code.ellul.ai"
-    local DEV_DOMAIN="${SHORT_ID}-dev.ellul.app"
+  if [ -z "$MY_IP" ]; then
+    log "DAEMON: Could not detect public IP, skipping daemon port setup"
+    return
   fi
 
-  if [ "$NEW_MODEL" = "direct" ]; then
-    # --- Direct Connect Model ---
-    # Server terminates TLS directly via Let's Encrypt ACME
-    log "DEPLOYMENT: Generating Direct Connect Caddyfile (Let's Encrypt)..."
+  local HAS_ORIGIN_CERT=false
+  if [ -f /etc/caddy/origin.crt ] && [ -f /etc/caddy/origin.key ]; then
+    HAS_ORIGIN_CERT=true
+  fi
 
-cat > /etc/caddy/Caddyfile << CADDYEOF
-{
-    email admin@ellul.ai
+  if [ ! -f /etc/caddy/sites-enabled/daemon.caddy ]; then
+    # No daemon.caddy yet — create it
+    if [ "$HAS_ORIGIN_CERT" = true ]; then
+      log "DAEMON: Bootstrapping daemon API with origin cert (daemon.ellul.ai:3006)..."
+      cat > /etc/caddy/sites-enabled/daemon.caddy << DAEMONEOF
+daemon.ellul.ai:3006 {
+    tls /etc/caddy/origin.crt /etc/caddy/origin.key
+    @daemon path /api/mount-volume /api/flush-volume /api/migrate/* /api/update-identity /api/luks-init /api/luks-unlock /api/luks-close /api/backup-identity /api/restore-identity
+    handle @daemon {
+        reverse_proxy localhost:3002
+    }
+    respond "Not Found" 404
 }
-
-import /etc/caddy/sites-enabled/*.caddy
-
-# Internal services (ellul.ai): main + code
-$NEW_DOMAIN, $CODE_DOMAIN {
-    @code host $CODE_DOMAIN
-    handle @code {
-        header Content-Security-Policy "frame-ancestors 'self' https://console.ellul.ai https://ellul.ai"
-        header Access-Control-Allow-Origin "https://console.ellul.ai"
-        header Access-Control-Allow-Methods "GET, POST, OPTIONS"
-        header Access-Control-Allow-Headers "Content-Type, Authorization, Cookie, X-Code-Token"
-        header Access-Control-Allow-Credentials "true"
-
-        @options method OPTIONS
-        handle @options {
-            respond "" 204
-        }
-
-        reverse_proxy localhost:3002 {
-            header_down -Access-Control-Allow-Origin
-            header_down -Access-Control-Allow-Methods
-            header_down -Access-Control-Allow-Headers
-        }
+DAEMONEOF
+    else
+      log "DAEMON: Bootstrapping daemon API site block (${MY_IP}:3006)..."
+      cat > /etc/caddy/sites-enabled/daemon.caddy << DAEMONEOF
+${MY_IP}:3006 {
+    tls internal
+    @daemon path /api/mount-volume /api/flush-volume /api/migrate/* /api/update-identity /api/luks-init /api/luks-unlock /api/luks-close /api/backup-identity /api/restore-identity
+    handle @daemon {
+        reverse_proxy localhost:3002
     }
-
-    @main host $NEW_DOMAIN
-    handle @main {
-        @notAuth not path /_auth/*
-        header @notAuth Content-Security-Policy "frame-ancestors 'self' https://console.ellul.ai https://ellul.ai"
-
-        # UNIFIED AUTH: Public auth endpoints (no forward_auth needed)
-        @auth_public path /_auth/login* /_auth/logout /_auth/register* /_auth/session /_auth/terminal/* /_auth/code/* /_auth/agent/* /_auth/bridge/* /_auth/sessions* /_auth/audit /api/auth/*
-        handle @auth_public {
-            header Referrer-Policy "no-referrer"
-            reverse_proxy localhost:3005
-        }
-
-        # Protected tier management endpoints (require authentication, go to file-api)
-        @auth_protected path /_auth/upgrade-* /_auth/add-ssh-key /_auth/remove-ssh-key /_auth/api/keys /_auth/keys /_auth/tier
-        handle @auth_protected {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up X-Forwarded-Host {http.request.host}
-                header_up X-Forwarded-Uri {http.request.uri}
-                header_up X-Forwarded-Proto {http.request.scheme}
-                copy_headers X-Auth-User X-Auth-Session X-Auth-Tier
-            }
-            reverse_proxy localhost:3002
-        }
-
-        # Terminal sessions list - requires auth
-        handle /terminal/sessions {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        # Close terminal session - requires auth
-        handle /terminal/session/* {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        # Terminal routes - protected by auth gate
-        handle /term/* {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        handle /ttyd/* {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        # Agent bridge - protected by auth gate
-        handle /vibe {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7700
-        }
-        # Static files fallback
-        handle {
-            root * /var/www/ellulai
-            rewrite * /index.html
-            file_server
-        }
-    }
-
-    log {
-        output file /var/log/caddy/access.log
-        format json
-    }
+    respond "Not Found" 404
 }
-
-# User content (ellul.app): dev preview
-$DEV_DOMAIN {
-    @notAuth not path /_auth/*
-    header @notAuth Content-Security-Policy "frame-ancestors 'self' https://console.ellul.ai https://ellul.ai"
-
-    forward_auth localhost:3002 {
-        uri /api/auth/check
-        header_up Cookie {http.request.header.Cookie}
-    }
-    # Strip auth params before forwarding to user's app
-    uri query -_shield_session
-    reverse_proxy localhost:3000 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
-
-    log {
-        output file /var/log/caddy/access.log
-        format json
-    }
-}
-CADDYEOF
-
-  else
-    # --- Cloudflare Edge Model ---
-    # CF terminates public TLS, origin cert + Authenticated Origin Pulls
-    log "DEPLOYMENT: Generating Cloudflare Edge Caddyfile (AOP)..."
-
-    # Write origin cert if provided
-    if [ -n "$CF_ORIGIN_CERT" ]; then
-      echo "$CF_ORIGIN_CERT" > /etc/caddy/origin.crt
-      chmod 644 /etc/caddy/origin.crt
-      chown caddy:caddy /etc/caddy/origin.crt
+DAEMONEOF
     fi
-    if [ -n "$CF_ORIGIN_KEY" ]; then
-      echo "$CF_ORIGIN_KEY" > /etc/caddy/origin.key
-      chmod 600 /etc/caddy/origin.key
-      chown caddy:caddy /etc/caddy/origin.key
+    ufw allow 3006/tcp comment 'Daemon API' 2>/dev/null || true
+    NEEDS_RELOAD=true
+  elif [ "$HAS_ORIGIN_CERT" = true ] && grep -q 'tls internal' /etc/caddy/sites-enabled/daemon.caddy; then
+    # Auto-upgrade: origin cert available but daemon.caddy still uses tls internal
+    log "DAEMON: Upgrading daemon.caddy from tls internal to origin cert..."
+    cat > /etc/caddy/sites-enabled/daemon.caddy << DAEMONEOF
+daemon.ellul.ai:3006 {
+    tls /etc/caddy/origin.crt /etc/caddy/origin.key
+    @daemon path /api/mount-volume /api/flush-volume /api/migrate/* /api/update-identity /api/luks-init /api/luks-unlock /api/luks-close /api/backup-identity /api/restore-identity
+    handle @daemon {
+        reverse_proxy localhost:3002
+    }
+    respond "Not Found" 404
+}
+DAEMONEOF
+    NEEDS_RELOAD=true
+  elif ! grep -q 'tls internal' /etc/caddy/sites-enabled/daemon.caddy && ! grep -q 'origin.crt' /etc/caddy/sites-enabled/daemon.caddy; then
+    # Fix: missing TLS config entirely or port-only address
+    log "DAEMON: Fixing daemon.caddy — adding TLS config (${MY_IP}:3006)..."
+    cat > /etc/caddy/sites-enabled/daemon.caddy << DAEMONEOF
+${MY_IP}:3006 {
+    tls internal
+    @daemon path /api/mount-volume /api/flush-volume /api/migrate/* /api/update-identity /api/luks-init /api/luks-unlock /api/luks-close /api/backup-identity /api/restore-identity
+    handle @daemon {
+        reverse_proxy localhost:3002
+    }
+    respond "Not Found" 404
+}
+DAEMONEOF
+    NEEDS_RELOAD=true
+  fi
+
+  if [ "$NEEDS_RELOAD" = true ]; then
+    if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
+      caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null || true
     fi
-
-    # Download/refresh AOP CA cert
-    curl -sS https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem -o /etc/caddy/cf-origin-pull-ca.pem
-    chown caddy:caddy /etc/caddy/cf-origin-pull-ca.pem
-    local CF_AOP_CA_BASE64=$(grep -v '^-----' /etc/caddy/cf-origin-pull-ca.pem | tr -d '\n')
-
-cat > /etc/caddy/Caddyfile << CADDYEOF
-{
-    auto_https off
-    email admin@ellul.ai
-}
-
-import /etc/caddy/sites-enabled/*.caddy
-
-# Internal services (ellul.ai): main + code — origin.crt/key
-$NEW_DOMAIN:443, $CODE_DOMAIN:443 {
-    tls /etc/caddy/origin.crt /etc/caddy/origin.key {
-        client_auth {
-            mode require_and_verify
-            trusted_ca_cert $CF_AOP_CA_BASE64
-        }
-    }
-
-    @code host $CODE_DOMAIN
-    handle @code {
-        header Content-Security-Policy "frame-ancestors 'self' https://console.ellul.ai https://ellul.ai"
-        header Access-Control-Allow-Origin "https://console.ellul.ai"
-        header Access-Control-Allow-Methods "GET, POST, OPTIONS"
-        header Access-Control-Allow-Headers "Content-Type, Authorization, Cookie, X-Code-Token"
-        header Access-Control-Allow-Credentials "true"
-
-        @options method OPTIONS
-        handle @options {
-            respond "" 204
-        }
-
-        reverse_proxy localhost:3002 {
-            header_down -Access-Control-Allow-Origin
-            header_down -Access-Control-Allow-Methods
-            header_down -Access-Control-Allow-Headers
-        }
-    }
-
-    @main host $NEW_DOMAIN
-    handle @main {
-        @notAuth not path /_auth/*
-        header @notAuth Content-Security-Policy "frame-ancestors 'self' https://console.ellul.ai https://ellul.ai"
-
-        # UNIFIED AUTH: Public auth endpoints (no forward_auth needed)
-        @auth_public path /_auth/login* /_auth/logout /_auth/register* /_auth/session /_auth/terminal/* /_auth/code/* /_auth/agent/* /_auth/bridge/* /_auth/sessions* /_auth/audit /api/auth/*
-        handle @auth_public {
-            header Referrer-Policy "no-referrer"
-            reverse_proxy localhost:3005
-        }
-
-        # Protected tier management endpoints (require authentication, go to file-api)
-        @auth_protected path /_auth/upgrade-* /_auth/add-ssh-key /_auth/remove-ssh-key /_auth/api/keys /_auth/keys /_auth/tier
-        handle @auth_protected {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up X-Forwarded-Host {http.request.host}
-                header_up X-Forwarded-Uri {http.request.uri}
-                header_up X-Forwarded-Proto {http.request.scheme}
-                copy_headers X-Auth-User X-Auth-Session X-Auth-Tier
-            }
-            reverse_proxy localhost:3002
-        }
-
-        # Terminal sessions list - requires auth
-        handle /terminal/sessions {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        # Close terminal session - requires auth
-        handle /terminal/session/* {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        # Terminal routes - protected by auth gate
-        handle /term/* {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        handle /ttyd/* {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7701
-        }
-        # Agent bridge - protected by auth gate
-        handle /vibe {
-            forward_auth localhost:3005 {
-                uri /api/auth/session
-                header_up Cookie {http.request.header.Cookie}
-                header_up Accept {http.request.header.Accept}
-                header_up X-Forwarded-Uri {uri}
-                header_up X-Forwarded-Host {host}
-                copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
-            }
-            reverse_proxy localhost:7700
-        }
-        # Static files fallback
-        handle {
-            root * /var/www/ellulai
-            rewrite * /index.html
-            file_server
-        }
-    }
-
-    log {
-        output file /var/log/caddy/access.log
-        format json
-    }
-}
-
-# User content (ellul.app): dev preview — origin-app.crt/key
-$DEV_DOMAIN:443 {
-    tls /etc/caddy/origin-app.crt /etc/caddy/origin-app.key {
-        client_auth {
-            mode require_and_verify
-            trusted_ca_cert $CF_AOP_CA_BASE64
-        }
-    }
-
-    @notAuth not path /_auth/*
-    header @notAuth Content-Security-Policy "frame-ancestors 'self' https://console.ellul.ai https://ellul.ai"
-
-    forward_auth localhost:3002 {
-        uri /api/auth/check
-        header_up Cookie {http.request.header.Cookie}
-    }
-    # Strip auth params before forwarding to user's app
-    uri query -_shield_session
-    reverse_proxy localhost:3000 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
-
-    log {
-        output file /var/log/caddy/access.log
-        format json
-    }
-}
-CADDYEOF
-  fi
-
-  # Ensure sovereign-shield is running (required for all tiers)
-  if ! systemctl is-active --quiet ellulai-sovereign-shield 2>/dev/null; then
-    log "DEPLOYMENT: Starting sovereign-shield service..."
-    systemctl enable --now ellulai-sovereign-shield 2>/dev/null || true
-    sleep 1
-  fi
-
-  # Validate and reload Caddy
-  if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
-    caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null || systemctl restart caddy
-    log "DEPLOYMENT: Caddy reloaded with $NEW_MODEL config"
-  else
-    log "DEPLOYMENT ERROR: Invalid Caddyfile, keeping previous config"
-    cat /etc/caddy/Caddyfile >> "$LOG_FILE"
   fi
 }

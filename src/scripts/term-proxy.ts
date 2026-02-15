@@ -498,8 +498,10 @@ httpServer.listen(PORT, '127.0.0.1', () => {
 
 /**
  * Systemd service for the terminal auth proxy.
+ * @param svcUser - Service user name (coder for free tier, dev for paid)
  */
-export function getTermProxyService(): string {
+export function getTermProxyService(svcUser: string = "dev"): string {
+  const svcHome = `/home/${svcUser}`;
   return `[Unit]
 Description=ellul.ai Terminal Auth Proxy
 After=network.target
@@ -507,8 +509,8 @@ After=network.target
 [Service]
 Type=simple
 User=root
-Environment=NODE_PATH=/opt/ellulai/auth/node_modules:/home/dev/.nvm/versions/node/v20.20.0/lib/node_modules
-ExecStart=/home/dev/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/ellulai-term-proxy
+Environment=NODE_PATH=/opt/ellulai/auth/node_modules:${svcHome}/.node/lib/node_modules
+ExecStart=${svcHome}/.node/bin/node /usr/local/bin/ellulai-term-proxy
 Restart=always
 RestartSec=3
 

@@ -137,7 +137,7 @@ The following files and directories are security-critical. Modifying, deleting, 
 - /etc/ellulai/.terminal_disabled - Terminal access control
 - /etc/ellulai/domain - Server domain configuration
 - /etc/ellulai/server_id - Server identity
-- /home/dev/.ssh/authorized_keys - SSH authentication (tampering = permanent lockout)
+- \${HOME_DIR}/.ssh/authorized_keys - SSH authentication (tampering = permanent lockout)
 - /var/lib/sovereign-shield/ - Authentication database and state
 
 **NEVER run commands that:**
@@ -506,7 +506,7 @@ Do NOT report task complete until verification passes!
 - Ports: Dev=3000, Prod=3001+, Reserved=7681-7700
 - Backend first: expose backend with \\\`ellulai-expose NAME PORT\\\` before frontend depends on it
 - Databases: \\\`ellulai-install postgres|redis|mysql\\\` (warn user about RAM usage)
-- DB GUI: user runs \\\`ssh -L 5432:localhost:5432 dev@$DOMAIN\\\` from their machine
+- DB GUI: user runs \\\`ssh -L 5432:localhost:5432 $USER_NAME@$DOMAIN\\\` from their machine
 
 ## Git (Code Backup)
 Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.
@@ -601,7 +601,7 @@ User request: [Your message]
 ## Context Hierarchy
 
 ### 1. Global Context (Server-wide)
-**File:** \\\`/home/dev/.ellulai/context/global.md\\\`
+**File:** \\\`\${HOME_DIR}/.ellulai/context/global.md\\\`
 
 Applies to ALL projects. Contains:
 - Server URLs and deployment info
@@ -614,7 +614,7 @@ Applies to ALL projects. Contains:
 **Edit this to:** Add server-wide rules, conventions, or preferences.
 
 ### 2. Custom Context Files
-**Location:** \\\`/home/dev/.ellulai/context/*.md\\\`
+**Location:** \\\`\${HOME_DIR}/.ellulai/context/*.md\\\`
 
 Any \\\`.md\\\` file you add here (except \\\`global.md\\\` and \\\`current.md\\\`) will be included in the context.
 
@@ -643,13 +643,13 @@ The Context tab in your ellul.ai dashboard lets you view and edit context files.
 ### Via Terminal
 \\\`\\\`\\\`bash
 # Edit global context
-nano /home/dev/.ellulai/context/global.md
+nano \${HOME_DIR}/.ellulai/context/global.md
 
 # Add custom context
-nano /home/dev/.ellulai/context/my-preferences.md
+nano \${HOME_DIR}/.ellulai/context/my-preferences.md
 
 # Edit project context
-nano /home/dev/projects/myapp/CLAUDE.md
+nano \${HOME_DIR}/projects/myapp/CLAUDE.md
 \\\`\\\`\\\`
 
 ### Via AI

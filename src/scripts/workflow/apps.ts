@@ -3,7 +3,7 @@
  */
 export function getAppsScript(): string {
   return `#!/bin/bash
-APPS_DIR="/home/dev/.ellulai/apps"
+APPS_DIR="$HOME/.ellulai/apps"
 DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null)
 
 GREEN='\\033[32m'
@@ -58,7 +58,7 @@ fi`;
  */
 export function getInspectScript(): string {
   return `#!/bin/bash
-APPS_DIR="/home/dev/.ellulai/apps"
+APPS_DIR="$HOME/.ellulai/apps"
 TARGET_APP="$1"
 
 log() { echo "[inspect] $1"; }
@@ -106,7 +106,7 @@ $CONTEXT"
     fi
   fi
   jq --arg summary "$SUMMARY" '.summary = $summary' "$APP_FILE" > "$APP_FILE.tmp" && mv "$APP_FILE.tmp" "$APP_FILE"
-  chown dev:dev "$APP_FILE"
+  chown "$USER:$USER" "$APP_FILE"
   success "$APP_NAME: $SUMMARY"
 }
 

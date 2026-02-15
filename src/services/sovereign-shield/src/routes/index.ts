@@ -16,6 +16,7 @@
  * - recovery.routes.ts    - Recovery system
  * - confirm.routes.ts     - Operation confirmation
  * - upgrade.routes.ts     - Tier upgrades via JWT (Standard tier)
+ * - secrets.routes.ts     - Encrypted environment secrets management
  * - static.routes.ts      - Static assets
  * - workflow.routes.ts    - Privileged workflow commands (expose, etc.)
  */
@@ -38,6 +39,7 @@ import { registerStaticRoutes } from './static.routes';
 import { registerGitRoutes } from './git.routes';
 import { registerWorkflowRoutes } from './workflow.routes';
 import { registerPreviewRoutes } from './preview.routes';
+import { registerSecretsRoutes } from './secrets.routes';
 
 export interface RouteConfig {
   hostname: string;
@@ -87,6 +89,9 @@ export function registerAllRoutes(app: Hono, config: RouteConfig): void {
   // Tier upgrades via JWT (Standard tier users)
   registerUpgradeRoutes(app, config.hostname);
 
+  // Secrets management (encrypted env vars)
+  registerSecretsRoutes(app);
+
   // Git link/unlink authorization
   registerGitRoutes(app);
 
@@ -118,4 +123,5 @@ export {
   registerGitRoutes,
   registerWorkflowRoutes,
   registerPreviewRoutes,
+  registerSecretsRoutes,
 };

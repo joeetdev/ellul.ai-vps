@@ -71,7 +71,9 @@ TOKEN_FILE="/etc/ellulai/ai-proxy-token"
 if [ -f "$TOKEN_FILE" ]; then
     TOKEN=$(cat "$TOKEN_FILE")
 else
-    TOKEN=$(grep ELLULAI_AI_TOKEN /home/dev/.bashrc 2>/dev/null | cut -d'"' -f2 || true)
+    [ -f /etc/default/ellulai ] && source /etc/default/ellulai
+    _SVC_HOME="/home/\${PS_USER:-dev}"
+    TOKEN=$(grep ELLULAI_AI_TOKEN "\$_SVC_HOME/.bashrc" 2>/dev/null | cut -d'"' -f2 || true)
 fi
 if [ -z "$TOKEN" ]; then
     echo -e "\${RED}Error: AI proxy token not found\${NC}"

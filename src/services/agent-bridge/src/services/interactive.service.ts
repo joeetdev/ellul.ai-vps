@@ -35,7 +35,7 @@ const AUTH_FILES: Record<string, string[]> = {
 function syncAuthToRealHome(session: string, threadId?: string | null): void {
   if (!threadId) return;
 
-  const realHome = process.env.HOME || '/home/dev';
+  const realHome = process.env.HOME || '/home/' + (process.env.USER || 'dev');
   const threadDir = getThreadStateDir(threadId);
   if (!threadDir) return;
 
@@ -119,7 +119,7 @@ export function checkCliNeedsSetup(session: string): boolean {
   try {
     switch (session) {
       case 'claude': {
-        const home = process.env.HOME || '/home/dev';
+        const home = process.env.HOME || '/home/' + (process.env.USER || 'dev');
         const claudeJson = path.join(home, '.claude.json');
         if (!fs.existsSync(claudeJson)) return true;
         const config = JSON.parse(fs.readFileSync(claudeJson, 'utf8'));
@@ -140,12 +140,12 @@ export function checkCliNeedsSetup(session: string): boolean {
         return !hasAuth && !hasCredentials;
       }
       case 'codex': {
-        const codexAuth = path.join(process.env.HOME || '/home/dev', '.codex', 'auth.json');
+        const codexAuth = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.codex', 'auth.json');
         const openaiKey = process.env.OPENAI_API_KEY || loadCliEnv()['OPENAI_API_KEY'];
         return !fs.existsSync(codexAuth) && !openaiKey;
       }
       case 'gemini': {
-        const geminiConfig = path.join(process.env.HOME || '/home/dev', '.config', 'gemini');
+        const geminiConfig = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.config', 'gemini');
         const geminiKey = process.env.GEMINI_API_KEY || loadCliEnv()['GEMINI_API_KEY'];
         return !fs.existsSync(geminiConfig) && !geminiKey;
       }

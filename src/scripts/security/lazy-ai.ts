@@ -7,15 +7,37 @@ LOG="/var/log/lazy-ai-install.log"
 FLAG_DIR="/var/lib/ellul.ai"
 FLAG_FILE="$FLAG_DIR/lazy-ai-ready"
 
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+
 log() { echo "[$(date -Iseconds)] $1" >> "$LOG"; }
 
+# Retry wrapper: tries up to 3 times with 30s backoff
+install_with_retry() {
+  local label="$1"
+  local cmd="$2"
+  local attempt=1
+  while [ $attempt -le 3 ]; do
+    log "$label: attempt $attempt/3"
+    if su - $SVC_USER -c "$cmd" >> "$LOG" 2>&1; then
+      log "$label: OK"
+      return 0
+    fi
+    log "$label: attempt $attempt failed"
+    attempt=$((attempt + 1))
+    [ $attempt -le 3 ] && sleep 30
+  done
+  log "!$label (all attempts failed)"
+  return 1
+}
+
 mkdir -p "$FLAG_DIR"
-log "Installing AI tools..."
+log "Installing AI tools as $SVC_USER..."
 sleep 15
-su - dev -c 'source ~/.nvm/nvm.sh && npm install -g @anthropic-ai/claude-code' >> "$LOG" 2>&1 || log "!claude"
-su - dev -c 'source ~/.nvm/nvm.sh && npm install -g @openai/codex' >> "$LOG" 2>&1 || log "!codex"
-su - dev -c 'source ~/.nvm/nvm.sh && npm install -g @google/gemini-cli' >> "$LOG" 2>&1 || log "!gemini"
-su - dev -c 'pipx install aider-chat' >> "$LOG" 2>&1 || log "!aider"
+install_with_retry "claude" 'source ~/.nvm/nvm.sh && npm install -g @anthropic-ai/claude-code'
+install_with_retry "codex" 'source ~/.nvm/nvm.sh && npm install -g @openai/codex'
+install_with_retry "gemini" 'source ~/.nvm/nvm.sh && npm install -g @google/gemini-cli'
+su - $SVC_USER -c 'pipx install aider-chat' >> "$LOG" 2>&1 || log "!aider"
 touch "$FLAG_FILE"
 log "Done"
 wall "AI tools ready" 2>/dev/null || true`;

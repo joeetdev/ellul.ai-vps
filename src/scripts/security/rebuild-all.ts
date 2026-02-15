@@ -45,7 +45,6 @@ import {
 import {
   getSetupSshKeyScript,
   getAddSshKeyScript,
-  getGoSovereignScript,
   getLockWebOnlyScript,
   getVerifyScript,
   getDecryptScript,
@@ -129,7 +128,7 @@ function readConfig(): VpsConfig {
 
 // ─── Enforcer assembly (inlined — can't use import.meta.url in CJS) ─
 
-function assembleEnforcerScript(apiUrl: string): string {
+function assembleEnforcerScript(apiUrl: string, svcHome: string = "/home/dev"): string {
   const readLib = (name: string): string => {
     const libPath = path.join(ENFORCER_LIB_DIR, `${name}.sh`);
     return fs.readFileSync(libPath, 'utf8').replace(/^#!\/bin\/bash\n/, '').trim();
@@ -137,7 +136,7 @@ function assembleEnforcerScript(apiUrl: string): string {
 
   const modules = [
     'constants', 'logging', 'terminals', 'security', 'status',
-    'enforcement', 'deployment', 'heartbeat', 'update', 'lockdown', 'services',
+    'enforcement', 'deployment', 'heartbeat', 'services',
   ];
 
   const sections = modules.map((mod) => {
@@ -165,39 +164,34 @@ run_daemon() {
   log "ellul.ai Enforcer UPDATED - v\${DAEMON_VERSION}"
   log "If you see this, the update was successful!"
   log "============================================"
-  log "Starting state enforcer daemon v\${DAEMON_VERSION} (heartbeat every \${HEARTBEAT_INTERVAL}s, push via SIGUSR1)..."
+  log "Starting state enforcer daemon v\${DAEMON_VERSION} (heartbeat every \${HEARTBEAT_INTERVAL}s)..."
 
-  # Write PID file for SIGUSR1-based push triggers (nginx/PostgreSQL pattern)
+  # Write PID file
   echo \$\$ > "\$ENFORCER_PID_FILE"
   trap 'rm -f "\$ENFORCER_PID_FILE"' EXIT
 
-  # SIGUSR1 handler: API pushes commands via file-api -> SIGUSR1 -> immediate heartbeat
   WAKEUP=0
   trap 'WAKEUP=1' USR1
 
-  sync_all 2>/dev/null || true
+  # Clean up any stale lockdown markers from pre-Phase 4
+  rm -f /etc/ellulai/.emergency-lockdown /etc/ellulai/.in_lockdown 2>/dev/null || true
+
   local HEARTBEAT_COUNT=0
   local SERVICE_CHECK_COUNT=0
-  local CONSECUTIVE_FAILURES=$(load_failure_count)
-  if [ "$CONSECUTIVE_FAILURES" -gt 0 ]; then
-    log "Resumed with $CONSECUTIVE_FAILURES previous heartbeat failures"
-  fi
+  local CONSECUTIVE_FAILURES=0
 
   while true; do
-    if RESPONSE=$(heartbeat_raw 2>/dev/null); then
-      if [ "$CONSECUTIVE_FAILURES" -gt 0 ]; then
+    if heartbeat_raw 2>/dev/null; then
+      # Heartbeat succeeded - reset failure counter
+      if [ "\$CONSECUTIVE_FAILURES" -gt 0 ]; then
         CONSECUTIVE_FAILURES=0
         reset_failure_count
       fi
     else
-      CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-      save_failure_count "$CONSECUTIVE_FAILURES"
-      log "WARN: Heartbeat failed ($CONSECUTIVE_FAILURES/$MAX_HEARTBEAT_FAILURES consecutive failures)"
-      sync_all 2>/dev/null || true
-      if [ $CONSECUTIVE_FAILURES -ge $MAX_HEARTBEAT_FAILURES ]; then
-        emergency_lockdown
-        emergency_lockdown_loop
-      fi
+      # Heartbeat failed — log only, no lockdown
+      CONSECUTIVE_FAILURES=\$((CONSECUTIVE_FAILURES + 1))
+      save_failure_count "\$CONSECUTIVE_FAILURES"
+      log "WARN: Heartbeat failed (\$CONSECUTIVE_FAILURES consecutive failures)"
     fi
 
     SERVICE_CHECK_COUNT=$((SERVICE_CHECK_COUNT + 1))
@@ -206,11 +200,8 @@ run_daemon() {
       SERVICE_CHECK_COUNT=0
     fi
 
-    HEARTBEAT_COUNT=$((HEARTBEAT_COUNT + 1))
-    if [ $HEARTBEAT_COUNT -ge 10 ] && [ -n "$RESPONSE" ]; then
-      check_for_update "$RESPONSE"
-      HEARTBEAT_COUNT=0
-    fi
+    # Phase 4: Version updates deferred to future self-update mechanism
+    # (heartbeat response no longer carries version/update signals)
 
     # Interruptible sleep: SIGUSR1 interrupts wait immediately (zero latency)
     WAKEUP=0
@@ -250,7 +241,7 @@ case "\$1" in
     done
     echo ""
     echo "  Deployed Apps:"
-    APPS_DIR="/home/dev/.ellulai/apps"
+    APPS_DIR="${svcHome}/.ellulai/apps"
     if ls "\$APPS_DIR"/*.json &>/dev/null; then
       for f in "\$APPS_DIR"/*.json; do
         [ -f "\$f" ] || continue
@@ -294,29 +285,30 @@ interface FileEntry {
 
 function buildManifest(config: VpsConfig): FileEntry[] {
   const { serverId, domain, apiUrl, aiProxyToken, billingTier } = config;
+  const svcUser = billingTier === "free" ? "coder" : "dev";
+  const svcHome = `/home/${svcUser}`;
 
   return [
     // ── Config files ──────────────────────────────────────────────
-    { path: '/home/dev/.global_gitignore', content: getGlobalGitignore(), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/.ellulai/hooks/pre-commit', content: getPreCommitHook(), owner: 'dev' },
+    { path: `${svcHome}/.global_gitignore`, content: getGlobalGitignore(), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/.ellulai/hooks/pre-commit`, content: getPreCommitHook(), owner: svcUser },
     { path: '/etc/ssh/sshd_config.d/ellulai.conf', content: getSshHardeningConfig(), mode: 0o644 },
     { path: '/etc/fail2ban/jail.d/ellulai.conf', content: getFail2banConfig(), mode: 0o644 },
     { path: '/etc/apt/apt.conf.d/50unattended-upgrades', content: getUnattendedUpgradesConfig(), mode: 0o644 },
     { path: '/etc/apt/apt.conf.d/20auto-upgrades', content: getAutoUpgradesConfig(), mode: 0o644 },
-    { path: '/home/dev/.tmux.conf', content: getTmuxConfig(), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/.config/starship.toml', content: getStarshipConfig(), mode: 0o644, owner: 'dev' },
+    { path: `${svcHome}/.tmux.conf`, content: getTmuxConfig(), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/.config/starship.toml`, content: getStarshipConfig(), mode: 0o644, owner: svcUser },
     { path: '/etc/profile.d/99-ellulai-motd.sh', content: getMotdScript() },
     { path: '/etc/profile.d/99-lazy-ai-shims.sh', content: getLazyAiShimsScript(), mode: 0o644 },
 
     // ── Session scripts ───────────────────────────────────────────
-    { path: '/usr/local/bin/ellulai-launch', content: getSessionLauncherScript() },
+    { path: '/usr/local/bin/ellulai-launch', content: getSessionLauncherScript(svcUser) },
     { path: '/usr/local/bin/ellulai-ttyd-wrapper', content: getTtydWrapperScript() },
     { path: '/usr/local/bin/pty-wrap', content: getPtyWrapScript() },
 
     // ── Security scripts ──────────────────────────────────────────
     { path: '/usr/local/bin/setup-ssh-key', content: getSetupSshKeyScript() },
     { path: '/usr/local/bin/ellulai-add-key', content: getAddSshKeyScript() },
-    { path: '/usr/local/bin/go-sovereign', content: getGoSovereignScript() },
     { path: '/usr/local/bin/lock-web-only', content: getLockWebOnlyScript() },
     { path: '/usr/local/bin/ellulai-verify', content: getVerifyScript() },
     { path: '/usr/local/bin/ellulai-decrypt', content: getDecryptScript() },
@@ -328,7 +320,7 @@ function buildManifest(config: VpsConfig): FileEntry[] {
     { path: '/usr/local/bin/ellulai-rebuild', content: getRebuildScript(apiUrl) },
     { path: '/usr/local/bin/ellulai-rollback', content: getRollbackScript(apiUrl) },
     { path: '/usr/local/bin/ellulai-change-tier', content: getChangeTierScript(apiUrl) },
-    { path: '/usr/local/bin/ellulai-settings', content: getSettingsScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-settings', content: getSettingsScript() },
     { path: '/usr/local/bin/ellulai-deployment', content: getDeploymentScript(apiUrl) },
     { path: '/usr/local/bin/ellulai-ai-flow', content: getAiFlowScript(apiUrl) },
 
@@ -356,29 +348,29 @@ function buildManifest(config: VpsConfig): FileEntry[] {
     { path: '/usr/local/bin/ellulai-tier-switch', content: getTierSwitchHelperScript() },
 
     // ── Enforcer (assembled from .sh modules) ─────────────────────
-    { path: '/usr/local/bin/ellulai-env', content: assembleEnforcerScript(apiUrl) },
+    { path: '/usr/local/bin/ellulai-env', content: assembleEnforcerScript(apiUrl, svcHome) },
 
     // ── Systemd service files ─────────────────────────────────────
-    { path: '/etc/systemd/system/ttyd@.service', content: getTtydSystemdTemplate(), mode: 0o644 },
+    { path: '/etc/systemd/system/ttyd@.service', content: getTtydSystemdTemplate(svcUser), mode: 0o644 },
     { path: '/etc/systemd/system/ellulai-enforcer.service', content: getEnforcerService(aiProxyToken), mode: 0o644 },
-    { path: '/etc/systemd/system/ellulai-file-api.service', content: getFileApiService(), mode: 0o644 },
-    { path: '/etc/systemd/system/ellulai-agent-bridge.service', content: getAgentBridgeService(), mode: 0o644 },
-    { path: '/etc/systemd/system/ellulai-term-proxy.service', content: getTermProxyService(), mode: 0o644 },
-    { path: '/etc/systemd/system/ellulai-preview.service', content: getPreviewService(), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-file-api.service', content: getFileApiService(svcUser), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-agent-bridge.service', content: getAgentBridgeService(svcUser), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-term-proxy.service', content: getTermProxyService(svcUser), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-preview.service', content: getPreviewService(svcUser), mode: 0o644 },
     { path: '/etc/systemd/system/ellulai-sovereign-shield.service', content: getVpsAuthService(), mode: 0o644 },
     { path: '/etc/systemd/system/ellulai-perf-monitor.service', content: getPerfMonitorService(apiUrl, aiProxyToken), mode: 0o644 },
 
     // ── User config files ─────────────────────────────────────────
-    { path: '/home/dev/.bashrc', content: getBashrcConfig(aiProxyToken), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/.config/opencode/config.json', content: getOpencodeConfigJson(apiUrl, aiProxyToken), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/.ellulai/context/README.md', content: getContextReadme(), mode: 0o644, owner: 'dev' },
+    { path: `${svcHome}/.bashrc`, content: getBashrcConfig(aiProxyToken), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/.config/opencode/config.json`, content: getOpencodeConfigJson(apiUrl, aiProxyToken), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/.ellulai/context/README.md`, content: getContextReadme(), mode: 0o644, owner: svcUser },
 
     // ── Welcome/docs files ────────────────────────────────────────
-    { path: '/home/dev/projects/welcome/README.md', content: getWelcomeReadme(), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/projects/welcome/ecosystem.config.js', content: getWelcomeEcosystem(), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/projects/welcome/CLAUDE.md', content: getWelcomeClaudeMd(domain, billingTier), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/CLAUDE.md', content: getGlobalClaudeMd(domain, billingTier), mode: 0o644, owner: 'dev' },
-    { path: '/home/dev/projects/CLAUDE.md', content: getProjectsClaudeMd(billingTier), mode: 0o644, owner: 'dev' },
+    { path: `${svcHome}/projects/welcome/README.md`, content: getWelcomeReadme(), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/projects/welcome/ecosystem.config.js`, content: getWelcomeEcosystem(svcHome), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/projects/welcome/CLAUDE.md`, content: getWelcomeClaudeMd(domain, billingTier), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/CLAUDE.md`, content: getGlobalClaudeMd(domain, billingTier, svcHome), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/projects/CLAUDE.md`, content: getProjectsClaudeMd(billingTier), mode: 0o644, owner: svcUser },
   ];
 }
 
@@ -394,8 +386,8 @@ function writeFileAtomic(entry: FileEntry): void {
   fs.writeFileSync(tmp, entry.content, { mode: entry.mode ?? 0o755 });
   fs.renameSync(tmp, entry.path);
 
-  if (entry.owner === 'dev') {
-    try { execSync(`chown dev:dev ${JSON.stringify(entry.path)}`, { stdio: 'pipe' }); } catch {}
+  if (entry.owner) {
+    try { execSync(`chown ${entry.owner}:${entry.owner} ${JSON.stringify(entry.path)}`, { stdio: 'pipe' }); } catch {}
   }
 }
 
@@ -475,7 +467,7 @@ async function rebuildNodeServices(config: VpsConfig): Promise<number> {
 
 // ─── Symlinks ───────────────────────────────────────────────────────
 
-function recreateSymlinks(): void {
+function recreateSymlinks(svcUser: string): void {
   const links: [string, string][] = [
     ['/usr/local/bin/ellulai-ai-flow', '/usr/local/bin/ship'],
     ['/usr/local/bin/ellulai-git-flow', '/usr/local/bin/save'],
@@ -484,6 +476,40 @@ function recreateSymlinks(): void {
   for (const [target, link] of links) {
     try { fs.unlinkSync(link); } catch {}
     try { fs.symlinkSync(target, link); } catch {}
+  }
+
+  // Create/refresh ~/.node symlink → actual NVM node version (CPU-agnostic)
+  const svcHome = `/home/${svcUser}`;
+  const nvmVersionsDir = path.join(svcHome, '.nvm', 'versions', 'node');
+  try {
+    let nodeVersion = '';
+    try {
+      nodeVersion = execSync(
+        `su - ${svcUser} -c 'node --version' 2>/dev/null`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+    } catch {
+      // Fallback: scan NVM versions directory for installed versions
+      if (fs.existsSync(nvmVersionsDir)) {
+        const versions = fs.readdirSync(nvmVersionsDir).filter(v => v.startsWith('v')).sort();
+        if (versions.length > 0) {
+          nodeVersion = versions[versions.length - 1]!;
+          console.log(`[rebuild-all] node --version failed, detected from filesystem: ${nodeVersion}`);
+        }
+      }
+    }
+    if (nodeVersion && nodeVersion.startsWith('v')) {
+      const target = path.join(nvmVersionsDir, nodeVersion);
+      const link = path.join(svcHome, '.node');
+      if (fs.existsSync(target)) {
+        try { fs.unlinkSync(link); } catch {}
+        fs.symlinkSync(target, link);
+        execSync(`chown -h ${svcUser}:${svcUser} ${JSON.stringify(link)}`, { stdio: 'pipe' });
+        console.log(`[rebuild-all] .node symlink: ${link} → ${target}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[rebuild-all] Failed to create .node symlink: ${err}`);
   }
 }
 
@@ -522,8 +548,9 @@ async function main(): Promise<void> {
   const rebuilt = await rebuildNodeServices(config);
   console.log(`[rebuild-all] Node.js services: ${rebuilt} rebuilt`);
 
-  // 5. Symlinks
-  recreateSymlinks();
+  // 5. Symlinks (including .node → NVM version detection)
+  const svcUser = config.billingTier === "free" ? "coder" : "dev";
+  recreateSymlinks(svcUser);
 
   // 6. Reload systemd to pick up service file changes
   try {

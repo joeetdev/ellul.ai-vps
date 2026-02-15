@@ -32,5 +32,6 @@ export {
   notifyPlatformSshKeyChange,
   notifyPlatformPasskeyRegistered,
   notifyPlatformPasskeyRemoved,
+  notifyPlatformHeartbeatKeyReset,
   executeTierSwitch,
 } from './tier.service';

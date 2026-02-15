@@ -10,6 +10,7 @@ import * as http from 'http';
 import * as url from 'url';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 
 import { PORT, ROOT_DIR, HOME, PATHS } from './config';
 import { getCurrentTier } from './auth';
@@ -105,6 +106,61 @@ function writeConfig(config: Record<string, unknown>): void {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
+// ============================================
+// Daemon API authentication (platform-to-VPS RPC)
+// JWT signed by the platform API using the server's JWT secret
+// ============================================
+
+const DAEMON_PATHS = [
+  '/api/mount-volume',
+  '/api/flush-volume',
+  '/api/migrate/',
+  '/api/update-identity',
+  '/api/luks-init',
+  '/api/luks-unlock',
+  '/api/luks-close',
+  '/api/backup-identity',
+  '/api/restore-identity',
+];
+
+function isDaemonPath(pathname: string): boolean {
+  return DAEMON_PATHS.some(p => pathname === p || pathname.startsWith(p));
+}
+
+function verifyDaemonJwt(authHeader: string | undefined): boolean {
+  if (!authHeader?.startsWith('Bearer ')) return false;
+
+  const token = authHeader.slice(7);
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+
+  let jwtSecret: string;
+  try {
+    jwtSecret = fs.readFileSync(PATHS.JWT_SECRET, 'utf8').trim();
+  } catch {
+    return false;
+  }
+
+  // Verify HMAC-SHA256 signature
+  const signInput = `${parts[0]}.${parts[1]}`;
+  const expectedSig = crypto
+    .createHmac('sha256', jwtSecret)
+    .update(signInput)
+    .digest('base64url');
+
+  if (parts[2] !== expectedSig) return false;
+
+  // Verify payload
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString());
+    if (payload.purpose !== 'daemon-call') return false;
+    if (payload.exp && payload.exp < Date.now() / 1000) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Create HTTP server
 const server = http.createServer(async (req, res) => {
   // CORS is handled by Caddy (edge proxy) - file-api only runs on localhost
@@ -127,48 +183,44 @@ const server = http.createServer(async (req, res) => {
     headers[key] = Array.isArray(value) ? value[0] : value;
   }
 
-  // Security tier enforcement
-  const currentTier = getCurrentTier();
-
-  // SSH Only mode enforcement
-  if (currentTier === 'ssh_only') {
-    const allowedPaths = ['/_auth/', '/api/tier'];
-    const isAllowedPath = allowedPaths.some((p) => pathname.startsWith(p));
-
-    if (!isAllowedPath) {
-      res.writeHead(403);
-      res.end(
-        JSON.stringify({
-          error: 'SSH Only mode active',
-          message: 'File access is disabled. Use SSH/SFTP instead.',
-          tier: 'ssh_only',
-        })
-      );
+  // Daemon API authentication — platform-to-VPS calls via port 3006
+  // These endpoints require a valid JWT signed with the server's secret
+  const isDaemon = isDaemonPath(pathname);
+  if (isDaemon) {
+    if (!verifyDaemonJwt(headers['authorization'])) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
     }
+    // JWT valid — skip tier-based auth below, proceed directly to endpoint handler
   }
 
-  // Web Locked mode - sovereign-shield is the sole auth gate via Caddy forward_auth
-  // All requests go through forward_auth which validates code_session and sets X-Auth-User
-  if (currentTier === 'web_locked') {
-    const forwardAuthUser = headers['x-auth-user'];
+  // Security tier enforcement (skipped for daemon-authenticated requests)
+  if (!isDaemon) {
+    const currentTier = getCurrentTier();
 
-    if (!forwardAuthUser) {
-      // No X-Auth-User means forward_auth didn't approve this request
-      // This should only happen if something bypassed Caddy (shouldn't be possible)
-      console.log('[file-api] SECURITY: Request without X-Auth-User in web_locked mode');
-      res.writeHead(401);
-      res.end(
-        JSON.stringify({
-          error: 'Authentication required',
-          message: 'Request must be authenticated via sovereign-shield',
-          tier: 'web_locked',
-        })
-      );
-      return;
+    // Web Locked mode - sovereign-shield is the sole auth gate via Caddy forward_auth
+    // All requests go through forward_auth which validates code_session and sets X-Auth-User
+    if (currentTier === 'web_locked') {
+      const forwardAuthUser = headers['x-auth-user'];
+
+      if (!forwardAuthUser) {
+        // No X-Auth-User means forward_auth didn't approve this request
+        // This should only happen if something bypassed Caddy (shouldn't be possible)
+        console.log('[file-api] SECURITY: Request without X-Auth-User in web_locked mode');
+        res.writeHead(401);
+        res.end(
+          JSON.stringify({
+            error: 'Authentication required',
+            message: 'Request must be authenticated via sovereign-shield',
+            tier: 'web_locked',
+          })
+        );
+        return;
+      }
+
+      console.log('[file-api] Authenticated via sovereign-shield:', forwardAuthUser);
     }
-
-    console.log('[file-api] Authenticated via sovereign-shield:', forwardAuthUser);
   }
 
   // Resolve app identifier to directory name
@@ -1277,6 +1329,211 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // ============================================
+    // Migration endpoints (daemon API - JWT authenticated)
+    // ============================================
+
+    // POST /api/migrate/pack — Create tar.gz of home directory for data transfer
+    // Auth: daemon JWT (verified above at DAEMON_PATHS gate)
+    if (req.method === 'POST' && pathname === '/api/migrate/pack') {
+      try {
+        const { execSync } = await import('child_process');
+        const archivePath = `/tmp/migration-${Date.now()}.tar.gz`;
+
+        // Clean up old migration archives from failed attempts (prevent /tmp from filling up)
+        try {
+          const tmpFiles = fs.readdirSync('/tmp');
+          for (const f of tmpFiles) {
+            if (/^migration-\d+\.tar\.gz$/.test(f)) {
+              fs.unlinkSync(`/tmp/${f}`);
+            }
+          }
+        } catch { /* non-fatal */ }
+
+        // Backup passkey DB so it's included in the migration tar
+        // .ellulai-identity/ is under $HOME and NOT in the tar exclude list
+        try {
+          const BACKUP_DIR = path.join(HOME, '.ellulai-identity');
+          fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+          if (fs.existsSync('/etc/ellulai/local-auth.db')) {
+            fs.copyFileSync('/etc/ellulai/local-auth.db', path.join(BACKUP_DIR, 'local-auth.db'));
+            if (fs.existsSync('/etc/ellulai/local-auth.db-wal')) {
+              fs.copyFileSync('/etc/ellulai/local-auth.db-wal', path.join(BACKUP_DIR, 'local-auth.db-wal'));
+            }
+            if (fs.existsSync('/etc/ellulai/local-auth.db-shm')) {
+              fs.copyFileSync('/etc/ellulai/local-auth.db-shm', path.join(BACKUP_DIR, 'local-auth.db-shm'));
+            }
+          }
+        } catch { /* non-fatal */ }
+
+        console.log(`[file-api] Packing ${HOME} for migration...`);
+        execSync(
+          `tar czf ${archivePath} --exclude=node_modules --exclude=.cache --exclude='.git/objects' --exclude='*.log' --exclude=.nvm --exclude=.node --exclude=.opencode --exclude='.bashrc' --exclude='.profile' --exclude='.bash_logout' --exclude='.ssh' --exclude='.local/bin' -C ${HOME} .`,
+          { timeout: 120_000, encoding: 'utf8' }
+        );
+
+        const stats = fs.statSync(archivePath);
+        console.log(`[file-api] Migration pack created: ${archivePath} (${stats.size} bytes)`);
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, archivePath, sizeBytes: stats.size }));
+      } catch (e) {
+        const error = e as Error;
+        console.error('[file-api] Migration pack failed:', error.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+      return;
+    }
+
+    // GET /api/migrate/download — Stream tar.gz archive for target server to pull
+    if (req.method === 'GET' && pathname === '/api/migrate/download') {
+      const archivePath = parsedUrl.query.path as string;
+
+      if (!archivePath || !/^\/tmp\/migration-\d+\.tar\.gz$/.test(archivePath)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid archive path' }));
+        return;
+      }
+
+      if (!fs.existsSync(archivePath)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Archive not found' }));
+        return;
+      }
+
+      const stats = fs.statSync(archivePath);
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Length', stats.size.toString());
+      res.writeHead(200);
+
+      const stream = fs.createReadStream(archivePath);
+      stream.pipe(res);
+      stream.on('end', () => {
+        try { fs.unlinkSync(archivePath); } catch {}
+      });
+      return;
+    }
+
+    // POST /api/migrate/pull — Pull data from source server via its daemon port
+    // Auth: daemon JWT (verified above at DAEMON_PATHS gate)
+    if (req.method === 'POST' && pathname === '/api/migrate/pull') {
+      const body = await parseBody(req);
+      const { sourceUrl, sourceIp, sourceToken, archivePath } = body as {
+        sourceUrl?: string;
+        sourceIp?: string;
+        sourceToken?: string;
+        archivePath?: string;
+      };
+
+      if (!sourceUrl || !sourceToken || !archivePath) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Missing sourceUrl, sourceToken, or archivePath' }));
+        return;
+      }
+
+      // Validate inputs to prevent command injection
+      // Accept both IP-based URLs and daemon.ellul.ai hostname (origin cert)
+      if (!/^https:\/\/(\d+\.\d+\.\d+\.\d+|daemon\.ellul\.ai):3006\//.test(sourceUrl)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid source URL format' }));
+        return;
+      }
+      if (!/^[A-Za-z0-9_\-.]+$/.test(sourceToken)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid token format' }));
+        return;
+      }
+      if (!/^\/tmp\/migration-\d+\.tar\.gz$/.test(archivePath)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid archive path format' }));
+        return;
+      }
+      if (sourceIp && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(sourceIp)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid source IP format' }));
+        return;
+      }
+
+      // Migration lock: prevent enforcer from restarting file-api during transfer.
+      // The enforcer health-checks file-api every ~30s and restarts it if unresponsive.
+      // On older VPS images using execFileSync, the event loop blocks during download,
+      // causing the enforcer to kill file-api mid-transfer. This lock file tells the
+      // enforcer to skip the health check entirely during migration.
+      const MIGRATION_LOCK = '/tmp/ellulai-migration.lock';
+      try {
+        fs.writeFileSync(MIGRATION_LOCK, `${Date.now()}`);
+      } catch {}
+
+      try {
+        const { execFile } = await import('child_process');
+        const downloadUrl = `${sourceUrl}?path=${encodeURIComponent(archivePath)}`;
+
+        console.log(`[file-api] Migration pull from ${sourceUrl}`);
+
+        // Run as root via sudo to bypass Warden's iptables redirect.
+        // On paid dev tiers, Warden Tunnel Guard redirects all outbound TCP from
+        // the dev user through its MITM proxy — breaking TLS verification against
+        // the Cloudflare Origin CA. Running as root avoids the iptables rule
+        // (which matches --uid-owner dev) and preserves proper TLS verification.
+        // Token is passed via stdin (execFile input) to avoid exposure in ps output.
+        // IMPORTANT: Use async execFile (not execFileSync) to keep the event loop
+        // unblocked — belt-and-suspenders with the migration lock above.
+        const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          const child = execFile('sudo', [
+            '/usr/local/bin/ellulai-migrate-pull',
+            downloadUrl,
+            sourceIp || '',
+            HOME,
+          ], { timeout: 600_000, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+            if (error) {
+              const err = error as Error & { stderr?: string; stdout?: string; signal?: string; status?: number | null; killed?: boolean };
+              err.stderr = stderr;
+              err.stdout = stdout;
+              reject(err);
+            } else {
+              resolve({ stdout: stdout as string, stderr: stderr as string });
+            }
+          });
+          // Pass token via stdin — must not fail silently
+          if (!child.stdin) {
+            child.kill();
+            throw new Error('execFile child has no stdin pipe');
+          }
+          child.stdin.write(sourceToken + '\n');
+          child.stdin.end();
+        });
+
+        console.log('[file-api] Migration pull complete');
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        const error = e as Error & { stderr?: string | Buffer; stdout?: string | Buffer; signal?: string; status?: number | null; killed?: boolean; code?: number | string };
+        const stderr = error.stderr ? String(error.stderr).trim() : '';
+        const stdout = error.stdout ? String(error.stdout).trim() : '';
+        // Build detailed diagnostic — error.code is exit code for async execFile, error.status for sync
+        const exitCode = error.code ?? error.status ?? 'null';
+        const diag = [
+          `exit=${exitCode}`,
+          `signal=${error.signal || 'none'}`,
+          `killed=${error.killed ?? false}`,
+        ].join(' | ');
+        // Log stderr separately (full) so it's not truncated in the JSON response
+        console.error(`[file-api] Migration pull failed: ${diag}`);
+        if (stderr) console.error(`[file-api] migrate-pull stderr: ${stderr}`);
+        if (stdout) console.error(`[file-api] migrate-pull stdout: ${stdout.slice(0, 500)}`);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: `${diag} | stderr=${stderr.slice(0, 800)}` }));
+      } finally {
+        try { fs.unlinkSync(MIGRATION_LOCK); } catch {}
+      }
+      return;
+    }
+
+    // ============================================
+    // Daemon infrastructure endpoints (JWT authenticated)
+    // ============================================
+
     // POST /api/mount-volume — Mount a block volume at the user's home directory (hibernate wake)
     if (req.method === 'POST' && pathname === '/api/mount-volume') {
       const body = await parseBody(req);
@@ -1292,7 +1549,7 @@ const server = http.createServer(async (req, res) => {
         const { execSync } = await import('child_process');
         const result = execSync(
           `sudo /usr/local/bin/ellulai-mount-volume mount "${volumeDevice}"`,
-          { timeout: 60_000, encoding: 'utf8' }
+          { timeout: 120_000, encoding: 'utf8' }
         );
         const parsed = JSON.parse(result.trim());
         console.log(`[file-api] Volume mount result:`, parsed);
@@ -1327,21 +1584,392 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // POST /api/trigger-sync — Wake enforcer daemon via SIGUSR1 (push-based command dispatch)
-    if (req.method === 'POST' && pathname === '/api/trigger-sync') {
+    // POST /api/update-identity — Update server identity after migration
+    // Called by API after DB swap to sync VPS files with new server record.
+    // Updates: server-id, domain, owner.lock, billing-tier, regenerates Ed25519 heartbeat keypair.
+    // Delegates to privileged helper script via sudo (file-api runs as dev/coder, not root).
+    if (req.method === 'POST' && pathname === '/api/update-identity') {
+      const body = await parseBody(req);
+      const { serverId, domain, userId, billingTier } = body as {
+        serverId?: string; domain?: string; userId?: string; billingTier?: string;
+      };
+
+      if (!serverId) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Missing serverId' }));
+        return;
+      }
+
+      // Validate inputs to prevent command injection
+      const safePattern = /^[a-zA-Z0-9._:-]+$/;
+      if (!safePattern.test(serverId)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid serverId format' }));
+        return;
+      }
+      if (domain && !safePattern.test(domain)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid domain format' }));
+        return;
+      }
+      if (userId && !safePattern.test(userId)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid userId format' }));
+        return;
+      }
+      if (billingTier && !safePattern.test(billingTier)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid billingTier format' }));
+        return;
+      }
+
       try {
-        const pidStr = fs.readFileSync('/run/ellulai-enforcer.pid', 'utf8').trim();
-        const pid = parseInt(pidStr, 10);
-        if (isNaN(pid) || pid <= 0) throw new Error(`Invalid PID: ${pidStr}`);
-        process.kill(pid, 'SIGUSR1');
-        console.log('[file-api] Sent SIGUSR1 to enforcer (pid ' + pid + ')');
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, pid }));
+        const { execSync } = await import('child_process');
+
+        // Build command args for the privileged helper
+        let cmd = `sudo /usr/local/bin/ellulai-update-identity --server-id=${serverId}`;
+        if (domain) cmd += ` --domain=${domain}`;
+        if (userId) cmd += ` --user-id=${userId}`;
+        if (billingTier) cmd += ` --billing-tier=${billingTier}`;
+
+        // The identity script uses `caddy reload` (not restart) to apply the new
+        // Caddyfile without dropping connections. The daemon port 3006 TLS session
+        // stays alive, so this response reaches callDaemon reliably.
+        const result = execSync(cmd, { timeout: 120_000, encoding: 'utf8' });
+        const trimmed = result.trim();
+        // Extract last JSON line — helper script may emit non-JSON logs before final output
+        const lastLine = trimmed.split('\n').pop() || '{}';
+        const parsed = JSON.parse(lastLine);
+
+        console.log(`[file-api] Identity updated: serverId=${serverId}, domain=${domain || 'unchanged'}`);
+        res.writeHead(parsed.success ? 200 : 500);
+        res.end(lastLine);
       } catch (e) {
         const error = e as Error;
-        // Non-fatal: enforcer's 30s poll will pick up the command
-        console.warn('[file-api] trigger-sync failed:', error.message);
-        res.writeHead(200); // Still 200 — push is best-effort optimization
+        console.error('[file-api] Identity update failed:', error.message.slice(0, 500));
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: error.message.slice(0, 500) }));
+      }
+      return;
+    }
+
+    // ============================================
+    // LUKS Volume Encryption endpoints (daemon API - JWT authenticated)
+    // ============================================
+
+    // POST /api/luks-init — First-time LUKS2 format with PRF key + optional recovery key
+    if (req.method === 'POST' && pathname === '/api/luks-init') {
+      const body = await parseBody(req);
+      const { prfKey, recoveryKey, volumeDevice } = body as { prfKey?: string; recoveryKey?: string; volumeDevice?: string };
+
+      if (!prfKey) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Missing prfKey' }));
+        return;
+      }
+
+      try {
+        const { execSync } = await import('child_process');
+
+        // Decode PRF key from base64
+        const keyBuffer = Buffer.from(prfKey as string, 'base64');
+        if (keyBuffer.length !== 32) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'Invalid PRF key length' }));
+          return;
+        }
+
+        // Read volume device — accept from request body or from disk file
+        const deviceFilePath = '/etc/ellulai/volume-device';
+        let device = '';
+        if (volumeDevice) {
+          device = volumeDevice;
+          fs.mkdirSync('/etc/ellulai', { recursive: true });
+          fs.writeFileSync(deviceFilePath, device);
+          fs.chmodSync(deviceFilePath, 0o644);
+        } else if (fs.existsSync(deviceFilePath)) {
+          device = fs.readFileSync(deviceFilePath, 'utf8').trim();
+        }
+        if (!device) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'No volume device configured' }));
+          return;
+        }
+
+        // Backup skeleton
+        const skelTmp = `/tmp/skel-backup-${process.pid}`;
+        execSync(`cp -a ${HOME}/. ${skelTmp}/`, { timeout: 30_000 });
+
+        // Unmount if currently mounted
+        try {
+          execSync(`mountpoint -q ${HOME} && umount ${HOME}`, { timeout: 10_000 });
+        } catch { /* not mounted, fine */ }
+
+        // LUKS format — key via stdin, cap Argon2id memory at 512MB (small VPS safe)
+        console.log(`[file-api] LUKS formatting ${device}`);
+        execSync(
+          `cryptsetup luksFormat --type luks2 --pbkdf-memory 524288 --batch-mode --key-file=- ${device}`,
+          { input: keyBuffer, timeout: 120_000 }
+        );
+
+        // Add recovery key as slot 1 if provided
+        if (recoveryKey) {
+          const recoveryBuffer = Buffer.from(recoveryKey as string, 'base64');
+          // Add key: existing key on stdin, new key on fd 3
+          // cryptsetup luksAddKey expects: existing key via --key-file=-, new key on stdin
+          // Approach: pipe existing key via --key-file=/dev/fd/3, new key via stdin
+          const tmpKeyFile = `/tmp/luks-key-${process.pid}`;
+          fs.writeFileSync(tmpKeyFile, keyBuffer, { mode: 0o600 });
+          try {
+            execSync(
+              `cryptsetup luksAddKey --key-file=${tmpKeyFile} ${device} -`,
+              { input: recoveryBuffer, timeout: 120_000 }
+            );
+          } finally {
+            // Securely wipe temp key file
+            fs.writeFileSync(tmpKeyFile, Buffer.alloc(32));
+            fs.unlinkSync(tmpKeyFile);
+          }
+          console.log('[file-api] Recovery key added as LUKS key slot 1');
+        }
+
+        // Open LUKS container
+        execSync(
+          `cryptsetup luksOpen --key-file=- ${device} luks-home`,
+          { input: keyBuffer, timeout: 30_000 }
+        );
+
+        // Format and mount
+        execSync(`mkfs.ext4 -L ellulai-home /dev/mapper/luks-home`, { timeout: 30_000 });
+        execSync(`mount -o nosuid,nodev /dev/mapper/luks-home ${HOME}`, { timeout: 10_000 });
+
+        // Restore skeleton and fix ownership
+        execSync(`cp -a ${skelTmp}/. ${HOME}/`, { timeout: 30_000 });
+        execSync(`rm -rf ${skelTmp}`, { timeout: 10_000 });
+
+        // Read SVC_USER from config
+        let svcUser = 'dev';
+        try {
+          if (fs.existsSync('/etc/default/ellulai')) {
+            const envContent = fs.readFileSync('/etc/default/ellulai', 'utf8');
+            const match = envContent.match(/PS_USER=(\w+)/);
+            if (match?.[1]) svcUser = match[1];
+          }
+        } catch {}
+        execSync(`chown -R ${svcUser}:${svcUser} ${HOME}`, { timeout: 30_000 });
+
+        console.log('[file-api] LUKS init complete');
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        const error = e as Error;
+        console.error('[file-api] LUKS init failed:', error.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+      return;
+    }
+
+    // POST /api/luks-unlock — Wake unlock: open LUKS + mount
+    if (req.method === 'POST' && pathname === '/api/luks-unlock') {
+      const body = await parseBody(req);
+      const { prfKey, volumeDevice } = body as { prfKey?: string; volumeDevice?: string };
+
+      if (!prfKey) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Missing prfKey' }));
+        return;
+      }
+
+      try {
+        const { execSync } = await import('child_process');
+
+        const keyBuffer = Buffer.from(prfKey as string, 'base64');
+        if (keyBuffer.length !== 32) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'Invalid PRF key length' }));
+          return;
+        }
+
+        // Check if already mounted
+        try {
+          execSync(`mountpoint -q ${HOME}`, { timeout: 5_000 });
+          // Already mounted
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, alreadyMounted: true }));
+          return;
+        } catch { /* not mounted, proceed */ }
+
+        // Read volume device — accept from request body (pool wake) or from disk file
+        const deviceFilePath = '/etc/ellulai/volume-device';
+        let device = '';
+        if (volumeDevice) {
+          // Pool wake: API passes device path; persist for future use
+          device = volumeDevice;
+          fs.mkdirSync('/etc/ellulai', { recursive: true });
+          fs.writeFileSync(deviceFilePath, device);
+          fs.chmodSync(deviceFilePath, 0o644);
+        } else if (fs.existsSync(deviceFilePath)) {
+          device = fs.readFileSync(deviceFilePath, 'utf8').trim();
+        }
+        if (!device) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'No volume device configured' }));
+          return;
+        }
+
+        // Wait for device to appear (cloud attach can be slow)
+        let waited = 0;
+        while (!fs.existsSync(device) && waited < 60) {
+          await new Promise(r => setTimeout(r, 1000));
+          waited++;
+        }
+        if (!fs.existsSync(device)) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ success: false, error: `Device ${device} not found after 60s` }));
+          return;
+        }
+
+        // Open LUKS — key via stdin
+        console.log(`[file-api] LUKS unlocking ${device}`);
+        execSync(
+          `cryptsetup luksOpen --key-file=- ${device} luks-home`,
+          { input: keyBuffer, timeout: 30_000 }
+        );
+
+        // Mount
+        execSync(`mount -o nosuid,nodev /dev/mapper/luks-home ${HOME}`, { timeout: 10_000 });
+
+        // Fix ownership if needed
+        let svcUser = 'dev';
+        try {
+          if (fs.existsSync('/etc/default/ellulai')) {
+            const envContent = fs.readFileSync('/etc/default/ellulai', 'utf8');
+            const match = envContent.match(/PS_USER=(\w+)/);
+            if (match?.[1]) svcUser = match[1];
+          }
+        } catch {}
+        execSync(`chown -R ${svcUser}:${svcUser} ${HOME}`, { timeout: 30_000 });
+
+        console.log('[file-api] LUKS unlock + mount complete');
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        const error = e as Error;
+        console.error('[file-api] LUKS unlock failed:', error.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+      return;
+    }
+
+    // POST /api/luks-close — Pre-hibernate: unmount + close LUKS (wipes key from kernel RAM)
+    if (req.method === 'POST' && pathname === '/api/luks-close') {
+      try {
+        const { execSync } = await import('child_process');
+
+        // Sync filesystem
+        execSync('sync', { timeout: 10_000 });
+
+        // Kill processes using the mount point
+        try {
+          execSync(`fuser -kvm ${HOME} 2>/dev/null || true`, { timeout: 15_000 });
+        } catch { /* no processes, fine */ }
+
+        // Give processes time to exit
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Unmount
+        try {
+          execSync(`umount ${HOME}`, { timeout: 10_000 });
+        } catch {
+          // Lazy unmount as fallback
+          try {
+            execSync(`umount -l ${HOME}`, { timeout: 10_000 });
+          } catch { /* best effort */ }
+        }
+
+        // Close LUKS container (wipes decryption key from kernel memory)
+        try {
+          execSync('cryptsetup luksClose luks-home', { timeout: 10_000 });
+        } catch { /* may not be open */ }
+
+        console.log('[file-api] LUKS close complete');
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        const error = e as Error;
+        console.error('[file-api] LUKS close failed:', error.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+      return;
+    }
+
+    // POST /api/backup-identity — Backup passkey DB to volume before hibernate
+    if (req.method === 'POST' && pathname === '/api/backup-identity') {
+      try {
+        const BACKUP_DIR = path.join(HOME, '.ellulai-identity');
+        fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
+
+        const AUTH_DB = '/etc/ellulai/local-auth.db';
+        let backedUp = false;
+
+        if (fs.existsSync(AUTH_DB)) {
+          fs.copyFileSync(AUTH_DB, path.join(BACKUP_DIR, 'local-auth.db'));
+          // Copy WAL/SHM if they exist (SQLite journal files)
+          if (fs.existsSync(AUTH_DB + '-wal')) {
+            fs.copyFileSync(AUTH_DB + '-wal', path.join(BACKUP_DIR, 'local-auth.db-wal'));
+          }
+          if (fs.existsSync(AUTH_DB + '-shm')) {
+            fs.copyFileSync(AUTH_DB + '-shm', path.join(BACKUP_DIR, 'local-auth.db-shm'));
+          }
+          backedUp = true;
+        }
+
+        // Save security tier marker so restore can detect web_locked
+        const tierFile = '/etc/ellulai/security-tier';
+        if (fs.existsSync(tierFile)) {
+          const tier = fs.readFileSync(tierFile, 'utf8').trim();
+          if (tier === 'web_locked') {
+            fs.writeFileSync(path.join(BACKUP_DIR, '.web_locked_activated'), '1');
+          } else {
+            // Remove stale marker if tier is no longer web_locked
+            try { fs.unlinkSync(path.join(BACKUP_DIR, '.web_locked_activated')); } catch {}
+          }
+        }
+
+        console.log(`[file-api] Identity backup: ${backedUp ? 'backed up' : 'no auth DB found'}`);
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, backed_up: backedUp }));
+      } catch (e) {
+        const error = e as Error;
+        console.error('[file-api] Identity backup failed:', error.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+      return;
+    }
+
+    // POST /api/restore-identity — Restore passkey DB from volume backup after wake
+    if (req.method === 'POST' && pathname === '/api/restore-identity') {
+      try {
+        const { execSync } = await import('child_process');
+        const result = execSync(
+          'sudo /usr/local/bin/ellulai-restore-identity',
+          { timeout: 30_000, encoding: 'utf8' }
+        );
+        const trimmed = result.trim();
+        const lastLine = trimmed.split('\n').pop() || '{}';
+        const parsed = JSON.parse(lastLine);
+
+        console.log(`[file-api] Identity restore result:`, parsed);
+        res.writeHead(parsed.success ? 200 : 500);
+        res.end(lastLine);
+      } catch (e) {
+        const error = e as Error;
+        console.error('[file-api] Identity restore failed:', error.message);
+        res.writeHead(500);
         res.end(JSON.stringify({ success: false, error: error.message }));
       }
       return;

@@ -3,7 +3,7 @@
  */
 export function getUndoScript(): string {
   return `#!/bin/bash
-PROJECTS_DIR="/home/dev/projects"
+PROJECTS_DIR="$HOME/projects"
 TARGET_PROJECT="$1"
 
 GREEN='\\033[32m'
@@ -161,11 +161,11 @@ if [ "$FORCE" = false ]; then
 fi
 
 log "Cleaning NPM cache..."
-su - dev -c 'source ~/.nvm/nvm.sh && npm cache clean --force' 2>/dev/null
+bash -lc 'source ~/.nvm/nvm.sh && npm cache clean --force' 2>/dev/null
 success "NPM cache cleaned"
 
 log "Running git gc on all projects..."
-for dir in /home/dev/projects/*/; do
+for dir in $HOME/projects/*/; do
   if [ -d "$dir/.git" ]; then
     (cd "$dir" && git gc --prune=now --quiet 2>/dev/null)
   fi
@@ -175,11 +175,11 @@ success "Git repos optimized"
 log "Cleaning old log files..."
 find /var/log -type f -name "*.log" -mtime +7 -delete 2>/dev/null || true
 find /var/log -type f -name "*.gz" -delete 2>/dev/null || true
-find /home/dev/.pm2/logs -type f -name "*.log" -mtime +3 -delete 2>/dev/null || true
+find $HOME/.pm2/logs -type f -name "*.log" -mtime +3 -delete 2>/dev/null || true
 success "Old logs removed"
 
 log "Truncating PM2 logs..."
-for logfile in /home/dev/.pm2/logs/*.log; do
+for logfile in $HOME/.pm2/logs/*.log; do
   if [ -f "$logfile" ]; then
     tail -1000 "$logfile" > "$logfile.tmp" && mv "$logfile.tmp" "$logfile"
   fi
@@ -187,17 +187,17 @@ done
 success "PM2 logs truncated"
 
 log "Cleaning build artifacts..."
-find /home/dev/projects -type d -name ".next" -exec rm -rf {} + 2>/dev/null || true
-find /home/dev/projects -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
-find /home/dev/projects -type d -name "build" -exec rm -rf {} + 2>/dev/null || true
-find /home/dev/projects -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-find /home/dev/projects -type d -name ".cache" -exec rm -rf {} + 2>/dev/null || true
+find $HOME/projects -type d -name ".next" -exec rm -rf {} + 2>/dev/null || true
+find $HOME/projects -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
+find $HOME/projects -type d -name "build" -exec rm -rf {} + 2>/dev/null || true
+find $HOME/projects -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find $HOME/projects -type d -name ".cache" -exec rm -rf {} + 2>/dev/null || true
 success "Build artifacts cleaned"
 
 log "Cleaning temp files..."
 rm -rf /tmp/npm-* 2>/dev/null || true
 rm -rf /tmp/v8-compile-cache-* 2>/dev/null || true
-rm -rf /home/dev/.npm/_cacache 2>/dev/null || true
+rm -rf $HOME/.npm/_cacache 2>/dev/null || true
 success "Temp files cleaned"
 
 log "Vacuuming journal logs..."

@@ -9,7 +9,7 @@
  * This is the enterprise approach - CLIs run continuously, maintaining state.
  */
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -30,6 +30,35 @@ import {
 } from './vibe-cli.service';
 import { getActiveProject } from './context.service';
 import { addThinkingStep } from './processing-state';
+
+// Lazy AI flag file — touched when all background npm installs complete
+const LAZY_AI_READY_FLAG = '/var/lib/ellul.ai/lazy-ai-ready';
+
+/**
+ * Check if a CLI binary is available in PATH.
+ * Returns true if the binary exists, false otherwise.
+ */
+function isCliBinaryAvailable(name: string): boolean {
+  try {
+    execSync(`which ${name}`, { stdio: 'ignore', timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure a CLI tool is installed before attempting to spawn it.
+ * Throws a user-friendly error if the tool is not yet available.
+ */
+function requireCliBinary(name: string): void {
+  if (isCliBinaryAvailable(name)) return;
+  const installing = !fs.existsSync(LAZY_AI_READY_FLAG);
+  if (installing) {
+    throw new Error(`${name} is still installing. Please wait a moment and try again.`);
+  }
+  throw new Error(`${name} is not installed on this server. Try restarting the server to trigger reinstallation.`);
+}
 
 /**
  * Send a thinking step via the processing state subscriber mechanism (which forwards to
@@ -396,7 +425,7 @@ export { closeVibeSession, closeAllVibeSessions } from './vibe-cli.service';
  */
 function getIsolatedCliEnv(threadId?: string | null): NodeJS.ProcessEnv {
   const baseEnv = getCliSpawnEnv();
-  const realHome = process.env.HOME || '/home/dev';
+  const realHome = process.env.HOME || '/home/' + (process.env.USER || 'dev');
 
   if (!threadId) {
     return baseEnv;
@@ -534,7 +563,7 @@ async function sendToOpencodeOneShot(
   setupContextFiles(project || undefined);
 
   return new Promise((resolve, reject) => {
-    const opencodePath = path.join(process.env.HOME || '/home/dev', '.opencode', 'bin', 'opencode');
+    const opencodePath = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.opencode', 'bin', 'opencode');
     const args = ['run', '--format', 'json', '--thinking'];
     // Note: Don't use --continue as it requires an existing OpenCode session
     // Thread isolation is handled via separate working directories
@@ -940,6 +969,9 @@ async function sendToClaudeOneShot(
   setupContextFiles(project || undefined);
 
   return new Promise((resolve, reject) => {
+    // Pre-flight: ensure claude binary is installed
+    try { requireCliBinary('claude'); } catch (e) { return reject(e); }
+
     // Use claude -p with JSON output for reliable parsing
     // --dangerously-skip-permissions allows file writes without interactive prompts
     const args = ['-p', '--output-format', 'json', '--dangerously-skip-permissions'];
@@ -1111,6 +1143,9 @@ async function sendToCodexOneShot(
   setupContextFiles(project || undefined);
 
   return new Promise((resolve, reject) => {
+    // Pre-flight: ensure codex binary is installed
+    try { requireCliBinary('codex'); } catch (e) { return reject(e); }
+
     const args = ['exec'];
     // Always use --last for per-thread isolation since each thread has its own state dir
     if (useLast || threadId) args.push('--last');
@@ -1267,6 +1302,9 @@ async function sendToGeminiOneShot(
   setupContextFiles(project || undefined);
 
   return new Promise((resolve, reject) => {
+    // Pre-flight: ensure gemini binary is installed
+    try { requireCliBinary('gemini'); } catch (e) { return reject(e); }
+
     const args = ['-p', message, '--output-format', 'stream-json'];
     // Always use --resume for per-thread isolation since each thread has its own state dir
     if (useResume || threadId) args.push('--resume');

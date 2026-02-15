@@ -61,9 +61,8 @@ function assembleScript(apiUrl: string): string {
   const status = readLib('status');
   const enforcement = readLib('enforcement');
   const deployment = readLib('deployment');
+  const agents = readLib('agents');
   const heartbeat = readLib('heartbeat');
-  const update = readLib('update');
-  const lockdown = readLib('lockdown');
   const services = readLib('services');
 
   // Assemble complete script
@@ -112,19 +111,14 @@ ${enforcement}
 ${deployment}
 
 # ============================================
+# Fishbowl Agent Telemetry
+# ============================================
+${agents}
+
+# ============================================
 # Heartbeat & Sync
 # ============================================
 ${heartbeat}
-
-# ============================================
-# Self-Update
-# ============================================
-${update}
-
-# ============================================
-# Emergency Lockdown
-# ============================================
-${lockdown}
 
 # ============================================
 # Service Health Monitoring
@@ -150,44 +144,25 @@ run_daemon() {
   WAKEUP=0
   trap 'WAKEUP=1' USR1
 
-  # H8 FIX: Check for lockdown markers from previous session (survives reboot)
-  if [ -f /etc/ellulai/.emergency-lockdown ] || [ -f "$LOCKDOWN_MARKER" ]; then
-    log "STARTUP: Lockdown markers detected from previous session — re-entering lockdown"
-    emergency_lockdown
-    emergency_lockdown_loop
-    # emergency_lockdown_loop only returns via exec (restart), so this is unreachable
-  fi
+  # Clean up any stale lockdown markers from pre-Phase 4
+  rm -f /etc/ellulai/.emergency-lockdown /etc/ellulai/.in_lockdown 2>/dev/null || true
 
-  sync_all 2>/dev/null || true
   local HEARTBEAT_COUNT=0
   local SERVICE_CHECK_COUNT=0
-  # L1 FIX: Load persisted failure count on startup
-  local CONSECUTIVE_FAILURES=$(load_failure_count)
-  if [ "$CONSECUTIVE_FAILURES" -gt 0 ]; then
-    log "Resumed with $CONSECUTIVE_FAILURES previous heartbeat failures"
-  fi
+  local CONSECUTIVE_FAILURES=0
 
   while true; do
-    if RESPONSE=$(heartbeat_raw 2>/dev/null); then
+    if heartbeat_raw 2>/dev/null; then
       # Heartbeat succeeded - reset failure counter
-      if [ "$CONSECUTIVE_FAILURES" -gt 0 ]; then
+      if [ "\$CONSECUTIVE_FAILURES" -gt 0 ]; then
         CONSECUTIVE_FAILURES=0
         reset_failure_count
       fi
     else
-      # Heartbeat failed
-      CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-      save_failure_count "$CONSECUTIVE_FAILURES"
-      log "WARN: Heartbeat failed ($CONSECUTIVE_FAILURES/$MAX_HEARTBEAT_FAILURES consecutive failures)"
-
-      # Try sync as fallback
-      sync_all 2>/dev/null || true
-
-      # Check if we've hit the failure threshold
-      if [ $CONSECUTIVE_FAILURES -ge $MAX_HEARTBEAT_FAILURES ]; then
-        emergency_lockdown
-        emergency_lockdown_loop
-      fi
+      # Heartbeat failed — log only, no lockdown
+      CONSECUTIVE_FAILURES=\$((CONSECUTIVE_FAILURES + 1))
+      save_failure_count "\$CONSECUTIVE_FAILURES"
+      log "WARN: Heartbeat failed (\$CONSECUTIVE_FAILURES consecutive failures)"
     fi
 
     SERVICE_CHECK_COUNT=$((SERVICE_CHECK_COUNT + 1))
@@ -196,11 +171,8 @@ run_daemon() {
       SERVICE_CHECK_COUNT=0
     fi
 
-    HEARTBEAT_COUNT=$((HEARTBEAT_COUNT + 1))
-    if [ $HEARTBEAT_COUNT -ge 10 ] && [ -n "$RESPONSE" ]; then
-      check_for_update "$RESPONSE"
-      HEARTBEAT_COUNT=0
-    fi
+    # Phase 4: Version updates deferred to future self-update mechanism
+    # (heartbeat response no longer carries version/update signals)
 
     # Interruptible sleep: SIGUSR1 interrupts wait immediately (zero latency)
     WAKEUP=0
@@ -220,7 +192,6 @@ run_daemon() {
 # ============================================
 
 case "\$1" in
-  sync) sync_all ;;
   heartbeat) heartbeat ;;
   daemon) run_daemon ;;
   sessions) get_active_sessions ;;
@@ -240,7 +211,7 @@ case "\$1" in
     done
     echo ""
     echo "  Deployed Apps:"
-    APPS_DIR="/home/dev/.ellulai/apps"
+    APPS_DIR="\${SVC_HOME}/.ellulai/apps"
     if ls "\$APPS_DIR"/*.json &>/dev/null; then
       for f in "\$APPS_DIR"/*.json; do
         [ -f "\$f" ] || continue
@@ -309,6 +280,7 @@ PIDFile=/run/ellulai-enforcer.pid
 Restart=always
 RestartSec=5
 User=root
+EnvironmentFile=-/etc/default/ellulai
 Environment=ELLULAI_AI_TOKEN=${aiProxyToken}
 StandardOutput=append:/var/log/ellulai-enforcer.log
 StandardError=append:/var/log/ellulai-enforcer.log

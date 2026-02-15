@@ -7,7 +7,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import { execSync } from 'child_process';
-import { SSH_AUTH_KEYS_PATH } from '../config';
+import { SSH_AUTH_KEYS_PATH, SVC_USER, SVC_HOME } from '../config';
 
 export interface SshKey {
   fingerprint: string;
@@ -68,10 +68,10 @@ export function addSshKey(publicKey: string): { fingerprint: string; success: bo
 
   try {
     // Ensure .ssh directory exists
-    const sshDir = '/home/dev/.ssh';
+    const sshDir = `${SVC_HOME}/.ssh`;
     if (!fs.existsSync(sshDir)) {
       fs.mkdirSync(sshDir, { mode: 0o700 });
-      execSync('chown dev:dev ' + sshDir, { stdio: 'ignore' });
+      execSync(`chown ${SVC_USER}:${SVC_USER} ${sshDir}`, { stdio: 'ignore' });
     }
 
     // Append key to authorized_keys
@@ -80,7 +80,7 @@ export function addSshKey(publicKey: string): { fingerprint: string; success: bo
 
     // Ensure correct permissions
     fs.chmodSync(SSH_AUTH_KEYS_PATH, 0o600);
-    execSync('chown dev:dev ' + SSH_AUTH_KEYS_PATH, { stdio: 'ignore' });
+    execSync(`chown ${SVC_USER}:${SVC_USER} ${SSH_AUTH_KEYS_PATH}`, { stdio: 'ignore' });
 
     return { fingerprint, success: true };
   } catch (e) {
@@ -104,7 +104,7 @@ export function removeSshKey(fingerprint: string): { success: boolean; error?: s
     const content = filteredKeys.map(k => k.publicKey).join('\n') + (filteredKeys.length > 0 ? '\n' : '');
     fs.writeFileSync(SSH_AUTH_KEYS_PATH, content);
     fs.chmodSync(SSH_AUTH_KEYS_PATH, 0o600);
-    execSync('chown dev:dev ' + SSH_AUTH_KEYS_PATH, { stdio: 'ignore' });
+    execSync(`chown ${SVC_USER}:${SVC_USER} ${SSH_AUTH_KEYS_PATH}`, { stdio: 'ignore' });
 
     return { success: true };
   } catch (e) {

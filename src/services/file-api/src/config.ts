@@ -20,6 +20,7 @@ export const PATHS = {
   API_URL: '/etc/ellulai/api-url',
   AI_PROXY_TOKEN: '/etc/ellulai/ai-proxy-token',
   DOMAIN: '/etc/ellulai/domain',
+  JWT_SECRET: '/etc/ellulai/jwt-secret',
   SSH_AUTH_KEYS: `${HOME}/.ssh/authorized_keys`,
 } as const;
 
@@ -62,11 +63,10 @@ export const MAX_FILE_SIZE = 5 * 1024 * 1024;
 export const DEBOUNCE_MS = 500;
 
 // Security tiers
-export type SecurityTier = 'standard' | 'ssh_only' | 'web_locked';
+export type SecurityTier = 'standard' | 'web_locked';
 
 export const TIERS = {
   STANDARD: 'standard' as SecurityTier,
-  SSH_ONLY: 'ssh_only' as SecurityTier,
   WEB_LOCKED: 'web_locked' as SecurityTier,
 } as const;
 

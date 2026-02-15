@@ -7,7 +7,7 @@
 // Core scripts
 export { getReportProgressScript } from './report-progress';
 export { getTermProxyScript, getTermProxyService } from './term-proxy';
-export { getMountVolumeScript, getAptInstallScript } from './helpers';
+export { getMountVolumeScript, getAptInstallScript, getUpdateIdentityScript, getRestoreIdentityScript, getMigratePullScript } from './helpers';
 
 // Domain-specific scripts
 export * from './workflow';

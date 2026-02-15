@@ -8,21 +8,19 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
-import { PATHS } from '../config';
-import { safeReadFile, safeExec } from '../utils';
+import { PATHS, HOME } from '../config';
 
 /**
  * Get current security tier.
  */
-export function getCurrentTier(): 'standard' | 'ssh_only' | 'web_locked' {
+export function getCurrentTier(): 'standard' | 'web_locked' {
   try {
     const tier = fs.readFileSync(PATHS.TIER, 'utf8').trim();
-    if (tier === 'standard' || tier === 'ssh_only' || tier === 'web_locked') {
+    if (tier === 'standard' || tier === 'web_locked') {
       return tier;
     }
   } catch {
     // Detect from state
-    if (fs.existsSync('/etc/ellulai/.terminal-disabled')) return 'ssh_only';
     if (fs.existsSync('/etc/ellulai/.sovereign-shield-active')) return 'web_locked';
   }
   return 'standard';
@@ -127,7 +125,7 @@ export function addSshKey(
   const fingerprint = computeSshFingerprint(trimmedKey);
 
   try {
-    execSync('mkdir -p /home/dev/.ssh && chmod 700 /home/dev/.ssh', { stdio: 'ignore' });
+    execSync(`mkdir -p ${HOME}/.ssh && chmod 700 ${HOME}/.ssh`, { stdio: 'ignore' });
 
     // Check for duplicate
     const keyData = trimmedKey.split(' ')[1];
@@ -155,16 +153,6 @@ export function addSshKey(
  * Remove an SSH key by fingerprint.
  */
 export function removeSshKey(fingerprint: string): { success: boolean; error?: string } {
-  const currentTier = getCurrentTier();
-
-  // Don't allow removing the last key in SSH Only mode
-  if (currentTier === 'ssh_only') {
-    const keys = getSshKeys();
-    if (keys.length <= 1) {
-      return { success: false, error: 'Cannot remove the last SSH key in SSH Only mode' };
-    }
-  }
-
   try {
     const content = fs.readFileSync(PATHS.SSH_AUTH_KEYS, 'utf8');
     const lines = content.split('\n');
@@ -234,7 +222,7 @@ export async function notifyPlatform(
  * Execute tier switch via sovereign-shield unified endpoint.
  */
 export async function executeTierSwitch(
-  targetTier: 'standard' | 'ssh_only' | 'web_locked',
+  targetTier: 'standard' | 'web_locked',
   ipAddress: string,
   userAgent: string
 ): Promise<void> {
@@ -266,19 +254,4 @@ export async function executeTierSwitch(
   }
 
   console.log(`[file-api] Tier switch completed via unified endpoint: ${currentTier} -> ${targetTier}`);
-
-  // Stop terminal services after successful switch to ssh_only
-  if (targetTier === 'ssh_only') {
-    // Stop dynamic terminal services
-    safeExec(
-      'sudo systemctl stop ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true'
-    );
-    // Also stop legacy static ttyd services
-    safeExec(
-      'sudo systemctl stop ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true'
-    );
-    safeExec(
-      'sudo systemctl disable ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true'
-    );
-  }
 }

@@ -14,7 +14,13 @@ check_critical_services() {
       log "ERROR: ellulai-file-api failed to restart"
     fi
   else
-    # Accept 200, 401 (web_locked auth required), or 403 (ssh_only mode)
+    # Skip health check during migration — execFileSync blocks the event loop
+    # while downloading the archive, making file-api unresponsive to health checks.
+    # The lock file is created by file-api at migration start and removed on completion.
+    if [ -f /tmp/ellulai-migration.lock ]; then
+      return
+    fi
+    # Accept 200, 401 (web_locked auth required), or 403
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 2 http://localhost:3002/api/tree 2>/dev/null || echo "000")
     if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "401" ] && [ "$HTTP_CODE" != "403" ]; then
       log "CRITICAL: ellulai-file-api not responding, restarting..."
@@ -28,14 +34,8 @@ check_critical_services() {
     systemctl restart ellulai-preview 2>/dev/null
   fi
 
-  # Skip terminal health checks if in lockdown (don't undo lockdown!)
-  if [ -f "$LOCKDOWN_MARKER" ] || [ -f /etc/ellulai/.emergency-lockdown ]; then
-    return 0
-  fi
-
   # Ensure all ttyd terminal services are running (for web_locked and standard modes)
-  local TIER=$(cat /etc/ellulai/security-tier 2>/dev/null || echo "standard")
-  if [ "$TIER" != "ssh_only" ] && [ ! -f /etc/ellulai/.terminal-disabled ]; then
+  if [ ! -f /etc/ellulai/.terminal-disabled ]; then
     for svc in $ALL_TERMINALS; do
       if ! systemctl is-active --quiet "$svc" 2>/dev/null; then
         log "WARN: $svc is down, starting..."

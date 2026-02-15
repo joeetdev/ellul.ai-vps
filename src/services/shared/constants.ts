@@ -3,6 +3,21 @@
  * Used by sovereign-shield, file-api, enforcer, and other VPS components.
  */
 
+import * as fs from 'fs';
+
+// Derive service user from /etc/default/ellulai (set during provisioning)
+function getServiceUser(): string {
+  try {
+    const content = fs.readFileSync('/etc/default/ellulai', 'utf8');
+    const match = content.match(/PS_USER=(\w+)/);
+    if (match?.[1]) return match[1];
+  } catch {}
+  return 'dev';
+}
+
+export const SVC_USER = getServiceUser();
+export const SVC_HOME = `/home/${SVC_USER}`;
+
 // File paths
 export const TIER_FILE = '/etc/ellulai/security-tier';
 export const SERVER_ID_FILE = '/etc/ellulai/server-id';
@@ -16,13 +31,12 @@ export const SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
 export const SETUP_EXPIRY_FILE = '/etc/ellulai/.sovereign-setup-expiry';
 export const SHIELD_MARKER = '/etc/ellulai/.sovereign-shield-active';
 export const TERMINAL_DISABLED_FILE = '/etc/ellulai/.terminal-disabled';
-export const SSH_AUTH_KEYS_PATH = '/home/dev/.ssh/authorized_keys';
+export const SSH_AUTH_KEYS_PATH = `${SVC_HOME}/.ssh/authorized_keys`;
 export const DB_PATH = '/etc/ellulai/local-auth.db';
 
 // Security tiers
 export const TIERS = {
   STANDARD: 'standard',
-  SSH_ONLY: 'ssh_only',
   WEB_LOCKED: 'web_locked',
 } as const;
 

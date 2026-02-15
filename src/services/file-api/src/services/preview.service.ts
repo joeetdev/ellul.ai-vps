@@ -34,7 +34,7 @@ function isLatestRequest(requestId: number): boolean {
 }
 
 // Ensure nvm binaries (node, npm, pm2, npx) are in PATH for execSync calls
-const NVM_BIN = `${HOME}/.nvm/versions/node/v20.20.0/bin`;
+const NVM_BIN = `${HOME}/.node/bin`;
 const EXEC_ENV = { ...process.env, PATH: `${NVM_BIN}:${process.env.PATH || ''}` };
 
 /**

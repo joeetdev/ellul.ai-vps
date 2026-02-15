@@ -37,17 +37,19 @@ exec /usr/bin/ttyd \\
 
 /**
  * ttyd systemd service template.
+ * @param svcUser - Service user name (coder for free tier, dev for paid)
  */
-export function getTtydSystemdTemplate(): string {
+export function getTtydSystemdTemplate(svcUser: string = "dev"): string {
+  const svcHome = `/home/${svcUser}`;
   return `[Unit]
 Description=ttyd - Terminal Session %i
 After=network.target
 
 [Service]
 Type=simple
-User=dev
-Group=dev
-WorkingDirectory=/home/dev/projects
+User=${svcUser}
+Group=${svcUser}
+WorkingDirectory=${svcHome}/projects
 ExecStart=/usr/local/bin/ellulai-ttyd-wrapper %i
 ExecStop=/usr/bin/tmux kill-session -t %i
 ExecStopPost=/bin/bash -c 'pkill -f "ellulai-launch %i" 2>/dev/null || true'

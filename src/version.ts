@@ -98,6 +98,17 @@ export const CAPABILITIES = {
     '/_auth/git/verify-link-token': 1,
     '/_auth/git/authorize-unlink': 1,
     '/_auth/git/verify-unlink-token': 1,
+    '/_auth/secrets': 1,
+    '/_auth/bridge/settings': 1,
+    '/_auth/bridge/toggle-terminal': 1,
+    '/_auth/bridge/toggle-ssh': 1,
+    '/_auth/bridge/kill-ports': 1,
+    '/_auth/bridge/git-action': 1,
+    '/_auth/bridge/switch-deployment': 1,
+    '/_auth/bridge/confirm-infra': 1,
+    '/_auth/bridge/reset-heartbeat': 1,
+    '/api/backup-identity': 1,
+    '/api/restore-identity': 1,
   },
   features: [
     'passkey',
@@ -108,6 +119,11 @@ export const CAPABILITIES = {
     'code-browser',
     'agent-bridge',
     'git-link-passkey',
+    'secrets',
+    'settings-local',
+    'bridge-operations',
+    'infra-confirm',
+    'heartbeat-reset',
   ] as const,
 };
 
@@ -125,11 +141,16 @@ export const FEATURE_DESCRIPTIONS: Record<(typeof CAPABILITIES.features)[number]
   'passkey': 'Passkey authentication (Face ID / Touch ID)',
   'pop': 'Proof-of-Presence device binding',
   'ssh-keys': 'SSH key management from dashboard',
-  'tier-switch': 'Security tier switching (Standard / SSH-Only / Web-Locked)',
+  'tier-switch': 'Security tier switching (Standard / Web-Locked)',
   'terminal-tokens': 'Secure terminal session tokens',
   'code-browser': 'In-browser code editor',
   'agent-bridge': 'AI agent bridge for tool access',
   'git-link-passkey': 'Passkey confirmation for git repo linking (Web Locked)',
+  'secrets': 'Direct encrypted secrets management (browser → VPS)',
+  'settings-local': 'VPS-driven terminal/SSH settings (passkey-only)',
+  'bridge-operations': 'VPS-driven kill-ports, git, deployment (passkey-only)',
+  'infra-confirm': 'Passkey-gated confirmation tokens for dangerous daemon operations',
+  'heartbeat-reset': 'Manual heartbeat key reset from dashboard',
 };
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@
 export function getBashrcConfig(aiProxyToken: string, svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `# PATH exports BEFORE interactive check - needed for tmux/ttyd commands
-export PATH="${svcHome}/.nvm/versions/node/v20.20.0/bin:${svcHome}/.opencode/bin:${svcHome}/.local/bin:$PATH"
+export PATH="${svcHome}/.node/bin:${svcHome}/.opencode/bin:${svcHome}/.local/bin:$PATH"
 
 case $- in
     *i*) ;;
@@ -35,6 +35,9 @@ export ELLULAI_AI_TOKEN="${aiProxyToken}"
 export PORT=3000
 
 [ -f ~/.ellulai-env ] && source ~/.ellulai-env
+
+# Lazy AI shims (fallback for non-login shells where /etc/profile.d is not sourced)
+[ -f /etc/profile.d/99-lazy-ai-shims.sh ] && source /etc/profile.d/99-lazy-ai-shims.sh
 
 eval "$(starship init bash)"
 eval "$(zoxide init bash)"

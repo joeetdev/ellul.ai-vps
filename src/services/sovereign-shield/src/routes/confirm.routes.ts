@@ -9,7 +9,6 @@
  * Tier enforcement:
  * - Standard:   Session sufficient
  * - Web Locked: Session + PoP required (same as token routes)
- * - SSH Only:   Hard reject — no web operations allowed
  *
  * Endpoints:
  * - POST /_auth/confirm-operation   - Confirm a destructive operation (tier-enforced)
@@ -33,7 +32,7 @@ import { verifyRequestPoP } from '../auth/pop';
 
 // SECURITY: Confirmation nonce graveyard — ensures every confirmation token is strictly single-use.
 // Nonces are persisted in SQLite so they survive service restarts.
-// TTL matches token expiry (5 minutes).
+// TTL matches token expiry (60 seconds).
 let checkConfirmNonceStmt: ReturnType<typeof db.prepare> | null = null;
 let insertConfirmNonceStmt: ReturnType<typeof db.prepare> | null = null;
 let cleanupConfirmNoncesStmt: ReturnType<typeof db.prepare> | null = null;
@@ -102,18 +101,6 @@ export function registerConfirmRoutes(app: Hono): void {
     // to issue confirmation tokens unless tier requirements are met.
     // =================================================================
     const tier = getCurrentTier();
-
-    // SSH Only: Hard reject ALL web-initiated operations
-    if (tier === 'ssh_only') {
-      logAuditEvent({
-        type: 'confirm_rejected_ssh_only',
-        ip,
-        fingerprint: fingerprintData.hash,
-        sessionId: result.session?.id,
-        details: { operation, tier },
-      });
-      return c.json({ error: 'Web operations disabled', tier: 'ssh_only' }, 403);
-    }
 
     // Web Locked: Require Proof-of-Possession (same pattern as token.routes.ts)
     if (tier === 'web_locked') {
@@ -211,7 +198,7 @@ export function registerConfirmRoutes(app: Hono): void {
       confirmed: true,
       operation,
       confirmation,
-      expiresAt: timestamp + 300000, // 5 minute expiry
+      expiresAt: timestamp + 60000, // 60 second expiry
     });
   });
 
@@ -297,8 +284,8 @@ export function registerConfirmRoutes(app: Hono): void {
         return c.json({ error: 'Server ID mismatch' }, 400);
       }
 
-      // Check expiry (5 minutes)
-      if (Date.now() - payload.timestamp > 300000) {
+      // Check expiry (60 seconds)
+      if (Date.now() - payload.timestamp > 60000) {
         return c.json({ error: 'Confirmation expired' }, 410);
       }
 
@@ -323,9 +310,9 @@ export function registerConfirmRoutes(app: Hono): void {
           });
           return c.json({ error: 'Confirmation already used', reason: 'nonce_reused' }, 409);
         }
-        // Bury the nonce — TTL matches the 5-minute token window
+        // Bury the nonce — TTL matches the 60-second token window
         try {
-          insertConfirmNonceStmt!.run(tokenNonce, payload.timestamp + 300000);
+          insertConfirmNonceStmt!.run(tokenNonce, payload.timestamp + 60000);
         } catch (e) {
           console.error('[shield] Confirmation nonce insert error:', (e as Error).message);
         }

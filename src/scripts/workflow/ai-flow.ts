@@ -7,7 +7,7 @@ export function getAiFlowScript(apiUrl: string): string {
   return `#!/bin/bash
 set -e
 ACTION="$1"
-PROJECT_DIR="\${2:-/home/dev/projects/welcome}"
+PROJECT_DIR="\${2:-$HOME/projects/welcome}"
 
 GREEN='\\033[32m'
 CYAN='\\033[36m'
@@ -15,7 +15,7 @@ YELLOW='\\033[33m'
 RED='\\033[31m'
 NC='\\033[0m'
 
-CONTEXT_DIR="/home/dev/.ellulai/context"
+CONTEXT_DIR="$HOME/.ellulai/context"
 GLOBAL_CTX="$CONTEXT_DIR/global.md"
 CURRENT_CTX="$CONTEXT_DIR/current.md"
 PROXY_URL="${apiUrl}/api/ai"
@@ -132,7 +132,7 @@ Reply with ONLY the commit message."
 }
 
 select_project() {
-  PROJECTS_DIR="/home/dev/projects"
+  PROJECTS_DIR="$HOME/projects"
   mkdir -p "$PROJECTS_DIR"
   echo ""
   echo -e "\${CYAN}PROJECT SELECTOR\${NC}"
@@ -203,7 +203,7 @@ get_app_name() {
 get_existing_deployment() {
   # Check if current directory already has a deployment
   # Matches by exact projectPath first, then by directory name as fallback
-  local APPS_DIR="/home/dev/.ellulai/apps"
+  local APPS_DIR="$HOME/.ellulai/apps"
   local CURRENT_PATH="$(pwd)"
   local DIR_NAME=$(basename "$CURRENT_PATH")
 

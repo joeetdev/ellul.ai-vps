@@ -117,18 +117,18 @@ success "Sovereign credential helper installed (no tokens on disk)"
 # Find project directory (ELLULAI_PROJECT_DIR set by enforcement for per-app git)
 PROJECT_DIR="\${ELLULAI_PROJECT_DIR:-}"
 if [ -z "$PROJECT_DIR" ]; then
-  if [ -d "/home/dev/projects/welcome" ]; then
-    PROJECT_DIR="/home/dev/projects/welcome"
-  elif [ -d "/home/dev/projects" ]; then
+  if [ -d "$HOME/projects/welcome" ]; then
+    PROJECT_DIR="$HOME/projects/welcome"
+  elif [ -d "$HOME/projects" ]; then
     # Use the first directory with files in it
-    for dir in /home/dev/projects/*/; do
+    for dir in $HOME/projects/*/; do
       if [ -d "$dir" ]; then
         PROJECT_DIR="$dir"
         break
       fi
     done
     # Fallback to projects root
-    [ -z "$PROJECT_DIR" ] && PROJECT_DIR="/home/dev/projects"
+    [ -z "$PROJECT_DIR" ] && PROJECT_DIR="$HOME/projects"
   fi
 fi
 

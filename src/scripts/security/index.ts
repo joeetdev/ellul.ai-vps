@@ -2,7 +2,6 @@
  * Security scripts index - exports all security-related script generators.
  */
 export { getSetupSshKeyScript, getAddSshKeyScript } from "./setup-ssh-key";
-export { getGoSovereignScript } from "./go-sovereign";
 export { getLockWebOnlyScript } from "./lock-web-only";
 export { getVerifyScript } from "./verify";
 export { getDecryptScript } from "./decrypt";

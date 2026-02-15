@@ -44,15 +44,27 @@ import { validatePreviewCredentials } from './preview.routes';
 export function registerSessionRoutes(app: Hono, hostname: string): void {
   /**
    * Forward auth endpoint (Caddy uses this)
-   * TIER-AWARE: Handles standard, ssh_only, and web_locked differently
+   * TIER-AWARE: Handles standard and web_locked differently
    */
   app.get('/api/auth/session', async (c) => {
     const tier = getCurrentTier();
     const forwardedUri = c.req.header('x-forwarded-uri') || '/';
 
-    // SSH Only tier: No web access at all
-    if (tier === 'ssh_only') {
-      return c.json({ error: 'Web access disabled', tier: 'ssh_only' }, 403);
+    // Vibe chat WebSocket: Agent token is the sole credential.
+    // Agent-bridge validates and consumes the token via verifyClient — forward_auth
+    // just needs to confirm the token is present (not validate it, since tokens are single-use).
+    if (forwardedUri.startsWith('/vibe')) {
+      try {
+        const uriParams = new URLSearchParams(forwardedUri.split('?')[1] || '');
+        const agentToken = uriParams.get('_agent_token');
+        if (agentToken && /^[a-f0-9]{64}$/.test(agentToken)) {
+          c.header('X-Auth-User', 'agent-bridge');
+          c.header('X-Auth-Tier', tier);
+          c.header('X-Auth-Session', 'agent-token');
+          return c.json({ authenticated: true, tier, method: 'agent_token' }, 200);
+        }
+      } catch {}
+      return c.json({ error: 'Agent token required' }, 401);
     }
 
     // Terminal gate: term-proxy handles actual auth, but we require credential presence.

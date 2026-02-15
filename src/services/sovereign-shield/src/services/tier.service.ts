@@ -15,7 +15,7 @@ import {
   TERMINAL_DISABLED_FILE,
   SERVER_ID_FILE,
   API_URL_FILE,
-  SSH_AUTH_KEYS_PATH,
+  SVC_HOME,
 } from '../config';
 import type { SecurityTier } from '../config';
 
@@ -57,9 +57,8 @@ export interface ServerCredentials {
  *
  * Priority order (highest security wins):
  * 1. Web Locked marker exists → web_locked (instant, fail-secure)
- * 2. SSH Only: Terminal disabled marker exists AND SSH keys present
- * 3. Web Locked: Passkey exists in database
- * 4. Standard: No passkeys, no markers
+ * 2. Web Locked: Passkey exists in database
+ * 3. Standard: No passkeys, no markers
  */
 export function getCurrentTier(): SecurityTier {
   return computeTierFromGroundTruth();
@@ -93,23 +92,6 @@ function computeTierFromGroundTruth(): SecurityTier {
   // ==========================================================================
   // SLOW PATH: No marker, check actual state
   // ==========================================================================
-
-  // Check terminal disabled marker
-  const terminalDisabled = fs.existsSync(TERMINAL_DISABLED_FILE);
-
-  // Check SSH keys for ssh_only
-  if (terminalDisabled) {
-    let hasSshKeys = false;
-    try {
-      const authKeys = fs.readFileSync(SSH_AUTH_KEYS_PATH, 'utf8');
-      hasSshKeys = authKeys.split('\n').some(line => line.trim() && !line.startsWith('#'));
-    } catch {}
-
-    if (hasSshKeys) {
-      return 'ssh_only';
-    }
-    // Terminal disabled but no SSH keys - dangerous, fall through to check passkeys
-  }
 
   // Check for passkeys (only if no marker - new setup or never upgraded)
   let hasPasskey = false;
@@ -149,17 +131,6 @@ export function setTier(tier: SecurityTier): void {
 export function canActivateTier(tier: SecurityTier): boolean {
   if (tier === 'standard') return true;
 
-  if (tier === 'ssh_only') {
-    // Need at least one SSH key
-    try {
-      const authKeys = fs.readFileSync(SSH_AUTH_KEYS_PATH, 'utf8');
-      const keys = authKeys.split('\n').filter(line => line.trim() && !line.startsWith('#'));
-      return keys.length > 0;
-    } catch {
-      return false;
-    }
-  }
-
   if (tier === 'web_locked') {
     // Need at least one passkey
     const count = (db.prepare('SELECT COUNT(*) as c FROM credential').get() as { c: number }).c;
@@ -179,7 +150,7 @@ export function getServerCredentials(): ServerCredentials | null {
       ? fs.readFileSync(API_URL_FILE, 'utf8').trim()
       : 'https://api.ellul.ai';
     // Read token from bashrc
-    const bashrc = fs.readFileSync('/home/dev/.bashrc', 'utf8');
+    const bashrc = fs.readFileSync(`${SVC_HOME}/.bashrc`, 'utf8');
     const tokenMatch = bashrc.match(/ELLULAI_AI_TOKEN="([^"]+)"/);
     const token = tokenMatch && tokenMatch[1] ? tokenMatch[1] : null;
     return { serverId, apiUrl, token };
@@ -221,6 +192,52 @@ export async function notifyPlatformTierChange(
     });
   } catch (e) {
     console.error('[shield] Failed to notify platform of tier change:', (e as Error).message);
+  }
+}
+
+/**
+ * Notify platform about settings change (terminal/SSH toggle)
+ * Fire-and-forget — heartbeat reconciles within 30s on failure.
+ */
+export async function notifyPlatformSettingsChange(
+  settings: { terminalEnabled: boolean; sshEnabled: boolean },
+  ipAddress: string,
+  userAgent: string
+): Promise<void> {
+  const creds = getServerCredentials();
+  if (!creds || !creds.token) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const res = await fetch(`${creds.apiUrl}/api/servers/${creds.serverId}/vps-event`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${creds.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        event: 'settings_changed',
+        data: {
+          terminalEnabled: settings.terminalEnabled,
+          sshEnabled: settings.sshEnabled,
+          ipAddress,
+          userAgent,
+        },
+        timestamp: Date.now(),
+        nonce: crypto.randomBytes(16).toString('hex'),
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) {
+      console.warn('[shield] Settings webhook returned', res.status);
+    }
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err.name !== 'AbortError') throw err;
+    console.warn('[shield] Settings webhook timed out');
   }
 }
 
@@ -314,6 +331,33 @@ export async function notifyPlatformPasskeyRemoved(credentialId: string, name: s
     });
   } catch (e) {
     console.error('[shield] Failed to notify platform of passkey removal:', (e as Error).message);
+  }
+}
+
+/**
+ * Notify platform to clear stored heartbeat public key.
+ * Called after keypair regeneration so next heartbeat re-registers via TOFU.
+ */
+export async function notifyPlatformHeartbeatKeyReset(): Promise<void> {
+  const creds = getServerCredentials();
+  if (!creds || !creds.token) return;
+
+  try {
+    await fetch(`${creds.apiUrl}/api/servers/${creds.serverId}/vps-event`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${creds.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        event: 'heartbeat_key_reset',
+        data: {},
+        timestamp: Date.now(),
+        nonce: crypto.randomBytes(16).toString('hex'),
+      }),
+    });
+  } catch (e) {
+    console.error('[shield] Failed to notify platform of heartbeat key reset:', (e as Error).message);
   }
 }
 
@@ -451,96 +495,14 @@ export async function executeTierSwitch(
       console.log('[shield] SSH port closed (standard tier)');
       break;
 
-    case 'ssh_only':
-      // =================================================================
-      // UPGRADE TO SSH ONLY - Must verify SSH works before stopping terminals
-      // =================================================================
-
-      // STEP 1: Verify SSH keys exist
-      if (!fs.existsSync(SSH_AUTH_KEYS_PATH)) {
-        throw new Error('No SSH keys found - cannot upgrade to SSH Only');
-      }
-      const keyContent = fs.readFileSync(SSH_AUTH_KEYS_PATH, 'utf8').trim();
-      if (!keyContent) {
-        throw new Error('SSH authorized_keys file is empty - cannot upgrade to SSH Only');
-      }
-      console.log('[shield] SSH keys verified present');
-
-      // STEP 2: Enable SSH FIRST (try both service names for compatibility)
-      execSync('ufw allow 22/tcp comment SSH 2>/dev/null || true', { stdio: 'pipe' });
-      execSync('systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true', { stdio: 'pipe' });
-
-      // STEP 3: Wait and verify SSH is running (check both service names)
-      await new Promise(r => setTimeout(r, 2000));
-      if (!isServiceRunning('ssh') && !isServiceRunning('sshd')) {
-        throw new Error('SSH daemon failed to start - aborting to prevent lockout');
-      }
-      console.log('[shield] SSH daemon verified running');
-
-      // STEP 4: If coming from web_locked, remove marker and clear passkeys
-      // Must happen before tier file write so nothing changes if this fails.
-      // Without this, computeTierFromGroundTruth() sees the marker (checked first)
-      // and snaps the tier back to web_locked.
-      // SAFETY: Only clear credentials after confirming marker is gone.
-      if (currentTier === 'web_locked') {
-        removeImmutableMarker(WEB_LOCKED_MARKER);
-        if (fs.existsSync(WEB_LOCKED_MARKER)) {
-          console.error('[shield] CRITICAL: web_locked marker could not be removed — aborting switch');
-          throw new Error('Failed to remove web_locked marker — switch aborted, passkeys preserved');
-        }
-        try {
-          db.exec('BEGIN');
-          db.prepare('DELETE FROM sessions').run();
-          db.prepare('DELETE FROM credential').run();
-          db.exec('COMMIT');
-          console.log('[shield] web_locked marker + credentials cleared (switching to ssh_only)');
-        } catch (e) {
-          db.exec('ROLLBACK');
-          writeImmutableMarker(WEB_LOCKED_MARKER, Date.now().toString());
-          console.error('[shield] Failed to clear credentials, restored web_locked marker:', (e as Error).message);
-          throw new Error('Failed to clear credentials — web_locked state restored');
-        }
-      }
-
-      // STEP 5: Update tier file
-      writeTierFile('ssh_only');
-
-      // STEP 6: Create terminal disabled marker
-      fs.writeFileSync(TERMINAL_DISABLED_FILE, '');
-      fs.chmodSync(TERMINAL_DISABLED_FILE, 0o400);
-
-      // STEP 7: Disable passkey gate if active
-      execSync('/usr/local/bin/ellulai-unlock 2>&1 || true', { stdio: 'pipe' });
-
-      // STEP 8: FINAL - Only now stop terminal services (SSH verified working)
-      // Stop dynamic terminal services (agent-bridge, term-proxy)
-      execSync('systemctl stop ellulai-agent-bridge ellulai-term-proxy 2>/dev/null || true', { stdio: 'pipe' });
-      // Also stop any legacy static ttyd services
-      execSync('systemctl stop ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true', { stdio: 'pipe' });
-      execSync('systemctl disable ttyd@main ttyd@opencode ttyd@claude ttyd@codex ttyd@gemini ttyd@aider ttyd@git ttyd@branch ttyd@save ttyd@ship 2>/dev/null || true', { stdio: 'pipe' });
-      console.log('[shield] Web terminal services stopped');
-      break;
-
     case 'web_locked':
       // =================================================================
       // UPGRADE TO WEB LOCKED - Passkey gate should already be active
       // =================================================================
 
-      // STEP 0: Handle SSH based on where we're coming from
-      if (currentTier === 'ssh_only') {
-        // Coming from ssh_only: verify SSH is working and keep it as fallback
-        execSync('ufw allow 22/tcp comment SSH 2>/dev/null || true', { stdio: 'pipe' });
-        execSync('systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true', { stdio: 'pipe' });
-        await new Promise(r => setTimeout(r, 1000));
-        if (!isServiceRunning('ssh') && !isServiceRunning('sshd')) {
-          throw new Error('SSH not running - cannot upgrade to web_locked without SSH fallback');
-        }
-        console.log('[shield] SSH verified and preserved as fallback (from ssh_only)');
-      } else {
-        // Coming from standard: ensure SSH stays closed (no SSH fallback)
-        execSync('ufw deny 22/tcp 2>/dev/null || true', { stdio: 'pipe' });
-        console.log('[shield] SSH port closed (web_locked from standard - passkey + recovery codes only)');
-      }
+      // STEP 0: Ensure SSH stays closed (no SSH fallback)
+      execSync('ufw deny 22/tcp 2>/dev/null || true', { stdio: 'pipe' });
+      console.log('[shield] SSH port closed (web_locked from standard - passkey + recovery codes only)');
 
       // STEP 1: Verify we're running (sovereign-shield must be active for web_locked)
       console.log('[shield] Sovereign Shield is active (self-verified)');
@@ -559,6 +521,10 @@ export async function executeTierSwitch(
 
   // Invalidate tier cache immediately after state change
   invalidateTierCache();
+
+  // Recompute settings with new tier overrides
+  const { onTierChanged } = await import('./settings.service');
+  onTierChanged();
 
   // Notify platform
   await notifyPlatformTierChange(currentTier, targetTier, ipAddress, userAgent);

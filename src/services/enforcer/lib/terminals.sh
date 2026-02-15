@@ -20,7 +20,6 @@ stop_all_terminals() {
 # dynamically by agent-bridge with per-project scoping. This function now only
 # ensures agent-bridge and term-proxy are running.
 start_all_terminals() {
-  [ -f "$LOCKDOWN_MARKER" ] || [ -f /etc/ellulai/.emergency-lockdown ] && return 0
   [ -f /etc/ellulai/.terminal-disabled ] && return 0
 
   # Dynamic terminal sessions are handled by agent-bridge and term-proxy

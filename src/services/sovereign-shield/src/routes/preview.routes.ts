@@ -115,7 +115,7 @@ export function registerPreviewRoutes(app: Hono, hostname: string): void {
    * POST /_auth/preview/authorize
    *
    * Called by the dashboard (from console.ellul.ai → {id}-srv.ellul.ai, same-site).
-   * Tier-aware: standard/ssh_only use JWT, web_locked uses shield_session.
+   * Tier-aware: standard uses JWT, web_locked uses shield_session.
    * Returns a short-lived single-use preview token.
    */
   app.post('/_auth/preview/authorize', async (c) => {
@@ -154,7 +154,7 @@ export function registerPreviewRoutes(app: Hono, hostname: string): void {
 
       sessionId = shieldSession;
     } else {
-      // Standard / SSH Only: JWT authentication
+      // Standard: JWT authentication
       const jwtPayload = verifyJwtToken(c.req);
       if (!jwtPayload) {
         return c.json({ error: 'Authentication required' }, 401);

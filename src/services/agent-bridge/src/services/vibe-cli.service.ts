@@ -503,7 +503,7 @@ async function createTmuxCliSession(
     export XDG_DATA_HOME="${threadStateDir}"
     export XDG_STATE_HOME="${threadStateDir}"
     export XDG_CACHE_HOME="${path.join(threadStateDir, '.cache')}"
-    export ELLULAI_REAL_HOME="${process.env.HOME || '/home/dev'}"
+    export ELLULAI_REAL_HOME="${process.env.HOME || '/home/' + (process.env.USER || 'dev')}"
     exec ${cliCommand}
   `.trim();
 
@@ -821,7 +821,7 @@ function sleep(ms: number): Promise<void> {
  */
 function getIsolatedEnv(threadStateDir: string): NodeJS.ProcessEnv {
   const baseEnv = getCliSpawnEnv();
-  const realHome = process.env.HOME || '/home/dev';
+  const realHome = process.env.HOME || '/home/' + (process.env.USER || 'dev');
 
   // Setup symlinks for auth files
   setupAuthSymlinks(threadStateDir, realHome);
@@ -935,7 +935,7 @@ function buildContextBlock(projectPath: string, domain: string, appName?: string
 
   // Check for deployment info
   let deploymentSection = '';
-  const appsDir = path.join(process.env.HOME || '/home/dev', '.ellulai', 'apps');
+  const appsDir = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.ellulai', 'apps');
   if (fs.existsSync(appsDir)) {
     try {
       const files = fs.readdirSync(appsDir);
@@ -990,7 +990,7 @@ Do NOT report task complete until verification passes!
 - Ports: Dev=3000, Prod=3001+, Reserved=7681-7700
 - Backend first: expose backend with \`ellulai-expose NAME PORT\` before frontend depends on it
 - Databases: \`ellulai-install postgres|redis|mysql\` (warn user about RAM usage)
-- DB GUI: user runs \`ssh -L 5432:localhost:5432 dev@${domain}\` from their machine
+- DB GUI: user runs \`ssh -L 5432:localhost:5432 ${process.env.USER || 'dev'}@${domain}\` from their machine
 
 ## Git (Code Backup)
 Check \`git remote -v\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.
@@ -1046,7 +1046,7 @@ export function setupContextFiles(project?: string): void {
         if (!fs.existsSync(filePath)) {
           // Only create if missing — the bash context script handles marker-based updates
           writeMarkerFile(filePath, block);
-          try { fs.chownSync(filePath, 1000, 1000); } catch {} // dev:dev
+          try { fs.chownSync(filePath, process.getuid!(), process.getgid!()); } catch {}
           console.log(`[VibeCLI] Created ${fileName} for project ${project}`);
         }
       }
@@ -1058,13 +1058,13 @@ export function setupContextFiles(project?: string): void {
       const filePath = path.join(PROJECTS_DIR, fileName);
       if (!fs.existsSync(filePath)) {
         writeMarkerFile(filePath, globalBlock);
-        try { fs.chownSync(filePath, 1000, 1000); } catch {}
+        try { fs.chownSync(filePath, process.getuid!(), process.getgid!()); } catch {}
         console.log(`[VibeCLI] Created global ${fileName}`);
       }
     }
 
     // Ensure ~/.gemini/GEMINI.md exists for global Gemini context
-    const realHome = process.env.HOME || '/home/dev';
+    const realHome = process.env.HOME || '/home/' + (process.env.USER || 'dev');
     const geminiDir = path.join(realHome, '.gemini');
     const geminiGlobalPath = path.join(geminiDir, 'GEMINI.md');
     if (!fs.existsSync(geminiGlobalPath)) {

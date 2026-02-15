@@ -11,6 +11,7 @@
 import type { Hono } from 'hono';
 import { SESSION_POP_JS } from '../auth/pop';
 import { SIMPLEWEBAUTHN_BROWSER_JS } from '../vendor/simplewebauthn-browser-content';
+import BRIDGE_CLIENT_JS from '../static/bridge-client.js';
 
 /**
  * Register static asset routes on Hono app
@@ -33,5 +34,14 @@ export function registerStaticRoutes(app: Hono): void {
     c.header('Content-Type', 'application/javascript');
     c.header('Cache-Control', 'public, max-age=86400');
     return c.body(SIMPLEWEBAUTHN_BROWSER_JS);
+  });
+
+  /**
+   * Serve bridge-client.js - bridge iframe client-side module
+   */
+  app.get('/_auth/static/bridge-client.js', (c) => {
+    c.header('Content-Type', 'application/javascript');
+    c.header('Cache-Control', 'no-store');
+    return c.body(BRIDGE_CLIENT_JS);
   });
 }

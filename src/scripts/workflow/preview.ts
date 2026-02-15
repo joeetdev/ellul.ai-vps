@@ -9,10 +9,10 @@ export function getPreviewScript(): string {
 # Supports: Next.js, Nuxt, Vite, Vue, CRA, Svelte, Astro, Gatsby, Remix, static HTML
 
 PORT=3000
-PROJECTS_DIR="/home/dev/projects"
+PROJECTS_DIR="\$HOME/projects"
 CHECK_INTERVAL=5
-APP_FILE="/home/dev/.ellulai/preview-app"
-SCRIPT_FILE="/home/dev/.ellulai/preview-script"
+APP_FILE="\$HOME/.ellulai/preview-app"
+SCRIPT_FILE="\$HOME/.ellulai/preview-script"
 
 log() { echo "[$(date -Iseconds)] $1"; }
 
@@ -140,19 +140,21 @@ done`;
 
 /**
  * Preview server systemd service.
+ * @param svcUser - Service user name (coder for free tier, dev for paid)
  */
-export function getPreviewService(): string {
+export function getPreviewService(svcUser: string = "dev"): string {
+  const svcHome = `/home/${svcUser}`;
   return `[Unit]
 Description=ellul.ai Preview Server
 After=network.target ellulai-file-api.service
 
 [Service]
 Type=simple
-User=dev
+User=${svcUser}
 ExecStart=/usr/local/bin/ellulai-preview
 Restart=always
 RestartSec=5
-Environment=PATH=/home/dev/.nvm/versions/node/v20.20.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=${svcHome}/.node/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=multi-user.target`;

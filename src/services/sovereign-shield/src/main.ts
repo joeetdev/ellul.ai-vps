@@ -7,7 +7,7 @@
  * - Passkey registration and authentication
  * - Session management with PoP (Proof of Possession)
  * - Forward auth for Caddy reverse proxy
- * - Security tier management (standard, ssh_only, web_locked)
+ * - Security tier management (standard, web_locked)
  * - SSH key management
  * - Break-glass recovery system
  * - Platform bridge API for dashboard integration
@@ -17,10 +17,12 @@ import fs from 'fs';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
-import { PORT, RP_NAME, DOMAIN_FILE } from './config';
+import { PORT, RP_NAME, DOMAIN_FILE, API_URL_FILE, SVC_HOME } from './config';
 import { registerAllRoutes } from './routes';
 import { cleanupPreviewData } from './routes/preview.routes';
 import { getCurrentTier } from './services/tier.service';
+import { decryptEnvelope, setSecret, deleteSecret } from './services/secrets.service';
+import { initSettings } from './services/settings.service';
 // Import database to ensure initialization and migrations run
 import './database';
 
@@ -44,7 +46,7 @@ app.use('*', cors({
     if (!origin) return origin;
     if (origin === 'https://ellul.ai') return origin;
     if (origin === 'https://console.ellul.ai') return origin;
-    if (origin.endsWith('.ellul.ai') || origin.endsWith('.ellul.app')) return origin;
+    if (/^https:\/\/[a-zA-Z0-9-]+\.ellul\.(ai|app)$/.test(origin)) return origin;
     // Allow same-origin
     if (origin === `https://${hostname}`) return origin;
     return null;
@@ -54,36 +56,6 @@ app.use('*', cors({
   allowHeaders: ['Content-Type', 'X-PoP-Signature', 'X-PoP-Timestamp', 'X-PoP-Nonce'],
   exposeHeaders: ['Set-Cookie'],
 }));
-
-// DARK MODE (P3 security enhancement): In SSH-Only mode, immediately reject all
-// web bridge and dashboard requests before they reach any route handler.
-// Only health, capabilities (returns {}), tier, and forward-auth endpoints are allowed
-// so the system can still report its status and enforce the SSH-only gate at Caddy level.
-const SSH_ONLY_ALLOWED_PATHS = new Set([
-  '/health',
-  '/_auth/capabilities',
-  '/_auth/tier/current',
-  '/_auth/tier/switch',
-  '/_auth/bridge/tier',
-  '/api/auth/session',
-  '/api/auth/check',
-  '/api/workflow/expose',
-]);
-
-const SSH_ONLY_ALLOWED_PREFIXES = [
-  '/_auth/ssh-only-upgrade',
-  '/_auth/register',
-];
-
-app.use('*', async (c, next) => {
-  if (getCurrentTier() === 'ssh_only') {
-    const path = new URL(c.req.url).pathname;
-    if (!SSH_ONLY_ALLOWED_PATHS.has(path) && !SSH_ONLY_ALLOWED_PREFIXES.some(p => path.startsWith(p))) {
-      return c.json({ error: 'Web access disabled', tier: 'ssh_only' }, 403);
-    }
-  }
-  return next();
-});
 
 // Register all routes
 registerAllRoutes(app, {
@@ -103,9 +75,82 @@ serve({
 }, (info) => {
   console.log(`[shield] Sovereign Shield running on http://127.0.0.1:${info.port}`);
 
+  // Initialize local settings file on boot (tier-based defaults)
+  initSettings();
+
   // Periodic cleanup of expired preview tokens/sessions (every 5 minutes)
   setInterval(cleanupPreviewData, 5 * 60 * 1000);
+
+  // Git token refresh — pull encrypted token from API every 30 minutes
+  setTimeout(refreshGitToken, 10_000); // Initial pull after 10s startup delay
+  setInterval(refreshGitToken, 30 * 60 * 1000);
 });
+
+// ── Git Token Refresh ──
+
+/**
+ * Pull encrypted GitHub installation token from API and write to env file.
+ * The VPS initiates this — no secrets flow through the heartbeat.
+ */
+async function refreshGitToken(): Promise<void> {
+  try {
+    // Read API URL and bearer token
+    let apiUrl: string;
+    let bearerToken: string | null = null;
+
+    try {
+      apiUrl = fs.readFileSync(API_URL_FILE, 'utf8').trim();
+    } catch {
+      return; // No API URL configured — skip silently
+    }
+
+    // Read ELLULAI_AI_TOKEN from .bashrc (same as enforcer)
+    try {
+      const bashrc = fs.readFileSync(`${SVC_HOME}/.bashrc`, 'utf8');
+      const match = bashrc.match(/ELLULAI_AI_TOKEN=["']?([^"'\s]+)/);
+      if (match) bearerToken = match[1]!;
+    } catch {}
+
+    if (!bearerToken) return; // No token — skip
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    try {
+      const res = await fetch(`${apiUrl}/api/servers/git-token`, {
+        headers: { Authorization: `Bearer ${bearerToken}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!res.ok) return;
+
+      const data = await res.json() as any;
+
+      if (data.noToken) {
+        // No linked repo — remove stale git token if present
+        deleteSecret('__GIT_TOKEN');
+        return;
+      }
+
+      if (data.encryptedKey && data.iv && data.encryptedData) {
+        setSecret('__GIT_TOKEN', {
+          encryptedKey: data.encryptedKey,
+          iv: data.iv,
+          encryptedData: data.encryptedData,
+        });
+        console.log('[shield] Git token refreshed');
+      }
+    } catch (err: any) {
+      clearTimeout(timeout);
+      if (err.name !== 'AbortError') {
+        console.warn('[shield] Git token refresh failed:', err.message);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[shield] Git token refresh error:', err.message);
+  }
+}
 
 // Cleanup on exit
 process.on('SIGINT', () => {

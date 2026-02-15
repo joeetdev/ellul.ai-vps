@@ -1,4 +1,6 @@
 import { defineConfig } from "tsup";
+// @ts-expect-error — Node built-in, not in project lib scope
+import { readFileSync } from "fs";
 
 export default defineConfig({
   entry: {
@@ -12,6 +14,8 @@ export default defineConfig({
     "services/file-api/bundle": "src/services/file-api/bundle.ts",
     "services/agent-bridge/bundle": "src/services/agent-bridge/bundle.ts",
     "services/sovereign-shield/bundle": "src/services/sovereign-shield/bundle.ts",
+    "services/caddy-gen/bundle": "src/services/caddy-gen/bundle.ts",
+    "services/watchdog/index": "src/services/watchdog/index.ts",
   },
   format: ["esm"],
   clean: true,
@@ -21,4 +25,17 @@ export default defineConfig({
   external: ["esbuild"],
   // Also keep native modules external
   noExternal: [],
+  // Load .html and .js files from static/ directories as text strings at build time
+  esbuildPlugins: [{
+    name: 'static-text',
+    setup(build) {
+      build.onLoad({ filter: /[/\\]static[/\\][^/\\]+\.(html|js)$/ }, (args) => {
+        const content = readFileSync(args.path, 'utf8');
+        return {
+          contents: `export default ${JSON.stringify(content)}`,
+          loader: 'js',
+        };
+      });
+    },
+  }],
 });

@@ -44,15 +44,15 @@ case "\$ACTION" in
       exit 1
     fi
 
-    # Wait for device to appear (cloud attach is async)
+    # Wait for device to appear (cloud attach is async — can take 30-60s under load)
     WAIT=0
-    while [ ! -e "\$DEVICE" ] && [ \$WAIT -lt 30 ]; do
+    while [ ! -e "\$DEVICE" ] && [ \$WAIT -lt 60 ]; do
       sleep 1
       WAIT=\$((WAIT + 1))
     done
 
     if [ ! -e "\$DEVICE" ]; then
-      echo "{\\"success\\":false,\\"error\\":\\"Device \${DEVICE} not found after 30s\\"}"
+      echo "{\\"success\\":false,\\"error\\":\\"Device \${DEVICE} not found after 60s\\"}"
       exit 1
     fi
 
@@ -73,13 +73,13 @@ case "\$ACTION" in
       FIRST_BOOT=true
       SKEL_TMP="/tmp/skel-backup-\$\$"
       cp -a "\${SVC_HOME}/." "\$SKEL_TMP/"
-      mkfs.ext4 -L ellulai-home "\$DEVICE"
+      mkfs.ext4 -L ellulai-home "\$DEVICE" >&2
     elif [ "\$LABEL" != "ellulai-home" ]; then
       # Pre-formatted by cloud provider — reformat with skeleton
       FIRST_BOOT=true
       SKEL_TMP="/tmp/skel-backup-\$\$"
       cp -a "\${SVC_HOME}/." "\$SKEL_TMP/"
-      mkfs.ext4 -L ellulai-home "\$DEVICE"
+      mkfs.ext4 -L ellulai-home "\$DEVICE" >&2
     fi
 
     # nosuid: prevent setuid binaries on user volumes (privilege escalation)
@@ -106,21 +106,450 @@ case "\$ACTION" in
   flush)
     sync
     IS_MOUNTED=false
+    IS_LUKS=false
     if mountpoint -q "\$SVC_HOME" 2>/dev/null; then
       IS_MOUNTED=true
+      # Detect if mount source is a LUKS dm-crypt device
+      MOUNT_SRC=\$(findmnt -n -o SOURCE "\$SVC_HOME" 2>/dev/null || echo "")
+      if [[ "\$MOUNT_SRC" == /dev/mapper/luks-* ]]; then
+        IS_LUKS=true
+      fi
       if command -v fsfreeze &>/dev/null; then
         fsfreeze --freeze "\$SVC_HOME" 2>/dev/null || true
         fsfreeze --unfreeze "\$SVC_HOME" 2>/dev/null || true
       fi
     fi
-    echo "{\\"success\\":true,\\"volumeMounted\\":\${IS_MOUNTED}}"
+    echo "{\\"success\\":true,\\"volumeMounted\\":\${IS_MOUNTED},\\"isLuks\\":\${IS_LUKS}}"
+    ;;
+
+  luks-close)
+    sync
+    fuser -kvm "\$SVC_HOME" 2>/dev/null || true
+    sleep 1
+    umount "\$SVC_HOME" 2>/dev/null || umount -l "\$SVC_HOME" 2>/dev/null || true
+    [ -e /dev/mapper/luks-home ] && cryptsetup luksClose luks-home 2>/dev/null || true
+    echo '{"success":true}'
     ;;
 
   *)
-    echo '{"success":false,"error":"Unknown action. Use: mount <device> | flush"}'
+    echo '{"success":false,"error":"Unknown action. Use: mount <device> | flush | luks-close"}'
     exit 1
     ;;
 esac`;
+}
+
+/**
+ * Server identity update script.
+ * Runs as root via sudo — updates identity files after tier migration.
+ * Called by file-api's /api/update-identity daemon endpoint.
+ *
+ * Updates: server-id, domain, owner.lock, billing-tier.
+ * Regenerates Ed25519 heartbeat keypair and restarts enforcer.
+ */
+export function getUpdateIdentityScript(): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+# Parse arguments
+SERVER_ID=""
+DOMAIN=""
+USER_ID=""
+BILLING_TIER=""
+
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --server-id=*) SERVER_ID="\${1#*=}" ;;
+    --domain=*) DOMAIN="\${1#*=}" ;;
+    --user-id=*) USER_ID="\${1#*=}" ;;
+    --billing-tier=*) BILLING_TIER="\${1#*=}" ;;
+    *) echo '{"success":false,"error":"Unknown argument: '\$1'"}'; exit 1 ;;
+  esac
+  shift
+done
+
+if [ -z "\$SERVER_ID" ]; then
+  echo '{"success":false,"error":"Missing --server-id"}'
+  exit 1
+fi
+
+# Validate server-id format (UUID-like or alphanumeric)
+if ! [[ "\$SERVER_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo '{"success":false,"error":"Invalid server-id format"}'
+  exit 1
+fi
+
+# Update server-id (used by heartbeat signing + vps-event webhooks)
+echo -n "\$SERVER_ID" > /etc/ellulai/server-id
+
+# Update domain if provided
+if [ -n "\$DOMAIN" ]; then
+  echo -n "\$DOMAIN" > /etc/ellulai/domain
+fi
+
+# Update owner.lock (used by sovereign-shield for ownership verification)
+# File may be immutable (chattr +i) — remove flag first, write, re-lock
+if [ -n "\$USER_ID" ]; then
+  chattr -i /etc/ellulai/owner.lock 2>/dev/null || true
+  echo -n "\$USER_ID" > /etc/ellulai/owner.lock
+  chmod 400 /etc/ellulai/owner.lock
+  chattr +i /etc/ellulai/owner.lock 2>/dev/null || true
+fi
+
+# Update billing tier
+if [ -n "\$BILLING_TIER" ]; then
+  echo -n "\$BILLING_TIER" > /etc/ellulai/billing-tier
+fi
+
+# Regenerate Ed25519 heartbeat keypair (new identity = new keys)
+openssl genpkey -algorithm Ed25519 -out /etc/ellulai/heartbeat.key 2>/dev/null
+openssl pkey -in /etc/ellulai/heartbeat.key -pubout -out /etc/ellulai/heartbeat.pub 2>/dev/null
+chmod 600 /etc/ellulai/heartbeat.key
+chmod 644 /etc/ellulai/heartbeat.pub
+
+# ============================================================
+# SERVICE RESTART
+# ============================================================
+#
+# Restart order (dependency-aware):
+#   1. ellulai-enforcer         — server-id, heartbeat keypair
+#   2. ellulai-sovereign-shield — domain (WebAuthn RP ID + CORS)
+#   3. caddy                    — reverse proxy (@main host matcher)
+#
+# No restart needed (read identity on-demand per request):
+#   - ellulai-file-api, ellulai-agent-bridge
+#
+# Safety invariant: Caddy must NEVER be left stopped. If this
+# script crashes mid-restart, the EXIT trap restarts Caddy so
+# the server stays reachable.
+# ============================================================
+
+log() { echo "[update-identity] \$*" >&2; }
+
+# Trap: if the script exits for ANY reason (crash, OOM kill signal,
+# set -e failure), make sure Caddy is running. A stopped Caddy means
+# the server is completely unreachable — no SSH, no bridge, nothing.
+cleanup() {
+  if ! systemctl is-active --quiet caddy 2>/dev/null; then
+    log "EXIT TRAP: Caddy is not running — forcing restart"
+    systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# Restart a systemd service with retry + stabilization check.
+# Args: <service-name> <max-attempts> <stabilize-seconds>
+# Returns 0 if service is confirmed active, 1 if all attempts failed.
+restart_svc() {
+  local svc=\$1
+  local max_attempts=\${2:-3}
+  local stabilize=\${3:-5}
+  local attempt=1
+
+  while [ \$attempt -le \$max_attempts ]; do
+    log "Restarting \$svc (attempt \$attempt/\$max_attempts)"
+
+    # timeout prevents hanging if service is stuck in stop/start phase
+    if timeout 30 systemctl restart "\$svc" >/dev/null 2>&1; then
+      # systemctl restart returned 0, but the process could crash instantly.
+      # Poll is-active to catch immediate crashes before declaring success.
+      local elapsed=0
+      while [ \$elapsed -lt \$stabilize ]; do
+        sleep 1
+        elapsed=\$((elapsed + 1))
+        if ! systemctl is-active --quiet "\$svc" 2>/dev/null; then
+          log "WARNING: \$svc crashed \${elapsed}s after start"
+          break
+        fi
+      done
+
+      if systemctl is-active --quiet "\$svc" 2>/dev/null; then
+        log "\$svc is active (stable for \${stabilize}s)"
+        return 0
+      fi
+    else
+      log "WARNING: systemctl restart \$svc failed (attempt \$attempt)"
+    fi
+
+    attempt=\$((attempt + 1))
+    if [ \$attempt -le \$max_attempts ]; then
+      log "Retrying in 3s..."
+      sleep 3
+    fi
+  done
+
+  log "ERROR: \$svc failed after \$max_attempts attempts"
+  return 1
+}
+
+FAILURES=""
+
+# --- Phase 1: Regenerate Caddyfile BEFORE restarting anything ---
+# Config must be on disk before Caddy starts, or it boots with stale domain.
+CADDY_REGEN=false
+if [ -n "\$DOMAIN" ]; then
+  SHORT_ID="\${SERVER_ID:0:8}"
+
+  MODEL="cloudflare"
+  if [ -f /etc/caddy/Caddyfile ]; then
+    if ! grep -q "auto_https off" /etc/caddy/Caddyfile 2>/dev/null; then
+      MODEL="direct"
+    elif grep -q "tls internal" /etc/caddy/Caddyfile 2>/dev/null; then
+      MODEL="gateway"
+    fi
+  fi
+
+  if [ "\$MODEL" = "direct" ]; then
+    CODE_DOMAIN="\${SHORT_ID}-dcode.ellul.ai"
+    DEV_DOMAIN="\${SHORT_ID}-ddev.ellul.app"
+  else
+    CODE_DOMAIN="\${SHORT_ID}-code.ellul.ai"
+    DEV_DOMAIN="\${SHORT_ID}-dev.ellul.app"
+  fi
+
+  # Atomic write: generate to .tmp, validate, then mv into place.
+  # stdout -> .tmp (the Caddyfile), stderr -> script stderr (visible in logs)
+  if node /usr/local/bin/ellulai-caddy-gen --model "\$MODEL" --main-domain "\$DOMAIN" --code-domain "\$CODE_DOMAIN" --dev-domain "\$DEV_DOMAIN" > /etc/caddy/Caddyfile.tmp; then
+    # Validate BEFORE moving — never overwrite with a broken config
+    if caddy validate --config /etc/caddy/Caddyfile.tmp --adapter caddyfile >/dev/null 2>&1; then
+      mv /etc/caddy/Caddyfile.tmp /etc/caddy/Caddyfile
+      CADDY_REGEN=true
+      log "Caddyfile regenerated and validated (model=\$MODEL)"
+    else
+      log "ERROR: generated Caddyfile failed validation, keeping existing"
+      rm -f /etc/caddy/Caddyfile.tmp
+      FAILURES="\${FAILURES} caddy-config"
+    fi
+  else
+    log "ERROR: caddy-gen failed, keeping existing Caddyfile"
+    rm -f /etc/caddy/Caddyfile.tmp
+    FAILURES="\${FAILURES} caddy-gen"
+  fi
+fi
+
+# --- Phase 2: Restart upstreams (Caddy stays running) ---
+# Caddy is NOT stopped — the daemon port (3006 → file-api:3002) must
+# stay alive so callDaemon gets its response. The main site (443) may
+# briefly 502 during shield restart (~3-5s) — acceptable during migration.
+
+# 1. Enforcer — heartbeat signing, independent of Caddy
+restart_svc ellulai-enforcer 3 3 || FAILURES="\${FAILURES} enforcer"
+
+# 2. Sovereign-shield — main site forward_auth depends on this
+restart_svc ellulai-sovereign-shield 3 5 || FAILURES="\${FAILURES} shield"
+
+# --- Phase 3: Reload Caddy (graceful, no connection drop) ---
+# caddy reload applies the new Caddyfile without dropping existing
+# connections — the callDaemon TLS session on port 3006 stays alive.
+if [ "\$CADDY_REGEN" = "true" ] || [ -n "\$DOMAIN" ]; then
+  log "Reloading Caddy with new config..."
+  if caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+    sleep 2
+    if systemctl is-active --quiet caddy 2>/dev/null; then
+      log "Caddy reloaded successfully"
+    else
+      log "WARNING: Caddy not active after reload, restarting..."
+      restart_svc caddy 3 3 || FAILURES="\${FAILURES} caddy"
+    fi
+  else
+    log "WARNING: Caddy reload failed, falling back to restart..."
+    restart_svc caddy 3 3 || FAILURES="\${FAILURES} caddy"
+  fi
+fi
+
+# --- Phase 4: Final verification ---
+FAILED_SVCS=""
+for svc in ellulai-enforcer ellulai-sovereign-shield caddy; do
+  if ! systemctl is-active --quiet "\$svc" 2>/dev/null; then
+    FAILED_SVCS="\${FAILED_SVCS} \$svc"
+  fi
+done
+
+if [ -n "\$FAILED_SVCS" ]; then
+  log "CRITICAL: services not running after restart:\$FAILED_SVCS"
+  echo '{"success":true,"serverId":"'\$SERVER_ID'","warnings":"services not active:'\$FAILED_SVCS'"}'
+else
+  log "All services verified active"
+  echo '{"success":true,"serverId":"'\$SERVER_ID'"}'
+fi`;
+}
+
+/**
+ * Identity restore script.
+ * Runs as root via sudo — restores passkey DB from volume backup after wake.
+ * Called by file-api's /api/restore-identity daemon endpoint.
+ *
+ * Copies $HOME/.ellulai-identity/local-auth.db → /etc/ellulai/local-auth.db
+ * Sets permissions 640 root:$SVC_USER so sovereign-shield can read it.
+ * Restores .web_locked_activated marker if it was set at backup time.
+ * Restarts sovereign-shield to pick up restored passkey DB.
+ */
+export function getRestoreIdentityScript(): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+# Determine service user/home from ellulai config
+if [ -f /etc/default/ellulai ]; then
+  source /etc/default/ellulai
+fi
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+
+BACKUP_DIR="\${SVC_HOME}/.ellulai-identity"
+TARGET_DIR="/etc/ellulai"
+RESTORED=false
+
+if [ ! -d "\$BACKUP_DIR" ]; then
+  echo '{"success":true,"restored":false,"reason":"no_backup_dir"}'
+  exit 0
+fi
+
+if [ ! -f "\${BACKUP_DIR}/local-auth.db" ]; then
+  echo '{"success":true,"restored":false,"reason":"no_backup_file"}'
+  exit 0
+fi
+
+# Copy passkey DB files
+cp -f "\${BACKUP_DIR}/local-auth.db" "\${TARGET_DIR}/local-auth.db"
+[ -f "\${BACKUP_DIR}/local-auth.db-wal" ] && cp -f "\${BACKUP_DIR}/local-auth.db-wal" "\${TARGET_DIR}/local-auth.db-wal"
+[ -f "\${BACKUP_DIR}/local-auth.db-shm" ] && cp -f "\${BACKUP_DIR}/local-auth.db-shm" "\${TARGET_DIR}/local-auth.db-shm"
+
+# Set permissions: root-owned, group-readable by service user
+chown root:\${SVC_USER} "\${TARGET_DIR}/local-auth.db"
+chmod 640 "\${TARGET_DIR}/local-auth.db"
+[ -f "\${TARGET_DIR}/local-auth.db-wal" ] && chown root:\${SVC_USER} "\${TARGET_DIR}/local-auth.db-wal" && chmod 640 "\${TARGET_DIR}/local-auth.db-wal"
+[ -f "\${TARGET_DIR}/local-auth.db-shm" ] && chown root:\${SVC_USER} "\${TARGET_DIR}/local-auth.db-shm" && chmod 640 "\${TARGET_DIR}/local-auth.db-shm"
+
+RESTORED=true
+
+# Restore security tier marker if it was web_locked at backup time
+if [ -f "\${BACKUP_DIR}/.web_locked_activated" ]; then
+  # Set security tier to web_locked (remove immutable flag first)
+  chattr -i "\${TARGET_DIR}/security-tier" 2>/dev/null || true
+  echo "web_locked" > "\${TARGET_DIR}/security-tier"
+  chmod 644 "\${TARGET_DIR}/security-tier"
+  chattr +i "\${TARGET_DIR}/security-tier" 2>/dev/null || true
+fi
+
+# Restart sovereign-shield to pick up restored passkey DB
+systemctl restart ellulai-sovereign-shield 2>/dev/null || true
+
+echo "{\\"success\\":true,\\"restored\\":\${RESTORED}}"`;
+}
+
+/**
+ * Migration pull helper script.
+ * Runs as root via sudo — downloads and extracts a migration archive
+ * from a source server. Running as root bypasses Warden's iptables
+ * redirect (which intercepts dev user's outbound TCP through its MITM
+ * proxy, breaking TLS verification against the Cloudflare Origin CA).
+ *
+ * Called by file-api's /api/migrate/pull endpoint.
+ */
+export function getMigratePullScript(): string {
+  return `#!/bin/bash
+set -euo pipefail
+
+# Usage: echo <token> | ellulai-migrate-pull <download_url> <source_ip> <home_dir>
+# Token is read from stdin to avoid exposure in ps output.
+# All arguments are validated by file-api before calling this script.
+
+# Progress log — all steps written to stderr for diagnostics
+log() { echo "[migrate-pull] \$*" >&2; }
+
+URL="\${1:-}"
+SOURCE_IP="\${2:-}"
+TARGET_DIR="\${3:-}"
+
+log "START url=\${URL:0:80} src=\$SOURCE_IP dir=\$TARGET_DIR"
+
+# Read token from stdin (single line)
+read -r TOKEN
+log "token read (\${#TOKEN} chars)"
+
+if [ -z "\$URL" ] || [ -z "\$TOKEN" ] || [ -z "\$TARGET_DIR" ]; then
+  echo '{"success":false,"error":"Missing required arguments"}' >&2
+  exit 1
+fi
+
+# Validate target directory (must be a home dir, prevent path traversal)
+if [[ ! "\$TARGET_DIR" =~ ^/home/[a-z_][a-z0-9_-]*$ ]]; then
+  echo '{"success":false,"error":"Invalid target directory"}' >&2
+  exit 1
+fi
+
+# Validate URL format (must be daemon API endpoint)
+if [[ ! "\$URL" =~ ^https://(daemon\\.ellul\\.ai|[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+):3006/ ]]; then
+  echo '{"success":false,"error":"Invalid source URL"}' >&2
+  exit 1
+fi
+
+# Download to temp file (avoids pipefail masking curl errors, better diagnostics)
+TMPFILE="/tmp/migrate-download-\$\$.tar.gz"
+
+# Strict TLS: verify source server's origin cert against CF Origin CA.
+if [ -z "\$SOURCE_IP" ]; then
+  echo '{"success":false,"error":"SOURCE_IP is required for secure transfer"}' >&2
+  exit 1
+fi
+
+if [ ! -f /etc/caddy/cf-origin-ca.pem ]; then
+  echo '{"success":false,"error":"CF Origin CA cert missing at /etc/caddy/cf-origin-ca.pem"}' >&2
+  exit 1
+fi
+
+# Verify CA cert is parseable before attempting download
+log "verifying CA cert..."
+if ! openssl x509 -in /etc/caddy/cf-origin-ca.pem -noout 2>/dev/null; then
+  echo '{"success":false,"error":"CF Origin CA cert is not valid PEM"}' >&2
+  exit 1
+fi
+log "CA cert OK"
+
+# Download with verbose error reporting
+CURL_STDERR="/tmp/migrate-curl-err-\$\$.log"
+trap "rm -f \$TMPFILE \$CURL_STDERR" EXIT
+
+log "starting download..."
+set +e
+curl -sSf --max-time 300 \\
+  --resolve "daemon.ellul.ai:3006:\$SOURCE_IP" \\
+  --cacert /etc/caddy/cf-origin-ca.pem \\
+  -H "Authorization: Bearer \$TOKEN" \\
+  -o "\$TMPFILE" "\$URL" 2>"\$CURL_STDERR"
+CURL_EXIT=\$?
+set -e
+
+log "curl exit=\$CURL_EXIT"
+
+if [ \$CURL_EXIT -ne 0 ]; then
+  CURL_ERR=\$(cat "\$CURL_STDERR" 2>/dev/null | head -5 | tr '\\n' ' ')
+  log "curl FAILED: exit=\$CURL_EXIT err=\$CURL_ERR"
+  echo "curl exit \$CURL_EXIT: \$CURL_ERR" >&2
+  exit 1
+fi
+
+# Validate download (must be non-empty)
+DLSIZE=\$(stat -c%s "\$TMPFILE" 2>/dev/null || echo 0)
+log "downloaded \$DLSIZE bytes"
+if [ ! -s "\$TMPFILE" ]; then
+  echo '{"success":false,"error":"Downloaded file is empty"}' >&2
+  exit 1
+fi
+
+# Extract archive
+log "extracting..."
+tar -xzf "\$TMPFILE" --no-same-owner -C "\$TARGET_DIR"
+log "extracted OK"
+
+# Fix ownership (tar --no-same-owner uses running user, which is root here)
+if [ -f /etc/default/ellulai ]; then
+  source /etc/default/ellulai
+fi
+SVC_USER="\${PS_USER:-dev}"
+chown -R \${SVC_USER}:\${SVC_USER} "\$TARGET_DIR"
+
+log "DONE — ownership set to \$SVC_USER"
+echo '{"success":true}'`;
 }
 
 /**

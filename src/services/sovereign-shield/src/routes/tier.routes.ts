@@ -61,7 +61,7 @@ export function registerTierRoutes(app: Hono): void {
     const { source, ipAddress, userAgent } = body;
     const targetTier = body.targetTier || body.tier;  // accept both names
 
-    const validTiers: SecurityTier[] = ['standard', 'ssh_only', 'web_locked'];
+    const validTiers: SecurityTier[] = ['standard', 'web_locked'];
     if (!targetTier || !validTiers.includes(targetTier as SecurityTier)) {
       return c.json({ error: 'Invalid target tier', validTiers }, 400);
     }
@@ -72,23 +72,6 @@ export function registerTierRoutes(app: Hono): void {
     console.log(`[shield] Tier switch requested: ${currentTier} -> ${targetTier} (source: ${source || 'unknown'})`);
 
     // Pre-flight checks based on target tier
-    if (targetTier === 'ssh_only') {
-      // SSH Only requires SSH keys to exist
-      if (!fs.existsSync(SSH_AUTH_KEYS_PATH)) {
-        return c.json({
-          error: 'SSH Only requires SSH keys',
-          message: 'Add an SSH key before upgrading to SSH Only tier'
-        }, 400);
-      }
-      const keyContent = fs.readFileSync(SSH_AUTH_KEYS_PATH, 'utf8').trim();
-      if (!keyContent) {
-        return c.json({
-          error: 'SSH authorized_keys file is empty',
-          message: 'Add an SSH key before upgrading to SSH Only tier'
-        }, 400);
-      }
-    }
-
     if (targetTier === 'web_locked') {
       // Web Locked requires passkey registration (handled by separate upgrade flow)
       // This endpoint is mainly for internal transitions, not initial web_locked setup
@@ -148,7 +131,6 @@ export function registerTierRoutes(app: Hono): void {
       hasSshKeys,
       canSwitchTo: {
         standard: tier !== 'standard',
-        ssh_only: tier !== 'ssh_only' && hasSshKeys,
         web_locked: tier !== 'web_locked' && hasPasskeys,
       }
     });

@@ -133,8 +133,20 @@ export async function createTerminalSession(
 }
 
 /**
- * Start ttyd process for a session.
+ * Validate and sanitize user-provided identifiers used in shell contexts.
+ * Only allows alphanumeric characters, hyphens, underscores, and dots.
+ * Prevents shell injection via project names or instance IDs.
  */
+function sanitizeShellIdentifier(value: string, label: string): string {
+  if (!/^[a-zA-Z0-9._-]+$/.test(value)) {
+    throw new Error(`Invalid ${label}: contains disallowed characters`);
+  }
+  if (value.includes('..')) {
+    throw new Error(`Invalid ${label}: path traversal not allowed`);
+  }
+  return value;
+}
+
 async function startTtyd(
   instanceId: string,
   type: TerminalSessionType,
@@ -144,15 +156,24 @@ async function startTtyd(
 ): Promise<ChildProcess> {
   const command = getSessionCommand(type);
   const projectsDir = `${os.homedir()}/projects`;
-  // Scope to project directory if specified
-  const workingDir = project ? `${projectsDir}/${project}` : projectsDir;
-  const basePath = `/term/${instanceId}/`;
 
-  // Build the launch command
-  // Creates tmux session and runs the CLI inside it
+  // SECURITY: Validate all user-controlled values before shell interpolation
+  const safeInstanceId = sanitizeShellIdentifier(instanceId, 'instanceId');
+  const safeTmuxSession = sanitizeShellIdentifier(tmuxSession, 'tmuxSession');
+
+  let workingDir = projectsDir;
+  if (project) {
+    const safeProject = sanitizeShellIdentifier(project, 'project');
+    workingDir = `${projectsDir}/${safeProject}`;
+  }
+
+  const basePath = `/term/${safeInstanceId}/`;
+
+  // Build the launch command using spawn array args where possible.
+  // tmux session name and working dir are validated above (alphanumeric + hyphen/underscore/dot only).
   const launchCmd = type === 'main'
-    ? `tmux new-session -A -s ${tmuxSession}`
-    : `cd ${workingDir} && tmux new-session -A -s ${tmuxSession} "${command}; exec bash"`;
+    ? `tmux new-session -A -s ${safeTmuxSession}`
+    : `cd ${workingDir} && tmux new-session -A -s ${safeTmuxSession} "${command}; exec bash"`;
 
   // Start ttyd
   const ttyd = spawn('/usr/bin/ttyd', [
@@ -168,7 +189,7 @@ async function startTtyd(
     stdio: 'ignore',
     env: {
       ...process.env,
-      PATH: `${os.homedir()}/.nvm/versions/node/v20.20.0/bin:${os.homedir()}/.opencode/bin:${os.homedir()}/.local/bin:${process.env.PATH || ''}`,
+      PATH: `${os.homedir()}/.node/bin:${os.homedir()}/.opencode/bin:${os.homedir()}/.local/bin:${process.env.PATH || ''}`,
     },
   });
 
@@ -312,7 +333,9 @@ export function cleanupOrphanedSessions(): { tmuxKilled: number; ttydKilled: num
       const sessions = tmuxList.split('\n').filter(s => s.startsWith('term-'));
       for (const session of sessions) {
         try {
-          execSync(`tmux kill-session -t "${session}" 2>/dev/null || true`);
+          // Use spawn with array args to avoid shell injection from tmux session names
+          const result = spawn('tmux', ['kill-session', '-t', session], { stdio: 'ignore' });
+          result.on('close', () => {});
           tmuxKilled++;
           console.log(`[Terminal] Killed orphaned tmux session: ${session}`);
         } catch {

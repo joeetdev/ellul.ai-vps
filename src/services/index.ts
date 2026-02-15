@@ -41,3 +41,12 @@ export {
   getAgentBridgeService,
   getAgentBridgeVersion,
 } from './agent-bridge/bundle';
+
+// Caddy Generator (Caddyfile generation CLI)
+export { getCaddyGenScript } from './caddy-gen/bundle';
+export { generateCaddyfileContent, type CaddyfileOptions } from './caddy-gen/caddyfile';
+
+// Watchdog (container lifecycle daemon)
+export {
+  getWatchdogService,
+} from './watchdog/index';

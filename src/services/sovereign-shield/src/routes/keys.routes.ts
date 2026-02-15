@@ -15,13 +15,14 @@ import fs from 'fs';
 import { execSync } from 'child_process';
 import type { Hono, Context } from 'hono';
 import { db } from '../database';
-import { SSH_AUTH_KEYS_PATH } from '../config';
+import { SSH_AUTH_KEYS_PATH, SVC_USER, SVC_HOME } from '../config';
 import type { SecurityTier } from '../config';
 import { getDeviceFingerprint, getClientIp } from '../auth/fingerprint';
 import { validateSession, refreshSession, setSessionCookie, clearSessionCookie } from '../auth/session';
 import { verifyJwtToken } from '../auth/jwt';
-import { getCurrentTier, notifyPlatformSshKeyChange } from '../services/tier.service';
+import { getCurrentTier, notifyPlatformSshKeyChange, notifyPlatformSettingsChange } from '../services/tier.service';
 import { logAuditEvent } from '../services/audit.service';
+import { syncSettingsAfterKeyChange } from '../services/settings.service';
 import { parseCookies } from '../utils/cookie';
 
 interface SshKey {
@@ -78,7 +79,6 @@ function getSshKeys(): SshKey[] {
 /**
  * Check authentication for SSH key management
  * Only Web Locked tier can manage SSH keys via dashboard (passkey required)
- * SSH Only tier must use SSH directly
  * Standard tier has no SSH access
  */
 function checkAuth(c: Context): AuthResult {
@@ -90,11 +90,6 @@ function checkAuth(c: Context): AuthResult {
   // Standard tier - no SSH key management via dashboard
   if (currentTier === 'standard') {
     return { authenticated: false, error: 'SSH key management not available in Standard tier. Upgrade to Web Locked for SSH access.', tier: currentTier };
-  }
-
-  // SSH Only tier - reject (must use SSH)
-  if (currentTier === 'ssh_only') {
-    return { authenticated: false, error: 'SSH Only mode - use SSH to manage keys', tier: currentTier };
   }
 
   // Web Locked tier - passkey required
@@ -353,7 +348,7 @@ export function registerKeysRoutes(app: Hono, hostname: string): void {
 
     try {
       // Ensure .ssh directory exists
-      execSync('mkdir -p /home/dev/.ssh && chmod 700 /home/dev/.ssh && chown dev:dev /home/dev/.ssh', { stdio: 'ignore' });
+      execSync(`mkdir -p ${SVC_HOME}/.ssh && chmod 700 ${SVC_HOME}/.ssh && chown ${SVC_USER}:${SVC_USER} ${SVC_HOME}/.ssh`, { stdio: 'ignore' });
 
       // For web_locked tier: open SSH port FIRST (before adding key)
       // This ensures atomic behavior - port is open before key is written
@@ -367,7 +362,7 @@ export function registerKeysRoutes(app: Hono, hostname: string): void {
       // Append key
       const keyLine = name ? `${trimmedKey} ${name}` : trimmedKey;
       fs.appendFileSync(SSH_AUTH_KEYS_PATH, keyLine + '\n');
-      execSync(`chown dev:dev ${SSH_AUTH_KEYS_PATH} && chmod 600 ${SSH_AUTH_KEYS_PATH}`, { stdio: 'ignore' });
+      execSync(`chown ${SVC_USER}:${SVC_USER} ${SSH_AUTH_KEYS_PATH} && chmod 600 ${SSH_AUTH_KEYS_PATH}`, { stdio: 'ignore' });
 
       // Verify key was actually added
       const newKeys = getSshKeys();
@@ -376,12 +371,17 @@ export function registerKeysRoutes(app: Hono, hostname: string): void {
         throw new Error('Key was not written to authorized_keys');
       }
 
-      // Notify platform
+      // Sync settings.json with key state (so heartbeat reports correctly)
+      const effectiveSettings = syncSettingsAfterKeyChange();
+
+      // Notify platform of key change + settings change
       notifyPlatformSshKeyChange('added', keyFingerprint, name || 'SSH Key', trimmedKey);
+      notifyPlatformSettingsChange(effectiveSettings, ip, c.req.header('user-agent') || 'unknown')
+        .catch(e => console.warn('[shield] Settings webhook failed:', e.message));
 
       logAuditEvent({ type: 'ssh_key_added', ip, fingerprint: fingerprintData.hash, details: { keyFingerprint, name, tier: currentTier } });
 
-      return c.json({ success: true, fingerprint: keyFingerprint, sshEnabled: currentTier === 'web_locked' });
+      return c.json({ success: true, fingerprint: keyFingerprint, sshEnabled: effectiveSettings.sshEnabled });
     } catch (e) {
       console.error('[shield] Error adding SSH key:', e);
 
@@ -436,9 +436,9 @@ export function registerKeysRoutes(app: Hono, hostname: string): void {
 
       // Write back
       fs.writeFileSync(SSH_AUTH_KEYS_PATH, newLines.join('\n'));
-      execSync(`chown dev:dev ${SSH_AUTH_KEYS_PATH} && chmod 600 ${SSH_AUTH_KEYS_PATH}`, { stdio: 'ignore' });
+      execSync(`chown ${SVC_USER}:${SVC_USER} ${SSH_AUTH_KEYS_PATH} && chmod 600 ${SSH_AUTH_KEYS_PATH}`, { stdio: 'ignore' });
 
-      // Check if any keys remain
+      // Check if any keys remain — close port if none left
       const remainingKeys = getSshKeys();
       if (remainingKeys.length === 0) {
         console.log('[shield] No SSH keys remaining, stopping sshd...');
@@ -446,12 +446,17 @@ export function registerKeysRoutes(app: Hono, hostname: string): void {
         execSync('ufw delete allow 22/tcp 2>/dev/null || true', { stdio: 'ignore' });
       }
 
-      // Notify platform
+      // Sync settings.json with key state (so heartbeat reports correctly)
+      const effectiveSettings = syncSettingsAfterKeyChange();
+
+      // Notify platform of key change + settings change
       notifyPlatformSshKeyChange('removed', keyFingerprint, 'SSH Key');
+      notifyPlatformSettingsChange(effectiveSettings, ip, c.req.header('user-agent') || 'unknown')
+        .catch(e => console.warn('[shield] Settings webhook failed:', e.message));
 
       logAuditEvent({ type: 'ssh_key_removed', ip, fingerprint: fingerprintData.hash, details: { keyFingerprint } });
 
-      return c.json({ success: true });
+      return c.json({ success: true, sshEnabled: effectiveSettings.sshEnabled });
     } catch (e) {
       console.error('[shield] Error removing SSH key:', e);
       return c.json({ error: 'Failed to remove SSH key' }, 500);

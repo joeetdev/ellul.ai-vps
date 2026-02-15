@@ -9,7 +9,7 @@ write_local_status() {
   local SESSIONS="$3"
   local TERMINAL_ENABLED="$4"
   local SSH_ENABLED="$5"
-  mkdir -p /home/dev/.ellulai
+  mkdir -p "${SVC_HOME}/.ellulai"
   jq -n \
     --arg cpu "$CPU" \
     --arg ram "$RAM" \
@@ -25,12 +25,12 @@ write_local_status() {
       sshEnabled: ($sshEnabled == "true"),
       lastSync: $timestamp
     }' > "$STATUS_FILE.tmp" && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
-  chown dev:dev "$STATUS_FILE" 2>/dev/null || true
+  chown ${SVC_USER}:${SVC_USER} "$STATUS_FILE" 2>/dev/null || true
 }
 
 # Get deployed apps list
 get_deployed_apps() {
-  local APPS_DIR="/home/dev/.ellulai/apps"
+  local APPS_DIR="${SVC_HOME}/.ellulai/apps"
   if [ -d "$APPS_DIR" ] && ls "$APPS_DIR"/*.json &>/dev/null; then
     echo "["
     local FIRST=true

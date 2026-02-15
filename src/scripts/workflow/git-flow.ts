@@ -4,7 +4,7 @@
 export function getGitFlowScript(): string {
   return `#!/bin/bash
 set -e
-cd /home/dev/projects/welcome 2>/dev/null || cd /home/dev/projects
+cd \$HOME/projects/welcome 2>/dev/null || cd \$HOME/projects
 
 GREEN='\\033[32m'
 CYAN='\\033[36m'

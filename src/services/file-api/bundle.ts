@@ -118,9 +118,9 @@ Group=${svcUser}
 WorkingDirectory=${svcHome}
 Environment=NODE_ENV=production
 Environment=PORT=3002
-Environment=NODE_PATH=${svcHome}/.nvm/versions/node/v20.20.0/lib/node_modules
-Environment=PATH=${svcHome}/.nvm/versions/node/v20.20.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=${svcHome}/.nvm/versions/node/v20.20.0/bin/node /usr/local/bin/ellulai-file-api
+Environment=NODE_PATH=${svcHome}/.node/lib/node_modules
+Environment=PATH=${svcHome}/.node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=${svcHome}/.node/bin/node /usr/local/bin/ellulai-file-api
 Restart=on-failure
 RestartSec=5
 

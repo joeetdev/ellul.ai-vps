@@ -2,16 +2,23 @@
 # Enforcer Constants
 # Configuration variables and paths for the state enforcer daemon.
 
+# API_URL resolution: config file > environment > baked-in value from bundle.ts
+# This ensures the enforcer works even if the script was installed with stale/placeholder values
+if [ -f /etc/ellulai/api-url ]; then
+  API_URL="$(cat /etc/ellulai/api-url 2>/dev/null | tr -d '\n')"
+fi
 API_URL="${API_URL:-}"
 TOKEN="${ELLULAI_AI_TOKEN:-}"
-ENV_FILE="/home/dev/.ellulai-env"
+# Derive service user from PS_USER (loaded by systemd EnvironmentFile from /etc/default/ellulai)
+SVC_USER="${PS_USER:-dev}"
+SVC_HOME="/home/${SVC_USER}"
+ENV_FILE="${SVC_HOME}/.ellulai-env"
 STATE_FILE="/etc/ellulai/access-state.json"
-STATUS_FILE="/home/dev/.ellulai/server-status.json"
+STATUS_FILE="${SVC_HOME}/.ellulai/server-status.json"
 LOG_FILE="/var/log/ellulai-enforcer.log"
 SOVEREIGN_MARKER="/etc/ellulai/.sovereign-mode"
 SOVEREIGN_KEYS_LOCK="/etc/ellulai/.sovereign-keys"
 OWNER_LOCK_FILE="/etc/ellulai/owner.lock"
-LOCKDOWN_MARKER="/etc/ellulai/.in_lockdown"
 HEARTBEAT_FAILURE_FILE="/etc/ellulai/.heartbeat-failures"
 HEARTBEAT_INTERVAL=30
 ENFORCER_PID_FILE="/run/ellulai-enforcer.pid"

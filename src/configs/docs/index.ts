@@ -19,8 +19,8 @@ Quick Start: npx create-next-app my-app && cd my-app && npm run dev`;
 /**
  * Welcome project ecosystem.config.js.
  */
-export function getWelcomeEcosystem(): string {
-  return `module.exports={apps:[{name:'prod',script:'npm',args:'start',cwd:'/home/dev/projects/welcome',env:{NODE_ENV:'production',PORT:3001}},{name:'preview',script:'npm',args:'run dev',cwd:'/home/dev/projects/welcome',env:{NODE_ENV:'development',PORT:3000}}]};`;
+export function getWelcomeEcosystem(svcHome: string = '/home/dev'): string {
+  return `module.exports={apps:[{name:'prod',script:'npm',args:'start',cwd:'${svcHome}/projects/welcome',env:{NODE_ENV:'production',PORT:3001}},{name:'preview',script:'npm',args:'run dev',cwd:'${svcHome}/projects/welcome',env:{NODE_ENV:'development',PORT:3000}}]};`;
 }
 
 /**
@@ -116,7 +116,7 @@ This will build and deploy with auto-SSL.
  * @param domain - The server domain
  * @param tier - Billing tier ("starter" or paid tier name)
  */
-export function getGlobalClaudeMd(domain: string, tier?: string): string {
+export function getGlobalClaudeMd(domain: string, tier?: string, svcHome: string = '/home/dev'): string {
   // Convert main domain to dev domain on ellul.app (user content isolation)
   // {shortId}-srv.ellul.ai → {shortId}-dev.ellul.app
   // When domain is a placeholder (__DOMAIN__), use __DEV_DOMAIN__ so boot-config
@@ -180,7 +180,7 @@ Quick Start: npx create-next-app my-app && cd my-app && npm run dev
 ## SECURITY - DO NOT MODIFY (BRICK RISK)
 NEVER touch these files - tampering causes PERMANENT LOCKOUT:
 - /etc/ellulai/* (tier, markers, domain, server_id)
-- /home/dev/.ssh/authorized_keys
+- ${svcHome}/.ssh/authorized_keys
 - /var/lib/sovereign-shield/*
 - systemd services: sovereign-shield, sshd
 
@@ -215,7 +215,7 @@ export function getProjectsClaudeMd(tier?: string): string {
 3. **SECURITY**: NEVER touch /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Structure
-- Each project in its own folder: /home/coder/projects/APPNAME/
+- Each project in its own folder: ~/projects/APPNAME/
 - ALWAYS create a \`ellulai.json\` file in the project root (dashboard won't detect without it)
 - \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
 - type: "frontend" | "backend" | "library"
@@ -256,7 +256,7 @@ pm2 start|logs|restart|delete NAME`;
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Structure
-- Each project in its own folder: /home/dev/projects/APPNAME/
+- Each project in its own folder: ~/projects/APPNAME/
 - ALWAYS create a \`ellulai.json\` file in the project root (dashboard won't detect without it)
 - \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
 - type: "frontend" | "backend" | "library"

@@ -9,6 +9,10 @@ export function getLockWebOnlyScript(): string {
   return `#!/bin/bash
 set -e
 
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+
 LOCK_FILE="/etc/ellulai/.sovereign-keys"
 
 # Check if already locked
@@ -18,7 +22,7 @@ if [ -f "$LOCK_FILE" ]; then
 fi
 
 # Check for existing SSH keys
-if [ -f /home/dev/.ssh/authorized_keys ] && [ -s /home/dev/.ssh/authorized_keys ]; then
+if [ -f \$SVC_HOME/.ssh/authorized_keys ] && [ -s \$SVC_HOME/.ssh/authorized_keys ]; then
   echo "ERROR: SSH keys already exist on this server."
   echo "Cannot lock to web-only mode with existing SSH keys."
   exit 1

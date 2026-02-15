@@ -368,8 +368,8 @@ const SESSION_POP = {
 // Auto-initialize PoP (cookie is HttpOnly so we can't check it, but if this script
 // is loaded, we passed forward_auth so we have a valid session)
 SESSION_POP.initialize()
-  .then(() => { if (!window.__popFetchWrapped) { SESSION_POP.wrapFetch(); window.__popFetchWrapped = true; } console.log('[PoP] Session key bound'); })
-  .catch((e) => { console.log('[PoP] Init skipped:', e.message); });
+  .then(() => { if (!window.__popFetchWrapped) { SESSION_POP.wrapFetch(); window.__popFetchWrapped = true; } })
+  .catch(() => {});
 `;
 
 /**
@@ -445,10 +445,10 @@ export const TERMINAL_WRAPPER_HTML = `<!DOCTYPE html>
           try {
             await SESSION_POP.initialize();
             SESSION_POP.wrapFetch();
-            console.log('[Terminal] PoP initialized');
+            // PoP initialized successfully
           } catch (e) {
             // PoP init can fail if no session or no key - that's ok, authorize will handle it
-            console.log('[Terminal] PoP init skipped:', e.message);
+            // PoP init skipped — authorize will handle it
           }
         }
 
@@ -473,6 +473,14 @@ export const TERMINAL_WRAPPER_HTML = `<!DOCTYPE html>
         terminal.onload = function() {
           loading.style.display = 'none';
           terminal.style.display = 'block';
+          // Suppress noisy [ttyd] console logs from the iframe
+          try {
+            var iframeConsole = terminal.contentWindow.console;
+            var origLog = iframeConsole.log.bind(iframeConsole);
+            var origWarn = iframeConsole.warn.bind(iframeConsole);
+            iframeConsole.log = function() { if (typeof arguments[0] === 'string' && arguments[0].startsWith('[ttyd]')) return; origLog.apply(null, arguments); };
+            iframeConsole.warn = function() { if (typeof arguments[0] === 'string' && arguments[0].startsWith('[ttyd]')) return; origWarn.apply(null, arguments); };
+          } catch (e) {}
         };
 
         // Timeout fallback

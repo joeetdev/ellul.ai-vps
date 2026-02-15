@@ -59,6 +59,16 @@ async function bundleModular(): Promise<string> {
       // Runtime dependencies (installed on VPS)
       'hono', '@hono/node-server', 'better-sqlite3', '@simplewebauthn/server',
     ],
+    plugins: [{
+      name: 'static-text',
+      setup(build) {
+        // Load .html and .js files from static/ directories as text strings
+        build.onLoad({ filter: /[/\\]static[/\\][^/\\]+\.(html|js)$/ }, async (args) => ({
+          contents: `export default ${JSON.stringify(fs.readFileSync(args.path, 'utf8'))}`,
+          loader: 'js',
+        }));
+      },
+    }],
   });
 
   if (!result.outputFiles?.[0]) {
@@ -139,7 +149,10 @@ set -e
 
 TIER_FILE="/etc/ellulai/security-tier"
 LOG_FILE="/var/log/ellulai-enforcer.log"
-SSH_AUTH_KEYS="/home/dev/.ssh/authorized_keys"
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+SSH_AUTH_KEYS="\${SVC_HOME}/.ssh/authorized_keys"
 
 log() { echo "[$(date -Iseconds)] DOWNGRADE: $1" >> "$LOG_FILE"; echo "$1"; }
 
@@ -159,7 +172,7 @@ if [ "$CURRENT_TIER" = "web_locked" ]; then
   exit 1
 fi
 
-log "Downgrading from SSH Only to Standard..."
+log "Downgrading to Standard..."
 
 # =============================================================================
 # ATOMIC DOWNGRADE: Ensure web access works BEFORE removing SSH access
@@ -182,7 +195,7 @@ SWITCH_RESULT=$(curl -s -X POST http://127.0.0.1:3005/_auth/tier/switch \\
 if echo "$SWITCH_RESULT" | grep -q '"error"'; then
   log "ERROR: Tier switch failed: $SWITCH_RESULT"
   log "Aborting - SSH access preserved for safety"
-  # Restore terminal disabled marker since we're staying in ssh_only
+  # Restore terminal disabled marker since tier switch failed
   touch /etc/ellulai/.terminal-disabled
   exit 1
 fi
@@ -223,8 +236,8 @@ log "SECURITY: All SSH keys have been removed. Add new keys if you upgrade again
 
 /**
  * Generate the web-locked switch script.
- * From SSH Only: generates setup token and outputs link for passkey registration
  * From Standard with existing passkey: switches directly
+ * Without passkey: generates setup token and outputs link for passkey registration
  */
 export function getWebLockedSwitchScript(): string {
   return `#!/bin/bash
@@ -234,9 +247,11 @@ TIER_FILE="/etc/ellulai/security-tier"
 DOMAIN_FILE="/etc/ellulai/domain"
 SETUP_TOKEN_FILE="/etc/ellulai/.sovereign-setup-token"
 SETUP_EXPIRY_FILE="/etc/ellulai/.sovereign-setup-expiry"
-SSH_TRANSITION_MARKER="/etc/ellulai/.ssh-only-to-web-locked"
 LOG_FILE="/var/log/ellulai-enforcer.log"
-SSH_AUTH_KEYS="/home/dev/.ssh/authorized_keys"
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+SSH_AUTH_KEYS="\${SVC_HOME}/.ssh/authorized_keys"
 
 log() { echo "[$(date -Iseconds)] WEB_LOCKED: $1" >> "$LOG_FILE"; echo "$1"; }
 
@@ -246,20 +261,6 @@ DOMAIN=$(cat "$DOMAIN_FILE" 2>/dev/null || echo "")
 if [ -z "$DOMAIN" ]; then
   echo "ERROR: Domain not configured"
   exit 1
-fi
-
-# =============================================================================
-# SAFETY CHECK: If coming from SSH Only, verify SSH is working before proceeding
-# We need a fallback if passkey registration fails
-# =============================================================================
-if [ "$CURRENT_TIER" = "ssh_only" ]; then
-  if ! systemctl is-active --quiet sshd 2>/dev/null; then
-    log "ERROR: SSH daemon not running - cannot proceed safely"
-    echo "ERROR: SSH must be running when upgrading from SSH Only"
-    echo "This ensures you have fallback access if passkey registration fails."
-    exit 1
-  fi
-  log "SSH verified running - safe to proceed with upgrade"
 fi
 
 # Check if passkey already exists using the tier/current endpoint (localhost only)
@@ -319,12 +320,6 @@ else
   mv "$SETUP_TOKEN_FILE.tmp" "$SETUP_TOKEN_FILE"
   mv "$SETUP_EXPIRY_FILE.tmp" "$SETUP_EXPIRY_FILE"
 
-  # Create transition marker if coming from SSH Only
-  if [ "$CURRENT_TIER" = "ssh_only" ]; then
-    touch "$SSH_TRANSITION_MARKER"
-    chmod 600 "$SSH_TRANSITION_MARKER"
-  fi
-
   echo ""
   echo "========================================"
   echo "  WEB LOCKED SETUP"
@@ -335,11 +330,6 @@ else
   echo "  https://$DOMAIN/_auth/ssh-only-upgrade?token=$TOKEN"
   echo ""
   echo "This link expires in 10 minutes."
-  echo ""
-  if [ "$CURRENT_TIER" = "ssh_only" ]; then
-    echo "NOTE: SSH access remains available until passkey is registered."
-    echo "      You will NOT be locked out if registration fails."
-  fi
   echo ""
   echo "After registering your passkey, Web Locked mode will be enabled."
   echo "========================================"
@@ -359,7 +349,10 @@ set -e
 AUTH_DB="/etc/ellulai/local-auth.db"
 TIER_FILE="/etc/ellulai/security-tier"
 LOG_FILE="/var/log/ellulai-enforcer.log"
-SSH_AUTH_KEYS="/home/dev/.ssh/authorized_keys"
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+SSH_AUTH_KEYS="\${SVC_HOME}/.ssh/authorized_keys"
 
 log() { echo "[$(date -Iseconds)] RESET_AUTH: $1" >> "$LOG_FILE"; echo "$1"; }
 
@@ -392,20 +385,12 @@ if [ "$CURRENT_TIER" = "web_locked" ]; then
     echo ""
     echo "To proceed safely:"
     echo "  1. Add an SSH key first: sudo ellulai-add-ssh-key 'ssh-ed25519 ...'"
-    echo "  2. Verify SSH works: ssh dev@\$(hostname -I | awk '{print \$1}')"
+    echo "  2. Verify SSH works: ssh \$SVC_USER@\$(hostname -I | awk '{print \$1}')"
     echo "  3. Then retry: sudo ellulai-reset-auth"
     exit 1
   fi
   log "SSH access verified - safe to reset auth"
   echo "WARNING: SSH access detected - you can recover via SSH after reset."
-fi
-
-if [ "$CURRENT_TIER" = "ssh_only" ]; then
-  if [ "$HAS_SSH_KEYS" != "true" ] || [ "$SSH_RUNNING" != "true" ]; then
-    log "ERROR: Cannot reset auth in ssh_only without working SSH"
-    echo "ERROR: SSH not available - cannot reset auth safely"
-    exit 1
-  fi
 fi
 
 if [ ! -f "$AUTH_DB" ]; then
@@ -493,14 +478,14 @@ NEW_TIER="$1"
 log() { echo "[$(date -Iseconds)] TIER_HELPER: $1" >> "$LOG_FILE"; }
 
 if [ -z "$NEW_TIER" ]; then
-  echo "Usage: tier-switch.sh <standard|ssh_only|web_locked>"
+  echo "Usage: tier-switch.sh <standard|web_locked>"
   exit 1
 fi
 
 # Validate tier value
-if [ "$NEW_TIER" != "standard" ] && [ "$NEW_TIER" != "ssh_only" ] && [ "$NEW_TIER" != "web_locked" ]; then
+if [ "$NEW_TIER" != "standard" ] && [ "$NEW_TIER" != "web_locked" ]; then
   echo "ERROR: Invalid tier '$NEW_TIER'"
-  echo "Valid tiers: standard, ssh_only, web_locked"
+  echo "Valid tiers: standard, web_locked"
   exit 1
 fi
 
@@ -539,14 +524,17 @@ export function getSshSetupScript(): string {
   return `#!/bin/bash
 set -e
 
-SSH_DIR="/home/dev/.ssh"
+[ -f /etc/default/ellulai ] && source /etc/default/ellulai
+SVC_USER="\${PS_USER:-dev}"
+SVC_HOME="/home/\${SVC_USER}"
+SSH_DIR="\${SVC_HOME}/.ssh"
 AUTH_KEYS="$SSH_DIR/authorized_keys"
 
 mkdir -p "$SSH_DIR"
 chmod 700 "$SSH_DIR"
 touch "$AUTH_KEYS"
 chmod 600 "$AUTH_KEYS"
-chown -R dev:dev "$SSH_DIR"
+chown -R \${SVC_USER}:\${SVC_USER} "$SSH_DIR"
 `;
 }
 
