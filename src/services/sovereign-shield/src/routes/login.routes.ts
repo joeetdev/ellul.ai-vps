@@ -14,7 +14,7 @@ import type { Hono } from 'hono';
 import { db } from '../database';
 import { RP_NAME } from '../config';
 import { getDeviceFingerprint, getClientIp } from '../auth/fingerprint';
-import { createSession, clearSessionCookie, setSessionCookie } from '../auth/session';
+import { createSession, clearSessionCookie, setSessionCookie, createSessionExchangeCode } from '../auth/session';
 import { checkRateLimit, recordAuthAttempt } from '../services/rate-limiter';
 import { logAuditEvent } from '../services/audit.service';
 import { parseCookies } from '../utils/cookie';
@@ -23,7 +23,6 @@ import {
   verifyAuthenticationResponse,
   storeChallenge,
   getChallenge,
-  deleteChallenge,
   buildAllowCredentials,
   type CredentialRecord,
 } from '../auth/webauthn';
@@ -144,7 +143,10 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
         const params = new URLSearchParams(window.location.search);
         let redirectUrl = params.get('redirect') || '/';
         // Handle cross-domain redirect for preview (*.ellul.app) vs same-domain (*.ellul.ai)
-        if (result.sessionId) {
+        // SECURITY: Use one-time exchange code instead of session ID in URL to prevent
+        // session fixation via browser history, referer headers, or server logs.
+        const exchangeCode = result.exchangeCode;
+        if (exchangeCode) {
           try {
             const u = new URL(redirectUrl);
             if (u.hostname.endsWith('.ellul.app')) {
@@ -160,16 +162,16 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
                 redirectUrl = u.toString();
               }
             } else {
-              // Same-site redirect: append shield session
-              u.searchParams.delete('_shield_session');
+              // Same-site redirect: append one-time exchange code (not session ID)
+              u.searchParams.delete('_shield_code');
               redirectUrl = u.toString();
               const sep = redirectUrl.includes('?') ? '&' : '?';
-              redirectUrl = redirectUrl + sep + '_shield_session=' + encodeURIComponent(result.sessionId);
+              redirectUrl = redirectUrl + sep + '_shield_code=' + encodeURIComponent(exchangeCode);
             }
           } catch {
             // Fallback for relative URLs
             const sep = redirectUrl.includes('?') ? '&' : '?';
-            redirectUrl = redirectUrl + sep + '_shield_session=' + encodeURIComponent(result.sessionId);
+            redirectUrl = redirectUrl + sep + '_shield_code=' + encodeURIComponent(exchangeCode);
           }
           // Notify parent frame about the new session
           if (window.parent !== window) {
@@ -307,14 +309,16 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
       db.prepare('UPDATE credential SET counter = ? WHERE id = ?')
         .run(verification.authenticationInfo.newCounter, cred.id);
 
-      deleteChallenge(expectedChallenge);
+      // Challenge already consumed by getChallenge (single-use)
       recordAuthAttempt(ip, true);
 
       // Create session bound to IP + fingerprint
       const session = createSession(cred.id, ip, fingerprintData);
       logAuditEvent({ type: 'auth_success', ip, fingerprint: fingerprintData.hash, credentialId: cred.id, sessionId: session.id });
       setSessionCookie(c, session.id, hostname);
-      return c.json({ verified: true, sessionId: session.id });
+      // Return one-time exchange code for URL redirect (never expose session ID in URLs)
+      const exchangeCode = createSessionExchangeCode(session.id);
+      return c.json({ verified: true, sessionId: session.id, exchangeCode });
     } catch (e) {
       recordAuthAttempt(ip, false);
       logAuditEvent({ type: 'auth_error', ip, fingerprint: fingerprintData.hash, details: { error: (e as Error).message } });

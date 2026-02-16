@@ -148,7 +148,10 @@ function verifyDaemonJwt(authHeader: string | undefined): boolean {
     .update(signInput)
     .digest('base64url');
 
-  if (parts[2] !== expectedSig) return false;
+  const sigBuf = Buffer.from(parts[2]!, 'base64url');
+  const expectedBuf = Buffer.from(expectedSig, 'base64url');
+  if (sigBuf.length !== expectedBuf.length) return false;
+  if (!crypto.timingSafeEqual(sigBuf, expectedBuf)) return false;
 
   // Verify payload
   try {

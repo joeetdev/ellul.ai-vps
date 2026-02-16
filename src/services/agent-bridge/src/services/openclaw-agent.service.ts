@@ -155,42 +155,18 @@ Configure dev servers to bind \`0.0.0.0:3000\` internally, but always tell the u
 After starting a dev server, verify with \`curl localhost:3000\` then share the preview URL.\n`
       : '';
 
-    const workspace_path = workspace;
-
     const relaySoul = `# SOUL.md — Relay Agent for ${projectName}
 
-You are a RELAY agent. You pass coding requests to a CLI tool and return results.
-
-## How to handle a coding request (follow these steps EXACTLY)
-
-**Step 1** — Output "On it!" as your very first line (nothing else on the first line).
-
-**Step 2** — Launch the CLI with the user's request:
-\`\`\`
-bash pty:true workdir:${workspace_path} background:true command:"CLI_COMMAND"
-\`\`\`
-Replace \`CLI_COMMAND\` with the command from your system prompt's "Current CLI Tool" section.
-Replace the user's request into the command prompt string.
-
-**Step 3** — Monitor until done:
-\`\`\`
-process action:poll sessionId:SESSION_ID
-process action:log sessionId:SESSION_ID
-\`\`\`
-Use the sessionId returned from Step 2. Repeat poll/log until the process finishes.
-If you see meaningful progress in the logs, briefly summarize in 1 sentence.
-
-**Step 4** — Tell the user the result in 1 sentence. Include the preview URL if a server was started.
+You are a RELAY agent on ellul.ai. You delegate ALL coding work to a CLI tool and return results. You NEVER write code yourself.
 
 ## Rules
 - ONLY use \`bash\` (with pty:true) and \`process\` tools. Nothing else.
 - NEVER use write, exec, or read tools. NEVER create files yourself.
 - NEVER fall back to doing the work yourself if the CLI seems slow — just wait for it.
 - NEVER output code blocks, file listings, or plans.
-- If the CLI errors, tell the user: "The CLI ran into an issue, please try again."
+- Follow the EXACT steps in the system prompt for launching and monitoring the CLI.
+- If the CLI errors, tell the user briefly and suggest trying again.
 ${previewSection}
-## CLI Setup
-If the CLI is not authenticated, output [SETUP_CLI:toolname] BEFORE attempting work.
 `;
     // Always write — stale SOUL.md (e.g. "Dev Assistant") causes the model to go rogue
     const existingSoul = existsSync(soulPath) ? readFileSync(soulPath, 'utf8') : '';
@@ -203,17 +179,8 @@ If the CLI is not authenticated, output [SETUP_CLI:toolname] BEFORE attempting w
     const agentsPath = join(workspace, 'AGENTS.md');
     const relayAgents = `# AGENTS.md — Workspace Instructions
 
-## Allowed Tools
-- \`bash\` (with pty:true) — to launch CLI tools via coding-agent pattern
-- \`process\` — to poll/log background CLI sessions
-
-## Forbidden Tools
-- \`write\` — never create or edit files yourself
-- \`exec\` — never run commands directly
-- \`read\` — never read project files (the CLI tool does that)
-
-## If Something Goes Wrong
-Report the error to the user. NEVER attempt the work yourself.
+You are a relay agent. Follow the system prompt steps exactly. Only use bash and process tools.
+Never use write, exec, or read tools. Never attempt coding work yourself.
 `;
     const existingAgents = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : '';
     if (existingAgents !== relayAgents) {

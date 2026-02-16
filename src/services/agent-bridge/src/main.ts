@@ -39,7 +39,6 @@ import {
   CONTEXT_CACHE_MS,
   ELLULAI_MODELS,
   DEV_DOMAIN,
-  PROGRESS_INTERVAL_MS,
   STALE_POLL_THRESHOLD,
   type SessionType,
 } from './config';
@@ -129,10 +128,6 @@ interface ConnectionState {
   currentSession: SessionType;
   currentProject: string | null;
   currentThreadId: string | null;
-  // Track which threads have had context injected (per-thread isolation)
-  claudeActiveThreads: Set<string>;
-  codexActiveThreads: Set<string>;
-  geminiActiveThreads: Set<string>;
   // Track threads with in-flight OpenClaw requests (for cleanup on disconnect).
   // When the WebSocket closes, we cancel these to prevent zombie requests
   // from clogging OpenClaw's internal lane queue.
@@ -337,9 +332,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     currentSession: DEFAULT_SESSION as SessionType,
     currentProject: urlProject,
     currentThreadId: null,
-    claudeActiveThreads: new Set(),
-    codexActiveThreads: new Set(),
-    geminiActiveThreads: new Set(),
     inflightThreads: new Set(),
   };
 
@@ -609,32 +601,16 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           }
         };
 
-        // Declared outside try so finally can clean it up
-        let progressInterval: ReturnType<typeof setInterval> | null = null;
-
         try {
           const project = (msg.project as string) || commandProject;
-
-          // Inject context only on first message per thread (per-thread isolation)
-          // If no threadId, always inject context (safety fallback)
-          let needsContext = true;
-          let isThreadActive = false;
-          if (commandThreadId) {
-            if (commandSession === 'claude') isThreadActive = state.claudeActiveThreads.has(commandThreadId);
-            else if (commandSession === 'codex') isThreadActive = state.codexActiveThreads.has(commandThreadId);
-            else if (commandSession === 'gemini') isThreadActive = state.geminiActiveThreads.has(commandThreadId);
-            needsContext = !isThreadActive;
-          }
 
           const globalCtx = refreshGlobalContext();
           const projectCtx = project ? loadProjectContext(project) : '';
 
-          // System prompt sent as role: "system" (first message only — saves tokens)
-          // Workspace files (SOUL.md, AGENTS.md) handle persistent identity;
-          // this covers per-request rules and project context.
-          const systemPrompt = needsContext
-            ? buildSystemPrompt(globalCtx, projectCtx, project, commandSession)
-            : null;
+          // System prompt sent on EVERY request — OpenClaw HTTP API is stateless
+          // (no conversation memory between requests), so the agent needs the CLI
+          // command template and workspace rules each time.
+          const systemPrompt = buildSystemPrompt(globalCtx, projectCtx, project, commandSession);
           const contextualMessage = msg.content as string;
 
           // Ensure per-project agent exists (lazy creation on first message)
@@ -658,31 +634,10 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           let narrationFilterOn = true;   // Active until first non-narration paragraph
           let firstParaSeen = false;
 
-          // Relay agent UX: synthetic initial message + progress timer + stale detection
-          // Guarantees user sees feedback even when model text is all narration.
-          ws.send(JSON.stringify({ type: 'output', content: 'Working on your request...', threadId: commandThreadId, timestamp: Date.now() }));
-
+          // Stale-activity detection: track consecutive empty/identical process poll results
           let stalePollCount = 0;
           let lastPollOutput = '';
           let staleWarned = false;
-
-          const PROGRESS_MESSAGES = [
-            'Still working on it...',
-            'The coding tool is running...',
-            'Still processing — this may take a minute...',
-          ];
-          let progressIdx = 0;
-
-          progressInterval = setInterval(() => {
-            // Only send progress if user hasn't seen any real output yet
-            if (!displayText.trim()) {
-              const msg = PROGRESS_MESSAGES[Math.min(progressIdx, PROGRESS_MESSAGES.length - 1)];
-              progressIdx++;
-              try {
-                ws.send(JSON.stringify({ type: 'output', content: msg, threadId: commandThreadId, timestamp: Date.now() }));
-              } catch {}
-            }
-          }, PROGRESS_INTERVAL_MS);
 
           // Track in-flight request so we can cancel it if the WebSocket closes.
           // Only track real thread IDs — ephemeral ones are one-off and don't clog the queue.
@@ -767,10 +722,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
                         stalePollCount++;
                         if (stalePollCount >= STALE_POLL_THRESHOLD && !staleWarned) {
                           staleWarned = true;
-                          const staleMsg = 'The coding tool is still running but hasn\'t produced output in a while. It may be working on something large — hang tight.';
-                          try {
-                            ws.send(JSON.stringify({ type: 'output', content: staleMsg, threadId: commandThreadId, timestamp: Date.now() }));
-                          } catch {}
+                          if (commandThreadId) {
+                            addThinkingStep(commandThreadId, 'Coding tool still running — waiting for output...');
+                          }
                         }
                       } else {
                         stalePollCount = 0;
@@ -835,13 +789,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           // Send final cleaned output (replaces streamed text in UI)
           ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
 
-          // Mark thread context as active for this session
-          if (commandThreadId) {
-            if (commandSession === 'claude') state.claudeActiveThreads.add(commandThreadId);
-            else if (commandSession === 'codex') state.codexActiveThreads.add(commandThreadId);
-            else if (commandSession === 'gemini') state.geminiActiveThreads.add(commandThreadId);
-          }
-
           // Always send ack — this tells the frontend the request is complete
           ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
 
@@ -859,12 +806,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             // WebSocket already closed — nothing we can do
           }
         } finally {
-          // Clean up progress timer
-          if (progressInterval) {
-            clearInterval(progressInterval);
-            progressInterval = null;
-          }
-
           // Remove from inflight tracking (request complete or failed)
           if (commandThreadId) {
             state.inflightThreads.delete(commandThreadId);

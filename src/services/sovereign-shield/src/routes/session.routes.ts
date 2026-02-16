@@ -27,6 +27,7 @@ import {
   refreshSession,
   setSessionCookie,
   clearSessionCookie,
+  consumeSessionExchangeCode,
   type Session,
 } from '../auth/session';
 import {
@@ -334,14 +335,19 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
     let sessionId = cookies.shield_session;
     let sessionFromUrl = false;
 
-    // Also check for session token in URL (for cross-origin iframe contexts where cookies are blocked)
+    // Check for one-time exchange code in URL (replaces direct session ID exposure)
+    // SECURITY: Exchange codes are single-use, 30s TTL, and map to session IDs server-side.
+    // This prevents session fixation via browser history, referer headers, or server logs.
     if (!sessionId) {
       try {
         const uriParams = new URLSearchParams(forwardedUri.split('?')[1] || '');
-        const urlSession = uriParams.get('_shield_session');
-        if (urlSession) {
-          sessionId = urlSession;
-          sessionFromUrl = true;
+        const exchangeCode = uriParams.get('_shield_code');
+        if (exchangeCode) {
+          const exchangedSessionId = consumeSessionExchangeCode(exchangeCode);
+          if (exchangedSessionId) {
+            sessionId = exchangedSessionId;
+            sessionFromUrl = true;
+          }
         }
       } catch {}
     }
@@ -446,9 +452,9 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       const cookieHost = forwardedHost || hostname;
       setSessionCookie(c, refresh.sessionId, cookieHost);
 
-      // Build clean URL without _shield_session param
+      // Build clean URL without exchange code param
       const urlObj = new URL(originalUrl);
-      urlObj.searchParams.delete('_shield_session');
+      urlObj.searchParams.delete('_shield_code');
       const cleanUrl = urlObj.toString();
 
       return c.redirect(cleanUrl, 302);

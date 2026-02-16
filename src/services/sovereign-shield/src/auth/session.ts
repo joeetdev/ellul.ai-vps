@@ -438,3 +438,47 @@ export function bindPopKey(sessionId: string, publicKey: string): void {
   db.prepare('UPDATE sessions SET pop_public_key = ?, pop_bound_at = ? WHERE id = ?')
     .run(publicKey, now, sessionId);
 }
+
+// ── Session Exchange Codes ──
+// SECURITY: One-time codes that map to session IDs, used to avoid exposing
+// session IDs directly in URL parameters (browser history, referer headers, logs).
+// Codes are single-use and expire after 30 seconds.
+
+const EXCHANGE_CODE_TTL_MS = 30_000;
+const exchangeCodes = new Map<string, { sessionId: string; expiresAt: number }>();
+
+// Cleanup expired codes every 30s
+setInterval(() => {
+  const now = Date.now();
+  for (const [code, data] of exchangeCodes) {
+    if (data.expiresAt < now) exchangeCodes.delete(code);
+  }
+}, 30_000);
+
+/**
+ * Create a one-time exchange code for a session ID.
+ * The code can be safely placed in URL parameters.
+ */
+export function createSessionExchangeCode(sessionId: string): string {
+  const code = crypto.randomBytes(32).toString('hex');
+  exchangeCodes.set(code, {
+    sessionId,
+    expiresAt: Date.now() + EXCHANGE_CODE_TTL_MS,
+  });
+  return code;
+}
+
+/**
+ * Consume a one-time exchange code, returning the session ID.
+ * Returns null if the code is invalid, expired, or already used.
+ */
+export function consumeSessionExchangeCode(code: string): string | null {
+  const data = exchangeCodes.get(code);
+  if (!data) return null;
+
+  // Always delete immediately (single-use)
+  exchangeCodes.delete(code);
+
+  if (data.expiresAt < Date.now()) return null;
+  return data.sessionId;
+}

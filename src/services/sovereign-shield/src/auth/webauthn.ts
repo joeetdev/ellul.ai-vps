@@ -135,15 +135,20 @@ export function storeChallenge(challenge: string, data: ChallengeData): void {
 }
 
 /**
- * Get and validate a challenge
+ * Get, validate, and consume a challenge (single-use).
+ * SECURITY: Challenge is deleted immediately on retrieval to prevent reuse
+ * on verification failure or exception. This is critical because challenges
+ * that survive failed attempts can be retried by an attacker.
  */
 export function getChallenge(challenge: string): ChallengeData | null {
   const data = challenges.get(challenge);
   if (!data) return null;
 
+  // Always delete immediately - challenges are single-use
+  challenges.delete(challenge);
+
   // Check if expired
   if (Date.now() - data.createdAt > CHALLENGE_TTL_MS) {
-    challenges.delete(challenge);
     return null;
   }
 

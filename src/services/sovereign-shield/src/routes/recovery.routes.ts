@@ -36,7 +36,6 @@ import {
   verifyRegistrationResponse,
   storeChallenge,
   getChallenge,
-  deleteChallenge,
 } from '../auth/webauthn';
 import { parseCookies } from '../utils/cookie';
 
@@ -526,8 +525,7 @@ export function registerRecoveryRoutes(app: Hono, hostname: string): void {
       // Mark recovery session as used
       db.prepare('UPDATE recovery_sessions SET used = 1 WHERE token = ?').run(recoveryToken);
 
-      // Clean up challenge
-      deleteChallenge(expectedChallenge);
+      // Challenge already consumed by getChallenge (single-use)
 
       // Create new session
       const newSession = createSession(credId, ip, fingerprintData);

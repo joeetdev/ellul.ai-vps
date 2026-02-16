@@ -112,17 +112,18 @@ export async function verifyRequestPoP(
     return { valid: false, reason: 'timestamp_before_startup' };
   }
 
-  // SECURITY: Check for nonce replay attack using SQLite (persists across restarts)
-  // Nonces must be unique per session within the timestamp window
+  // SECURITY: Atomically claim nonce BEFORE async verification to prevent TOCTOU race.
+  // INSERT OR IGNORE returns 0 changes if the nonce already exists (unique constraint).
+  // This eliminates the window between check and insert where a replay could slip through.
   const nonceKey = session.id + ':' + nonce;
   try {
-    const existing = checkNonceStmt!.get(nonceKey);
-    if (existing) {
+    const result = insertNonceStmt!.run(nonceKey, now + (POP_TIMESTAMP_TOLERANCE_MS * 2));
+    if (result.changes === 0) {
       console.log('[shield] PoP nonce replay detected for session:', session.id.substring(0, 8));
       return { valid: false, reason: 'nonce_reused' };
     }
   } catch (e) {
-    console.error('[shield] Nonce check error:', (e as Error).message);
+    console.error('[shield] Nonce claim error:', (e as Error).message);
     return { valid: false, reason: 'nonce_check_failed' };
   }
 
@@ -146,14 +147,6 @@ export async function verifyRequestPoP(
   const valid = await verifyPopSignature(session.pop_public_key, payload, signature);
   if (!valid) {
     return { valid: false, reason: 'pop_signature_invalid' };
-  }
-
-  // Store nonce in SQLite to prevent replay - expires after 2x tolerance window
-  try {
-    insertNonceStmt!.run(nonceKey, now + (POP_TIMESTAMP_TOLERANCE_MS * 2));
-  } catch (e) {
-    console.error('[shield] Nonce insert error:', (e as Error).message);
-    // Don't fail the request - nonce was already checked
   }
 
   return { valid: true };

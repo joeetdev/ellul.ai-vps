@@ -31,7 +31,6 @@ import {
   verifyRegistrationResponse,
   storeChallenge,
   getChallenge,
-  deleteChallenge,
 } from '../auth/webauthn';
 
 /**
@@ -390,7 +389,7 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
         body.name || authenticatorName || 'Passkey'
       );
 
-      deleteChallenge(expectedChallenge);
+      // Challenge already consumed by getChallenge (single-use)
       cleanupSetupToken();
 
       // If lock_web_only was requested, block SSH now that passkey is registered

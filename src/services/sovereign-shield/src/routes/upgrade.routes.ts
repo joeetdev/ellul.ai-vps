@@ -33,7 +33,6 @@ import {
   verifyRegistrationResponse,
   storeChallenge,
   getChallenge,
-  deleteChallenge,
 } from '../auth/webauthn';
 import { generateRecoveryCodes, storeRecoveryCodes } from '../auth/recovery';
 
@@ -179,7 +178,7 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
         name || authenticatorName || 'Passkey'
       );
 
-      deleteChallenge(expectedChallenge);
+      // Challenge already consumed by getChallenge (single-use)
 
       // Execute tier switch to Web Locked
       await executeTierSwitch('web_locked', ip, c.req.header('user-agent') || 'unknown');
@@ -426,6 +425,18 @@ window.startRegistration = async function() {
 import { startRegistration } from '/_auth/static/simplewebauthn-browser.js';
 
 const passkeyName = ${JSON.stringify(name)};
+const DASHBOARD_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
+
+function getOpenerOrigin() {
+  try {
+    const ref = document.referrer;
+    if (!ref) return null;
+    const origin = new URL(ref).origin;
+    if (DASHBOARD_ORIGINS.includes(origin)) return origin;
+    if (origin.startsWith('https://') && (origin.endsWith('.ellul.ai') || origin.endsWith('.ellul.app'))) return origin;
+    return null;
+  } catch { return null; }
+}
 
 window.startRegistration = async function() {
   const btn = document.getElementById('registerBtn');
@@ -479,9 +490,12 @@ window.startRegistration = async function() {
       recoveryDiv.style.display = 'block';
     }
 
-    // Notify parent window (popup mode)
+    // SECURITY: Notify opener with validated origin only (never wildcard)
     if (window.opener) {
-      window.opener.postMessage({ type: 'upgrade_complete', tier: 'web_locked', credentialId: result.credentialId }, '*');
+      const openerOrigin = getOpenerOrigin();
+      if (openerOrigin) {
+        window.opener.postMessage({ type: 'upgrade_complete', tier: 'web_locked', credentialId: result.credentialId }, openerOrigin);
+      }
     }
 
     const delay = result.recoveryCodes ? 30000 : 2000;

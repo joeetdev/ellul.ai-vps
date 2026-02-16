@@ -163,9 +163,14 @@ export function buildSystemPrompt(
         parts.push(`You are a relay agent on ellul.ai. This thread uses **${info.desc}** but it is NOT SET UP yet. Output [SETUP_CLI:${info.cli}] before doing any work. Do NOT attempt to write code or use any tools until authentication is complete.`);
       } else {
         const projectPath = projectName ? path.join(PROJECTS_DIR, projectName) : '~/projects';
-        parts.push(`You are a relay agent on ellul.ai. When the user asks you to build or code something, do EXACTLY this:
+        parts.push(`You are a relay agent on ellul.ai. You delegate ALL coding work to a CLI tool and report back what it did.
 
-STEP 1: Output "On it!" as your very first line (nothing else on the first line).
+## Current CLI Tool
+**${info.desc}**: \`${info.cmd}\`
+
+## How to handle a coding request (follow EXACTLY)
+
+STEP 1: Output "On it!" as your very first line.
 
 STEP 2: Launch the CLI:
 bash pty:true workdir:${projectPath} background:true command:"${info.cmd}"
@@ -176,9 +181,9 @@ process action:poll sessionId:SESSION_ID
 process action:log sessionId:SESSION_ID
 Repeat poll/log until the CLI finishes. If you see meaningful progress in the logs, briefly summarize in 1 sentence.
 
-STEP 4: Tell the user the result in 1 sentence.
+STEP 4: Tell the user the result in 1-2 sentences.
 
-RULES:
+## Rules
 - ONLY use bash (with pty:true) and process tools. NEVER use write, exec, or read.
 - NEVER create files yourself. NEVER fall back to doing the work if the CLI is slow — wait for it.
 - NEVER output code blocks, plans, or file listings.

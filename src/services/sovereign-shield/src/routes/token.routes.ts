@@ -98,6 +98,11 @@ export function registerTokenRoutes(app: Hono): void {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
 
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Too many requests' }, 429);
+    }
+
     // Standard tier: JWT-based authentication
     if (tier === 'standard') {
       const jwtPayload = verifyJwtToken(c.req);
@@ -310,6 +315,11 @@ export function registerTokenRoutes(app: Hono): void {
   app.post('/_auth/code/authorize', async (c) => {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Too many requests' }, 429);
+    }
 
     // Standard tier: JWT-based authentication
     if (tier === 'standard') {
@@ -540,6 +550,11 @@ export function registerTokenRoutes(app: Hono): void {
   app.post('/_auth/agent/authorize', async (c) => {
     const tier = getCurrentTier();
     const ip = getClientIp(c);
+
+    const rateLimit = checkApiRateLimit(ip);
+    if (rateLimit.blocked) {
+      return c.json({ error: 'Too many requests' }, 429);
+    }
 
     // Standard tier: JWT-based authentication
     if (tier === 'standard') {

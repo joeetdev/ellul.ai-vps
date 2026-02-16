@@ -20,6 +20,7 @@ import { serve } from '@hono/node-server';
 import { PORT, RP_NAME, DOMAIN_FILE, API_URL_FILE, SVC_HOME } from './config';
 import { registerAllRoutes } from './routes';
 import { cleanupPreviewData } from './routes/preview.routes';
+import { cleanupExpiredNonces } from './auth/pop';
 import { getCurrentTier } from './services/tier.service';
 import { decryptEnvelope, setSecret, deleteSecret } from './services/secrets.service';
 import { initSettings } from './services/settings.service';
@@ -80,6 +81,9 @@ serve({
 
   // Periodic cleanup of expired preview tokens/sessions (every 5 minutes)
   setInterval(cleanupPreviewData, 5 * 60 * 1000);
+
+  // Periodic cleanup of expired PoP nonces (every 60 seconds)
+  setInterval(cleanupExpiredNonces, 60 * 1000);
 
   // Git token refresh — pull encrypted token from API every 30 minutes
   setTimeout(refreshGitToken, 10_000); // Initial pull after 10s startup delay
