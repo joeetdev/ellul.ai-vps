@@ -5,9 +5,17 @@
  */
 
 import * as os from 'os';
+import * as fs from 'fs';
 import { WATERFALL_MODELS } from '../../../configs/ai';
 
 const HOME = os.homedir();
+
+// Dev preview domain (written by provisioning to /etc/ellulai/dev-domain)
+let _devDomain = '';
+try {
+  _devDomain = fs.readFileSync('/etc/ellulai/dev-domain', 'utf8').trim();
+} catch {}
+export const DEV_DOMAIN = _devDomain;
 
 export const PORT = 7700;
 export const CHAT_DB_PATH = '/etc/ellulai/vibe-chat.db';

@@ -111,7 +111,7 @@ ${enforcement}
 ${deployment}
 
 # ============================================
-# Fishbowl Agent Telemetry
+# Agent Telemetry
 # ============================================
 ${agents}
 
@@ -146,6 +146,23 @@ run_daemon() {
 
   # Clean up any stale lockdown markers from pre-Phase 4
   rm -f /etc/ellulai/.emergency-lockdown /etc/ellulai/.in_lockdown 2>/dev/null || true
+
+  # STARTUP ENFORCEMENT: Run enforcement immediately on daemon start.
+  # This ensures SSH is enabled (if keys exist) before the first heartbeat,
+  # preventing lockout during the initial 30-second window.
+  local SETTINGS_FILE="/etc/ellulai/settings.json"
+  local BOOT_TERMINAL=\$(jq -r '.terminalEnabled // "true"' "\$SETTINGS_FILE" 2>/dev/null || echo "true")
+  local BOOT_SSH=\$(jq -r '.sshEnabled // "false"' "\$SETTINGS_FILE" 2>/dev/null || echo "false")
+  log "Running startup enforcement (terminal=\$BOOT_TERMINAL, ssh=\$BOOT_SSH)..."
+  enforce_settings "\$BOOT_TERMINAL" "\$BOOT_SSH"
+  log "Startup enforcement complete"
+
+  # BOOT VALIDATION: Verify all critical services are operational.
+  # Catches provisioning failures (missing binaries, broken firewall, etc.)
+  # and attempts remediation before the first user interaction.
+  log "Running boot validation..."
+  validate_full_stack
+  log "Boot validation complete"
 
   local HEARTBEAT_COUNT=0
   local SERVICE_CHECK_COUNT=0
@@ -269,7 +286,7 @@ export function getEnforcerScript(apiUrl: string): string {
 export function getEnforcerService(aiProxyToken: string): string {
   return `[Unit]
 Description=ellul.ai State Enforcer
-After=network.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]

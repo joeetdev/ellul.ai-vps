@@ -50,7 +50,7 @@ Start your dev server → it's live immediately at the preview URL.
 - pm2 start npm --name preview -- run dev — Start dev server
 - pm2 logs NAME — View logs
 - pm2 restart NAME — Restart app
-- curl localhost:3000 — Verify preview is working
+- curl localhost:3000 — Verify internally, then preview is live at https://${devDomain}
 
 ## Sandbox Boundaries
 - Preview only (port 3000) — no external deployment
@@ -150,6 +150,7 @@ Next.js: "dev": "next dev -H 0.0.0.0 -p 3000"
 
 ## After changes: verify preview
 npm install → pm2 start npm --name preview -- run dev → curl localhost:3000 → 200
+Preview is then live at: https://${devDomain}
 
 ## Sandbox Boundaries
 - Preview only (port 3000) — no external deployment
@@ -190,6 +191,7 @@ Next.js: "dev": "next dev -H 0.0.0.0 -p 3000"
 
 ## After changes: verify preview
 npm install → pm2 start npm --name preview -- run dev → curl localhost:3000 → 200
+Preview is then live at: https://${devDomain}
 
 ## Deploy
 Run: ship (auto-build + deploy with SSL)
@@ -204,8 +206,15 @@ ship | ellulai-expose NAME PORT | ellulai-apps | pm2 logs|restart NAME`;
  * Quick reference - detailed docs in global context.
  *
  * @param tier - Billing tier ("starter" or paid tier name)
+ * @param domain - Server domain (for deriving dev preview URL)
  */
-export function getProjectsClaudeMd(tier?: string): string {
+export function getProjectsClaudeMd(tier?: string, domain?: string): string {
+  // Derive dev domain from server domain (same logic as getGlobalClaudeMd)
+  let devDomain = "__DEV_DOMAIN__";
+  if (domain && domain !== "__DOMAIN__" && domain !== "$SERVER_DOMAIN") {
+    devDomain = domain.replace("-srv.", "-dev.").replace("-dc.", "-ddev.").replace(/\.ellul\.ai$/, ".ellul.app");
+  }
+
   if (tier === "starter") {
     return `# Projects Directory (Sandbox)
 
@@ -221,6 +230,10 @@ export function getProjectsClaudeMd(tier?: string): string {
 - type: "frontend" | "backend" | "library"
 - previewable: true if it has a web UI, false otherwise
 
+## Dev Preview
+Preview URL: https://${devDomain}
+Apps on port 3000 are automatically served at this URL. Always tell the user their preview URL after starting a dev server.
+
 ## Within Your Project
 1. Create/edit project files
 2. **REQUIRED**: Create \`ellulai.json\` in project root with name, type, summary
@@ -229,7 +242,7 @@ export function getProjectsClaudeMd(tier?: string): string {
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000 (or use \`npx serve -l 3000\` for static HTML)
 5. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview -- run dev\` or \`pm2 start "npx serve -l 3000" --name preview\`)
 6. **REQUIRED**: Verify with \`curl localhost:3000\` - MUST return 200
-7. STOP: Do not report success until step 6 passes!
+7. Tell the user: preview is live at https://${devDomain}
 
 ## Dev Server Config (CRITICAL)
 Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`
@@ -262,6 +275,10 @@ pm2 start|logs|restart|delete NAME`;
 - type: "frontend" | "backend" | "library"
 - previewable: true if it has a web UI, false otherwise
 
+## Dev Preview
+Preview URL: https://${devDomain}
+Apps on port 3000 are automatically served at this URL. Always tell the user their preview URL after starting a dev server.
+
 ## Within Your Project
 1. Create/edit project files
 2. **REQUIRED**: Create \`ellulai.json\` in project root with name, type, summary
@@ -270,7 +287,7 @@ pm2 start|logs|restart|delete NAME`;
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000 (or use \`npx serve -l 3000\` for static HTML)
 5. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\` or \`pm2 start "npx serve -l 3000" --name NAME\`)
 6. **REQUIRED**: Verify with \`curl localhost:3000\` - MUST return 200
-7. STOP: Do not report success until step 6 passes!
+7. Tell the user: preview is live at https://${devDomain}
 
 ## Dev Server Config (CRITICAL)
 Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`

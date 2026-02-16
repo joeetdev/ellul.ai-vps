@@ -109,7 +109,8 @@ export function getFileApiService(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `[Unit]
 Description=ellul.ai File API (Code Browser)
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple

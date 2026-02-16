@@ -85,6 +85,7 @@ import { getReportProgressScript, getTermProxyScript, getTermProxyService } from
 import { getEnforcerService } from '../../services/enforcer/bundle';
 import { getFileApiService } from '../../services/file-api/bundle';
 import { getAgentBridgeService } from '../../services/agent-bridge/bundle';
+import { getWatchdogService } from '../../services/watchdog';
 import {
   getVpsAuthService,
   getDowngradeScript,
@@ -359,6 +360,7 @@ function buildManifest(config: VpsConfig): FileEntry[] {
     { path: '/etc/systemd/system/ellulai-preview.service', content: getPreviewService(svcUser), mode: 0o644 },
     { path: '/etc/systemd/system/ellulai-sovereign-shield.service', content: getVpsAuthService(), mode: 0o644 },
     { path: '/etc/systemd/system/ellulai-perf-monitor.service', content: getPerfMonitorService(apiUrl, aiProxyToken), mode: 0o644 },
+    { path: '/etc/systemd/system/ellulai-watchdog.service', content: getWatchdogService(), mode: 0o644 },
 
     // ── User config files ─────────────────────────────────────────
     { path: `${svcHome}/.bashrc`, content: getBashrcConfig(aiProxyToken), mode: 0o644, owner: svcUser },
@@ -370,7 +372,7 @@ function buildManifest(config: VpsConfig): FileEntry[] {
     { path: `${svcHome}/projects/welcome/ecosystem.config.js`, content: getWelcomeEcosystem(svcHome), mode: 0o644, owner: svcUser },
     { path: `${svcHome}/projects/welcome/CLAUDE.md`, content: getWelcomeClaudeMd(domain, billingTier), mode: 0o644, owner: svcUser },
     { path: `${svcHome}/CLAUDE.md`, content: getGlobalClaudeMd(domain, billingTier, svcHome), mode: 0o644, owner: svcUser },
-    { path: `${svcHome}/projects/CLAUDE.md`, content: getProjectsClaudeMd(billingTier), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/projects/CLAUDE.md`, content: getProjectsClaudeMd(billingTier, domain), mode: 0o644, owner: svcUser },
   ];
 }
 
@@ -485,7 +487,7 @@ function recreateSymlinks(svcUser: string): void {
     let nodeVersion = '';
     try {
       nodeVersion = execSync(
-        `su - ${svcUser} -c 'node --version' 2>/dev/null`,
+        `runuser -l ${svcUser} -c 'node --version' 2>/dev/null`,
         { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
       ).trim();
     } catch {
@@ -548,17 +550,30 @@ async function main(): Promise<void> {
   const rebuilt = await rebuildNodeServices(config);
   console.log(`[rebuild-all] Node.js services: ${rebuilt} rebuilt`);
 
-  // 5. Symlinks (including .node → NVM version detection)
+  // 5. Update OpenClaw if installed (paid tiers only)
+  if (config.billingTier !== "free") {
+    try {
+      execSync(
+        'runuser -l dev -c \'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm use 22 && npm update -g openclaw 2>&1\'',
+        { stdio: 'pipe', timeout: 120000 }
+      );
+      console.log('[rebuild-all] OpenClaw updated');
+    } catch {
+      console.log('[rebuild-all] OpenClaw update skipped (not installed or error)');
+    }
+  }
+
+  // 6. Symlinks (including .node → NVM version detection)
   const svcUser = config.billingTier === "free" ? "coder" : "dev";
   recreateSymlinks(svcUser);
 
-  // 6. Reload systemd to pick up service file changes
+  // 7. Reload systemd to pick up service file changes
   try {
     execSync('systemctl daemon-reload', { stdio: 'pipe' });
     console.log('[rebuild-all] systemd daemon-reload done');
   } catch {}
 
-  // 7. Reload SSH and fail2ban if configs changed
+  // 8. Reload SSH and fail2ban if configs changed
   try { execSync('systemctl reload sshd 2>/dev/null || true', { stdio: 'pipe' }); } catch {}
   try { execSync('systemctl restart fail2ban 2>/dev/null || true', { stdio: 'pipe' }); } catch {}
 

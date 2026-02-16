@@ -91,7 +91,7 @@ heartbeat() {
   local LOCAL_SSH=$(jq -r '.sshEnabled // false' "$SETTINGS_FILE" 2>/dev/null || echo "false")
   # Cryptographic audit chain head (Phase 4, Step 16: tamper-evident audit trail)
   local CHAIN_HEAD=$(cat /etc/ellulai/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
-  # Fishbowl agent telemetry (read from Watchdog's status file)
+  # Agent telemetry
   local AGENT_STATUS=$(get_agent_status)
   local PAYLOAD=$(jq -n \
     --argjson activeSessions "$ACTIVE_SESSIONS" \
@@ -146,7 +146,7 @@ heartbeat_raw() {
   local LOCAL_SSH=$(jq -r '.sshEnabled // false' "$SETTINGS_FILE" 2>/dev/null || echo "false")
   # Cryptographic audit chain head (Phase 4, Step 16: tamper-evident audit trail)
   local CHAIN_HEAD=$(cat /etc/ellulai/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
-  # Fishbowl agent telemetry (read from Watchdog's status file)
+  # Agent telemetry
   local AGENT_STATUS=$(get_agent_status)
   local PAYLOAD=$(jq -n \
     --argjson activeSessions "$ACTIVE_SESSIONS" \
@@ -169,6 +169,13 @@ heartbeat_raw() {
   # POST telemetry, discard response body entirely
   local HTTP_CODE=$(heartbeat_curl "$API_URL/api/servers/heartbeat" "$PAYLOAD")
 
+  # VPS-driven enforcement MUST run regardless of heartbeat success/failure.
+  # Moving this before the HTTP status check prevents SSH lockout when API is unreachable.
+  local TERMINAL_ENABLED=$(jq -r '.terminalEnabled // "true"' "$SETTINGS_FILE" 2>/dev/null || echo "true")
+  local SSH_ENABLED=$(jq -r '.sshEnabled // "false"' "$SETTINGS_FILE" 2>/dev/null || echo "false")
+  enforce_settings "$TERMINAL_ENABLED" "$SSH_ENABLED"
+  ensure_daemon_port
+
   if [ "$HTTP_CODE" = "200" ]; then
     HEARTBEAT_FAILURES=0
   else
@@ -177,12 +184,6 @@ heartbeat_raw() {
     return 1
   fi
 
-  # VPS-driven enforcement
-  local TERMINAL_ENABLED=$(jq -r '.terminalEnabled // "true"' "$SETTINGS_FILE" 2>/dev/null || echo "true")
-  local SSH_ENABLED=$(jq -r '.sshEnabled // "false"' "$SETTINGS_FILE" 2>/dev/null || echo "false")
-  enforce_settings "$TERMINAL_ENABLED" "$SSH_ENABLED"
-  ensure_daemon_port
-
-  # Write local status for WebSocket broadcast
+  # Write local status for WebSocket broadcast (only on successful heartbeat)
   write_local_status "$CPU_USAGE" "$RAM_USAGE" "$ACTIVE_SESSIONS" "$TERMINAL_ENABLED" "$SSH_ENABLED"
 }

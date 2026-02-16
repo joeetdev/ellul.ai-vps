@@ -67,6 +67,9 @@ cd ~/projects 2>/dev/null || true`;
 export function getMotdScript(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `#!/bin/bash
+# Only show MOTD for interactive shells (non-interactive login shells
+# like runuser -l would corrupt PM2 jlist JSON output with ANSI text)
+[[ $- != *i* ]] && return
 SERVER_DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "$(hostname -I | awk '{print $1}' | tr '.' '-').sslip.io")
 APPS_DIR="${svcHome}/.ellulai/apps"
 

@@ -275,6 +275,10 @@ function mainHandler(): Lines {
     lines.push(...authedRoute(route));
   }
 
+  // Per-agent OpenClaw gateway routes (dynamically written by agent wrapper)
+  lines.push(...indent([`import /etc/caddy/agents.d/*.caddy`], 2));
+  lines.push("");
+
   lines.push(
     ...indent([`handle {`], 2),
     ...indent([`root * /var/www/ellulai`], 3),

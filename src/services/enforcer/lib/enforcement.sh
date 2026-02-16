@@ -27,7 +27,7 @@ enforce_settings() {
       ;;
     web_locked)
       TERMINAL_ENABLED="true"
-      if [ -f ${SVC_HOME}/.ssh/authorized_keys ] && [ -s ${SVC_HOME}/.ssh/authorized_keys ]; then
+      if [ -f "${SVC_HOME}/.ssh/authorized_keys" ] && [ -s "${SVC_HOME}/.ssh/authorized_keys" ]; then
         SSH_ENABLED="true"
       else
         SSH_ENABLED="false"
@@ -36,9 +36,11 @@ enforce_settings() {
   esac
 
   # SAFETY CHECK: Never close SSH if keys are present (prevents lockout)
-  if [ -f ${SVC_HOME}/.ssh/authorized_keys ] && [ -s ${SVC_HOME}/.ssh/authorized_keys ]; then
+  if [ -f "${SVC_HOME}/.ssh/authorized_keys" ] && [ -s "${SVC_HOME}/.ssh/authorized_keys" ]; then
     SSH_ENABLED="true"
-    log "SSH keys present - keeping SSH enabled regardless of tier"
+    log "SSH keys present at ${SVC_HOME}/.ssh/authorized_keys - keeping SSH enabled regardless of tier"
+  else
+    log "WARN: No SSH keys found at ${SVC_HOME}/.ssh/authorized_keys (SVC_HOME=${SVC_HOME}) - SSH safety check did not trigger"
   fi
 
   # Enforce SSH state

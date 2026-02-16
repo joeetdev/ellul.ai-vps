@@ -19,7 +19,7 @@ install_with_retry() {
   local attempt=1
   while [ $attempt -le 3 ]; do
     log "$label: attempt $attempt/3"
-    if su - $SVC_USER -c "$cmd" >> "$LOG" 2>&1; then
+    if runuser -l $SVC_USER -c "$cmd" >> "$LOG" 2>&1; then
       log "$label: OK"
       return 0
     fi
@@ -37,7 +37,7 @@ sleep 15
 install_with_retry "claude" 'source ~/.nvm/nvm.sh && npm install -g @anthropic-ai/claude-code'
 install_with_retry "codex" 'source ~/.nvm/nvm.sh && npm install -g @openai/codex'
 install_with_retry "gemini" 'source ~/.nvm/nvm.sh && npm install -g @google/gemini-cli'
-su - $SVC_USER -c 'pipx install aider-chat' >> "$LOG" 2>&1 || log "!aider"
+runuser -l $SVC_USER -c 'pipx install aider-chat' >> "$LOG" 2>&1 || log "!aider"
 touch "$FLAG_FILE"
 log "Done"
 wall "AI tools ready" 2>/dev/null || true`;

@@ -4,7 +4,7 @@
  * WebSocket bridge for Vibe Mode chat UI running on port 7700.
  * Provides multi-session AI CLI routing with context injection.
  *
- * Sessions: opencode, claude, codex, gemini, main
+ * Sessions: opencode, claude, codex, gemini
  *
  * Message Types:
  * - switch_session   - Switch between AI sessions
@@ -38,6 +38,7 @@ import {
   VALID_SESSIONS,
   CONTEXT_CACHE_MS,
   ELLULAI_MODELS,
+  DEV_DOMAIN,
   type SessionType,
 } from './config';
 import { validateAgentToken, extractAgentToken } from './auth';
@@ -50,37 +51,41 @@ import {
 import {
   loadGlobalContext,
   loadProjectContext,
-  withContext,
+  buildSystemPrompt,
   getActiveProject,
 } from './services/context.service';
-import { ensureTmuxSession, sendToTmux, captureTmuxPane } from './services/tmux.service';
 import {
-  ensureOpencodeServer,
-  getOpencodeSession,
-  resetOpencodeSession,
-  opencodeReady,
-  sendToOpencodeStreaming,
-  sendToClaudeStreaming,
-  sendToCodexStreaming,
-  sendToGeminiStreaming,
+  sendToOpenClaw,
+  closeOpenClawConnection,
+  closeAllOpenClawConnections,
+  checkOpenClawHealth,
+  SESSION_MODEL_LABELS,
+  type OpenClawChunk,
+} from './services/openclaw-client.service';
+import {
   getProviders,
   setApiKey,
   setModel,
-  getCurrentModel,
-  closeVibeSession,
-  closeAllVibeSessions,
 } from './services/cli-streaming.service';
 import {
-  checkCliNeedsSetup,
   startInteractiveCli,
   respondToInteractiveCli,
   killInteractiveSession,
+  startCliAuthInChat,
+  hasCliAuthInChat,
+  respondToCliAuthInChat,
+  cancelCliAuthInChat,
 } from './services/interactive.service';
+import {
+  ensureProjectAgent,
+  reconcileAgents,
+} from './services/openclaw-agent.service';
 
 // Processing state for in-progress thread operations (thinking step buffer)
 import {
   startProcessing,
   endProcessing,
+  addThinkingStep,
   getProcessingState,
   subscribe as subscribeProcessing,
   unsubscribe as unsubscribeProcessing,
@@ -95,7 +100,6 @@ import {
   getThread,
   getThreadWithMessages,
   deleteThread,
-  getThreadForCleanup,
   renameThread,
   updateThreadSession,
   updateThreadModel,
@@ -104,7 +108,6 @@ import {
   setActiveThreadId,
   type Message,
 } from './services/thread.service';
-import { deleteOpencodeSession } from './services/cli-streaming.service';
 
 // WebSocket types
 interface WsClient {
@@ -124,8 +127,6 @@ interface ConnectionState {
   currentSession: SessionType;
   currentProject: string | null;
   currentThreadId: string | null;
-  pollTimer: NodeJS.Timeout | null;
-  lastContent: string;
   // Track which threads have had context injected (per-thread isolation)
   claudeActiveThreads: Set<string>;
   codexActiveThreads: Set<string>;
@@ -149,59 +150,102 @@ function refreshGlobalContext(): string {
 }
 
 /**
- * Get welcome message for a session
+ * Get welcome message for a session (connection-level, shown on session switch).
  */
 function getWelcomeMessage(session: SessionType): string {
-  if (['claude', 'codex', 'gemini'].includes(session) && checkCliNeedsSetup(session)) {
-    return session.charAt(0).toUpperCase() + session.slice(1) + ' needs setup. Starting configuration...';
-  }
-  const messages: Record<string, string> = {
-    opencode: opencodeReady ? 'OpenCode ready. Ask me anything!' : 'Starting OpenCode...',
-    claude: 'Claude Code ready. What would you like to build?',
-    codex: 'Codex ready. What code should I write?',
-    gemini: 'Gemini ready. How can I help?',
-    main: 'Shell ready. Enter commands to execute.',
-  };
-  return messages[session] || 'Ready.';
+  const model = SESSION_MODEL_LABELS[session] || 'AI';
+  return `${model} ready.`;
 }
 
 /**
- * Send command to main tmux session.
+ * Get the first-thread welcome message.
+ * Only shown once — when the user's very first thread is created for a project.
  */
-async function sendToMain(command: string): Promise<void> {
-  ensureTmuxSession('main');
-  sendToTmux('main', command);
+function getFirstThreadWelcome(): string {
+  const previewLine = DEV_DOMAIN
+    ? `\n\nYour dev preview is live at **https://${DEV_DOMAIN}** — anything you build will be instantly accessible there.`
+    : '';
+
+  return `Welcome to **ellul.ai**! I'm your AI coding assistant — I can help you build websites, apps, APIs, and anything else you need.
+
+Type below to get started. For example:
+- "Create a hello world app"
+- "Build a React landing page"
+- "Set up an Express API"${previewLine}`;
 }
 
-// Import terminal session manager
-import {
-  createTerminalSession,
-  getTerminalSessionPort,
-  closeTerminalSession,
-  listTerminalSessions,
-  shutdownAllSessions,
-  cleanupOrphanedSessions,
-  type TerminalSessionType,
-} from './services/terminal.service';
-import { cleanupOrphanedVibeSessions } from './services/vibe-cli.service';
+/**
+ * Condense verbose AI responses for non-tool models.
+ *
+ * Good models use the coding-agent tool → produce brief responses naturally.
+ * Non-tool models narrate every step as text → wall of text.
+ *
+ * This function is the safety net: it detects verbose narration and extracts
+ * just the outcome. Applied post-stream so it doesn't affect tool-using models.
+ */
+function condenseVerboseResponse(text: string): string | null {
+  // Short responses don't need condensing
+  if (text.length < 400) return null;
 
-// Parse JSON body from request
-function parseJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        reject(new Error('Invalid JSON'));
+  const lines = text.split('\n').filter(l => l.trim());
+  if (lines.length < 6) return null;
+
+  // Score verbose signals — each pattern adds weight
+  let score = 0;
+  for (const line of lines) {
+    if (/^\s*\d+[\.\)]\s/.test(line)) score += 2;       // numbered steps
+    if (/^\s*[-*•]\s/.test(line)) score += 1;            // bullet points
+    if (/^\s*```/.test(line)) score += 2;                 // code fences
+    if (/\b(First[, ]I|Then I|Next[, ]I|Now[, ]I|I'll now|Let me |I've also|I also |I then |After that|Finally[, ]I|I went ahead|I proceeded|I started by|I checked|I created|I installed|I set up|I configured|I added|I updated|I modified|Here's what|Here's a summary|Here are the|Let me walk|I ran |I opened|I wrote|I built|I generated|I launched|I initialized)/i.test(line)) score += 2; // narration
+  }
+
+  // Not verbose — good model gave a clean response
+  if (score < 4) return null;
+
+  // Extract the meaningful outcome from the verbose mess
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
+  const urlPattern = /https?:\/\/\S+/;
+  const outcomePattern = /\b(running|live|access|preview|visit|available|ready|done|complete|success|deployed|started|created|listening|served|built)\b/i;
+
+  // Scan paragraphs bottom-up for the outcome (models usually end with it)
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const p = paragraphs[i]!.trim();
+
+    // Skip short sign-offs ("Let me know if you need anything!")
+    if (p.length < 30 && !urlPattern.test(p)) continue;
+    // Skip code blocks
+    if (p.startsWith('```')) continue;
+    // Skip bullet/step lists
+    if (/^\s*[\d\-*•]/.test(p)) continue;
+
+    if (outcomePattern.test(p) || urlPattern.test(p)) {
+      // Strip filler prefixes
+      const cleaned = p.replace(/^(So[, ]|In summary[,: ]+|To summarize[,: ]+|In short[,: ]+|Overall[,: ]+|That's it[.!] ?)/i, '').trim();
+      // Cap at ~2 sentences max
+      const sentences = cleaned.match(/[^.!?]+[.!?]+/g);
+      if (sentences && sentences.length > 2) {
+        return sentences.slice(0, 2).join('').trim();
       }
-    });
-    req.on('error', reject);
-  });
+      return cleaned;
+    }
+  }
+
+  // No outcome paragraph found — take the last non-list, non-code paragraph
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const p = paragraphs[i]!.trim();
+    if (p.length > 30 && !p.startsWith('```') && !/^\s*[\d\-*•]/.test(p)) {
+      const sentences = p.match(/[^.!?]+[.!?]+/g);
+      if (sentences && sentences.length > 2) {
+        return sentences.slice(0, 2).join('').trim();
+      }
+      return p;
+    }
+  }
+
+  return null;
 }
 
-// Create HTTP server with health and terminal session endpoints
+// Create HTTP server with health endpoint
 const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost`);
 
@@ -213,125 +257,10 @@ const httpServer = http.createServer(async (req, res) => {
         status: 'ok',
         defaultSession: DEFAULT_SESSION,
         validSessions: VALID_SESSIONS,
-        opencodeReady,
         activeProject: getActiveProject(),
         contextLoaded: !!refreshGlobalContext(),
       })
     );
-    return;
-  }
-
-  // Terminal session API (used by term-proxy)
-  // POST /terminal/session - Create new terminal session
-  if (url.pathname === '/terminal/session' && req.method === 'POST') {
-    try {
-      const body = await parseJsonBody(req);
-      const type = body.type as TerminalSessionType;
-      const instanceId = body.instanceId as string | undefined;
-      // Use project from body or fall back to active project
-      const project = (body.project as string | undefined) || getActiveProject() || undefined;
-
-      if (!type || !VALID_SESSIONS.includes(type)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid session type' }));
-        return;
-      }
-
-      const session = await createTerminalSession(type, instanceId, project);
-      if (session) {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(session));
-      } else {
-        res.writeHead(503, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Failed to create session' }));
-      }
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: (err as Error).message }));
-    }
-    return;
-  }
-
-  // GET /terminal/session/:instanceId/port - Get port for session (used by term-proxy routing)
-  if (url.pathname.startsWith('/terminal/session/') && url.pathname.endsWith('/port') && req.method === 'GET') {
-    const parts = url.pathname.split('/');
-    const instanceId = parts[3];
-
-    if (!instanceId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing instance ID' }));
-      return;
-    }
-
-    const port = getTerminalSessionPort(instanceId);
-
-    if (port) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ port }));
-    } else {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found' }));
-    }
-    return;
-  }
-
-  // GET /terminal/session/:instanceId/capture - Capture terminal pane content (for mobile select mode)
-  if (url.pathname.startsWith('/terminal/session/') && url.pathname.endsWith('/capture') && req.method === 'GET') {
-    const parts = url.pathname.split('/');
-    const instanceId = parts[3];
-
-    if (!instanceId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing instance ID' }));
-      return;
-    }
-
-    // Try dynamic session first (term-<id>), then systemd session (just <id>)
-    const dynamicTmux = `term-${instanceId}`;
-    let capturedPaneContent = captureTmuxPane(dynamicTmux);
-    if (capturedPaneContent === null) {
-      capturedPaneContent = captureTmuxPane(instanceId);
-    }
-    if (capturedPaneContent === null) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Session not found or no content' }));
-      return;
-    }
-
-    // Strip ANSI escape codes for clean text
-    const clean = capturedPaneContent.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ content: clean, sessionId: instanceId }));
-    return;
-  }
-
-  // DELETE /terminal/session/:instanceId - Close terminal session
-  if (url.pathname.startsWith('/terminal/session/') && req.method === 'DELETE') {
-    const parts = url.pathname.split('/');
-    const instanceId = parts[3];
-
-    if (!instanceId) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing instance ID' }));
-      return;
-    }
-
-    const success = await closeTerminalSession(instanceId);
-
-    res.writeHead(success ? 200 : 404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success }));
-    return;
-  }
-
-  // GET /terminal/sessions - List active sessions (optionally filtered by project)
-  if (url.pathname === '/terminal/sessions' && req.method === 'GET') {
-    // project query param: string = filter by project, empty string = unscoped only, absent = all
-    const projectParam = url.searchParams.get('project');
-    const project = projectParam === '' ? null : projectParam === null ? undefined : projectParam;
-    const sessions = listTerminalSessions(project);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ sessions }));
     return;
   }
 
@@ -391,9 +320,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     currentSession: DEFAULT_SESSION as SessionType,
     currentProject: urlProject,
     currentThreadId: null,
-    pollTimer: null,
-    lastContent: '',
-    // Track per-thread CLI session activation (for context injection)
     claudeActiveThreads: new Set(),
     codexActiveThreads: new Set(),
     geminiActiveThreads: new Set(),
@@ -413,20 +339,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     }
   }, 30000);
 
-  // Polling for main shell output
-  function startPolling() {
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    if (state.currentSession !== 'main') return;
-
-    state.pollTimer = setInterval(() => {
-      const content = captureTmuxPane('main');
-      if (content && content !== state.lastContent) {
-        state.lastContent = content;
-        ws.send(JSON.stringify({ type: 'output', content, timestamp: Date.now() }));
-      }
-    }, 100);
-  }
-
   // Send initial session_switched message
   ws.send(
     JSON.stringify({
@@ -444,10 +356,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
       // ============ Session Management ============
       if (msgType === 'switch_session' && VALID_SESSIONS.includes(msg.session as SessionType)) {
-        if (state.pollTimer) clearInterval(state.pollTimer);
         state.currentSession = msg.session as SessionType;
-        state.lastContent = '';
-        // Note: Per-thread CLI activation is tracked separately, no need to reset here
 
         // Update thread's last session if there's an active thread
         if (state.currentThreadId) {
@@ -462,20 +371,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             timestamp: Date.now(),
           })
         );
-
-        if (state.currentSession === 'main') {
-          ensureTmuxSession('main');
-          startPolling();
-        }
-
-        // Auto-start interactive setup if CLI needs first-time configuration
-        if (['claude', 'codex', 'gemini'].includes(state.currentSession)) {
-          const needsSetup = checkCliNeedsSetup(state.currentSession);
-          if (needsSetup) {
-            console.log('[Bridge] ' + state.currentSession + ' needs setup, starting interactive CLI');
-            startInteractiveCli(state.currentSession, ws, undefined, state.currentThreadId);
-          }
-        }
         return;
       }
 
@@ -486,8 +381,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         state.currentProject = newProject;
 
         if (newProject !== oldProject) {
-          // Reset OpenCode session so next command creates one with correct project
-          resetOpencodeSession();
           console.log('[Bridge] Project changed from', oldProject, 'to', newProject);
         }
         ws.send(
@@ -566,18 +459,14 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
       }
 
       if (msgType === 'get_current_model') {
-        try {
-          const model = await getCurrentModel();
-          ws.send(
-            JSON.stringify({
-              type: 'current_model',
-              model,
-              timestamp: Date.now(),
-            })
-          );
-        } catch (err) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Failed to get model: ' + (err as Error).message, timestamp: Date.now() }));
-        }
+        const model = SESSION_MODEL_LABELS[state.currentSession] || null;
+        ws.send(
+          JSON.stringify({
+            type: 'current_model',
+            model,
+            timestamp: Date.now(),
+          })
+        );
         return;
       }
 
@@ -628,6 +517,26 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
       // ============ Command Execution ============
       if (msgType === 'command' && msg.content) {
+        const userMessage = (msg.content as string).trim();
+
+        // Dragon #2: Cancel escape hatch — user can abort in-chat auth anytime
+        if (hasCliAuthInChat(ws) && /^cancel$/i.test(userMessage)) {
+          cancelCliAuthInChat(ws);
+          ws.send(JSON.stringify({
+            type: 'output',
+            content: 'Authentication cancelled. You can try again anytime.',
+            threadId: state.currentThreadId,
+            timestamp: Date.now(),
+          }));
+          return;
+        }
+
+        // Route to PTY if in-chat CLI auth is active
+        if (hasCliAuthInChat(ws)) {
+          respondToCliAuthInChat(ws, userMessage);
+          return;
+        }
+
         // Capture thread context at start - prevents race condition when user switches threads during processing
         const commandThreadId = state.currentThreadId;
         const commandSession = state.currentSession;
@@ -688,91 +597,120 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
           const globalCtx = refreshGlobalContext();
           const projectCtx = project ? loadProjectContext(project) : '';
-          const contextualMessage = needsContext
-            ? withContext(msg.content as string, globalCtx, projectCtx, project)
-            : (msg.content as string);
 
-          let response: { text: string[]; reasoning?: string[]; tools?: string[] };
+          // System prompt sent as role: "system" (first message only — saves tokens)
+          // Workspace files (SOUL.md, AGENTS.md) handle persistent identity;
+          // this covers per-request rules and project context.
+          const systemPrompt = needsContext
+            ? buildSystemPrompt(globalCtx, projectCtx, project, commandSession)
+            : null;
+          const contextualMessage = msg.content as string;
 
-          switch (commandSession) {
-            case 'opencode':
-              // Pass threadId for per-thread session isolation and project for working directory
-              response = await sendToOpencodeStreaming(contextualMessage, ws, commandThreadId, project);
-              {
-                let output = (response.text || []).join('\n').trim();
-                if (!output && response.tools && response.tools.length > 0) {
-                  output = 'Completed using: ' + response.tools.join(', ');
-                }
-                ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-                ws.send(JSON.stringify({ type: 'output', content: output || 'No response received', threadId: commandThreadId, timestamp: Date.now() }));
-                saveToThread(msg.content as string, output || 'No response received', response.reasoning);
-              }
-              return;
-
-            case 'claude':
-              // Pass threadId for per-thread state isolation and project for working directory
-              response = await sendToClaudeStreaming(contextualMessage, ws, isThreadActive, commandThreadId, project);
-              if (commandThreadId) state.claudeActiveThreads.add(commandThreadId);
-              {
-                const output = (response.text || []).join('\n') || 'Done';
-                ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-                ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
-                saveToThread(msg.content as string, output, response.reasoning);
-              }
-              return;
-
-            case 'codex':
-              // Pass threadId for per-thread state isolation and project for working directory
-              response = await sendToCodexStreaming(contextualMessage, ws, isThreadActive, commandThreadId, project);
-              if (commandThreadId) state.codexActiveThreads.add(commandThreadId);
-              {
-                const output = (response.text || []).join('\n') || 'Done';
-                ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-                ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
-                saveToThread(msg.content as string, output, response.reasoning);
-              }
-              return;
-
-            case 'gemini':
-              // Pass threadId for per-thread state isolation and project for working directory
-              response = await sendToGeminiStreaming(contextualMessage, ws, isThreadActive, commandThreadId, project);
-              if (commandThreadId) state.geminiActiveThreads.add(commandThreadId);
-              {
-                const output = (response.text || []).join('\n') || 'Done';
-                ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-                ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
-                saveToThread(msg.content as string, output, response.reasoning);
-              }
-              return;
-
-            case 'main':
-              await sendToMain(msg.content as string);
-              ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-              ws.send(JSON.stringify({ type: 'output', content: 'Command sent', threadId: commandThreadId, timestamp: Date.now() }));
-              saveToThread(msg.content as string, 'Command sent');
-              return;
-
-            default:
-              throw new Error('Unknown session: ' + commandSession);
+          // Ensure per-project agent exists (lazy creation on first message)
+          if (project) {
+            await ensureProjectAgent(project);
           }
+
+          // All AI sessions route through OpenClaw agent
+          // OpenClaw is the middleman — it uses the local CLIs (claude, codex, etc.)
+          // as tools, orchestrates the work, and reports back what it did.
+          // Auth: user's own API keys via `claude login` etc. — no extra token cost.
+          const threadModel = commandThreadId ? getThread(commandThreadId)?.lastModel : null;
+
+          // Accumulate streamed text so each 'output' message contains the full response so far
+          let accumulatedText = '';
+
+          const response = await sendToOpenClaw(
+            commandThreadId || `ephemeral-${Date.now()}`,
+            contextualMessage,
+            commandSession,
+            (chunk: OpenClawChunk) => {
+              switch (chunk.type) {
+                case 'text':
+                  if (chunk.content) {
+                    accumulatedText += chunk.content;
+
+                    // Dragon #1: Check accumulated text for CLI setup trigger (handles split chunks)
+                    const setupMatch = accumulatedText.match(/\[SETUP_CLI:(\w+)\]/);
+                    if (setupMatch?.[1]) {
+                      const cliSession = setupMatch[1];
+                      accumulatedText = accumulatedText.replace(/\[SETUP_CLI:\w+\]/, '').trim();
+                      startCliAuthInChat(cliSession, ws, commandThreadId);
+                    }
+
+                    ws.send(JSON.stringify({ type: 'output', content: accumulatedText, threadId: commandThreadId, timestamp: Date.now() }));
+                  }
+                  break;
+                case 'tool_use':
+                  if (commandThreadId) {
+                    addThinkingStep(commandThreadId, `Using ${chunk.tool}...`);
+                  }
+                  break;
+                case 'tool_result':
+                  if (commandThreadId) {
+                    addThinkingStep(commandThreadId, `${chunk.tool}: ${(chunk.output || '').substring(0, 200)}`);
+                  }
+                  break;
+                case 'file_edit':
+                  if (commandThreadId) {
+                    addThinkingStep(commandThreadId, `Edited ${chunk.path}`);
+                  }
+                  break;
+                case 'status':
+                  if (chunk.status === 'thinking') {
+                    ws.send(JSON.stringify({ type: 'thinking', session: commandSession, threadId: commandThreadId, timestamp: Date.now() }));
+                  }
+                  break;
+                case 'error':
+                  ws.send(JSON.stringify({ type: 'error', message: chunk.message, threadId: commandThreadId, timestamp: Date.now() }));
+                  break;
+              }
+            },
+            threadModel,
+            project,
+            systemPrompt,
+          );
+
+          // sendToOpenClaw ALWAYS returns a response (never throws).
+          // On error, response.text contains a user-friendly error message.
+          let output = response.text.trim() || 'Something went wrong. Please try again.';
+
+          // Post-process: condense verbose narration into brief summary.
+          // Free models can't use tools, so they narrate every step as text.
+          // This replaces the wall-of-text with just the outcome summary.
+          const condensed = condenseVerboseResponse(output);
+          if (condensed) {
+            output = condensed;
+            // Send final output event with condensed text (replaces verbose version in UI)
+            ws.send(JSON.stringify({ type: 'output', content: condensed, threadId: commandThreadId, timestamp: Date.now() }));
+          }
+
+          // Mark thread context as active for this session
+          if (commandThreadId) {
+            if (commandSession === 'claude') state.claudeActiveThreads.add(commandThreadId);
+            else if (commandSession === 'codex') state.codexActiveThreads.add(commandThreadId);
+            else if (commandSession === 'gemini') state.geminiActiveThreads.add(commandThreadId);
+          }
+
+          // Always send ack — this tells the frontend the request is complete
+          ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
+
+          // Always save to thread — even errors, so user sees them on refresh
+          saveToThread(msg.content as string, output, response.reasoning);
         } catch (err) {
-          const errMsg = (err as Error).message || '';
-
-          // CLI not installed yet
-          if (errMsg.includes('ENOENT') || errMsg.includes('not found')) {
-            ws.send(JSON.stringify({ type: 'error', message: commandSession + ' is still installing. Try again in a moment.', threadId: commandThreadId, timestamp: Date.now() }));
-          }
-          // Auth failure - start interactive CLI setup
-          else if (
-            errMsg.match(/unauthori|authenticate|login|api.key|not.logged|credential|permission|forbidden|401|403/i) ||
-            (errMsg.match(/failed|error/i) && ['claude', 'codex', 'gemini'].includes(commandSession))
-          ) {
-            startInteractiveCli(commandSession, ws, undefined, commandThreadId);
-          } else {
-            ws.send(JSON.stringify({ type: 'error', message: errMsg, threadId: commandThreadId, timestamp: Date.now() }));
+          // This should rarely fire now (sendToOpenClaw handles its own errors),
+          // but guard against unexpected failures (WebSocket send errors, etc.)
+          const errMsg = (err as Error).message || 'Unknown error';
+          console.error(`[Bridge] Unexpected error in message handler: ${errMsg}`);
+          try {
+            ws.send(JSON.stringify({ type: 'error', message: 'Something went wrong. Please try again.', threadId: commandThreadId, timestamp: Date.now() }));
+            ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
+          } catch {
+            // WebSocket already closed — nothing we can do
           }
         } finally {
-          // Always end processing state so clients stop showing thinking indicator
+          // ALWAYS end processing — this stops the thinking spinner on the frontend.
+          // Without this, the UI hangs in "thinking" state forever.
           if (commandThreadId) {
             endProcessing(commandThreadId);
           }
@@ -785,6 +723,11 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         try {
           // Use session from message if provided, otherwise use current session
           const session = (msg.session as SessionType) || state.currentSession;
+
+          // Check if this is the user's first thread for this project (BEFORE creating)
+          const existingThreads = listThreads(state.currentProject);
+          const isFirstThread = existingThreads.length === 0;
+
           // Scope thread to current project (per-connection, not global)
           const thread = createThread(msg.title as string | undefined, session, state.currentProject);
           state.currentThreadId = thread.id;
@@ -792,7 +735,21 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           setActiveThreadId(thread.id, state.currentProject);
           // Also switch connection to that session
           state.currentSession = session;
-          console.log(`[Bridge] Created thread ${thread.id.substring(0, 8)}... for project ${state.currentProject}, session ${session}`);
+          console.log(`[Bridge] Created thread ${thread.id.substring(0, 8)}... for project ${state.currentProject}, session ${session}, firstThread=${isFirstThread}`);
+
+          // Inject welcome message on first-ever thread for this project
+          if (isFirstThread) {
+            addMessage(thread.id, {
+              type: 'assistant',
+              content: getFirstThreadWelcome(),
+              session,
+              model: null,
+              thinking: null,
+              metadata: { synthetic: true },
+            });
+            console.log(`[Bridge] Injected welcome message into first thread ${thread.id.substring(0, 8)}`);
+          }
+
           ws.send(JSON.stringify({ type: 'thread_created', thread, timestamp: Date.now() }));
         } catch (err) {
           ws.send(JSON.stringify({ type: 'error', message: 'Failed to create thread: ' + (err as Error).message, timestamp: Date.now() }));
@@ -844,23 +801,12 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         try {
           const threadId = msg.threadId as string;
 
-          // Get OpenCode session ID before deletion for cleanup
-          const threadData = getThreadForCleanup(threadId);
-          const opencodeSessionId = threadData?.opencodeSessionId;
-
           // Delete thread (cascades to messages, cleans up state dir)
           const success = deleteThread(threadId);
 
           if (success) {
-            // Clean up OpenCode session asynchronously
-            if (opencodeSessionId) {
-              deleteOpencodeSession(opencodeSessionId).catch(() => {
-                // Non-fatal, log only
-              });
-            }
-
-            // Clean up persistent vibe CLI sessions for this thread
-            closeVibeSession(threadId);
+            // Close OpenClaw connection for this thread
+            closeOpenClawConnection(threadId);
 
             // Clear current thread if it was the deleted one
             if (state.currentThreadId === threadId) {
@@ -943,9 +889,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
   }) as (...args: unknown[]) => void);
 
   ws.on('close', () => {
-    if (state.pollTimer) clearInterval(state.pollTimer);
     clearInterval(heartbeatInterval);
     killInteractiveSession(ws);
+    cancelCliAuthInChat(ws);
     unsubscribeAllProcessing(ws);
     console.log('[Bridge] Connection closed');
   });
@@ -959,36 +905,32 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 httpServer.listen(PORT, '127.0.0.1', async () => {
   console.log(`[Bridge] Running on http://127.0.0.1:${PORT}`);
 
-  // Clean up orphaned sessions from previous runs
-  // (handles case where agent-bridge restarted but tmux/ttyd processes survived)
-  cleanupOrphanedSessions();
-  cleanupOrphanedVibeSessions();
+  // Check OpenClaw agent health
+  const openclawHealthy = await checkOpenClawHealth();
+  console.log(`[Bridge] OpenClaw agent: ${openclawHealthy ? 'reachable' : 'NOT reachable (will connect on first message)'}`);
 
-  // Initialize OpenCode server (but don't create session yet - wait for project context)
-  await ensureOpencodeServer();
-  // Note: We don't call getOpencodeSession() here anymore because we don't have
-  // project context. Sessions will be created on first command with proper project.
-
-  // Initialize tmux for main shell
-  ensureTmuxSession('main');
+  // Reconcile per-project agents with existing projects
+  if (openclawHealthy) {
+    reconcileAgents().catch((err) => {
+      console.error('[Bridge] Agent reconciliation failed:', (err as Error).message);
+    });
+  }
 
   console.log('[Bridge] Ready');
 });
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
+process.on('SIGTERM', () => {
   console.log('[Bridge] Shutting down...');
-  closeAllVibeSessions(); // Close persistent vibe chat CLI sessions
-  await shutdownAllSessions(); // Close terminal sessions
+  closeAllOpenClawConnections();
   wss.close();
   httpServer.close();
   process.exit(0);
 });
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('[Bridge] Shutting down...');
-  closeAllVibeSessions(); // Close persistent vibe chat CLI sessions
-  await shutdownAllSessions(); // Close terminal sessions
+  closeAllOpenClawConnections();
   wss.close();
   httpServer.close();
   process.exit(0);

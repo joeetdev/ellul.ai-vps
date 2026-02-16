@@ -6,7 +6,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PROJECTS_DIR, CONTEXT_DIR, CONTEXT_CACHE_MS } from '../config';
+import { PROJECTS_DIR, CONTEXT_DIR, CONTEXT_CACHE_MS, DEV_DOMAIN } from '../config';
+import { checkCliNeedsSetup } from './interactive.service';
 
 // Context cache
 let cachedGlobalContext = '';
@@ -131,52 +132,112 @@ export function loadProjectContext(projectName: string | null): string {
   return loadAppContext(projectName);
 }
 
+// Session → CLI tool descriptions (for first-message context injection)
+const SESSION_CLI_INFO: Record<string, { cli: string; desc: string }> = {
+  claude: { cli: 'claude', desc: 'Claude Code (Anthropic)' },
+  codex: { cli: 'codex', desc: 'Codex CLI (OpenAI)' },
+  gemini: { cli: 'gemini', desc: 'Gemini CLI (Google)' },
+  opencode: { cli: 'opencode', desc: 'OpenCode' },
+};
+
 /**
- * Prepend context to message for AI CLIs.
- * Includes explicit working directory information so the AI knows where it's operating.
+ * Build a proper system prompt for OpenClaw.
+ * Sent as `role: "system"` in the messages array — much stronger signal
+ * than embedding context in the user message.
  */
-export function withContext(
-  message: string,
+export function buildSystemPrompt(
   globalContext: string,
   projectContext: string,
-  projectName?: string | null
+  projectName?: string | null,
+  session?: string | null,
 ): string {
-  let fullContext = '';
+  const parts: string[] = [];
 
-  // Add mandatory rules for the project scope
+  // Core identity — concise but complete. No verbose examples or NEVER lists.
+  // Post-processing handles non-tool models that ignore these rules anyway.
+  parts.push(`You are a relay agent on ellul.ai (cloud dev environment). You are a MESSAGE RELAY between the user and a CLI coding tool.
+
+Use the \`coding-agent\` skill for ALL coding work — building apps, creating files, editing code, running commands. You cannot write code yourself; only the CLI tool can modify files on the server.
+
+Rules:
+- If you didn't invoke \`coding-agent\`, nothing was created — never describe files you didn't make
+- Never ask "Would you like me to proceed?" — relay to the CLI immediately
+- Never show plans, file listings, or code blocks — let the CLI do the work
+- For non-coding questions, answer directly in 1-2 sentences
+- After the CLI completes, reply with ONE sentence summarizing the outcome and the preview URL if applicable`);
+
+  // Current session — tell agent exactly which CLI tool it's running through
+  if (session) {
+    const info = SESSION_CLI_INFO[session];
+    if (info) {
+      const needsSetup = session !== 'opencode' && checkCliNeedsSetup(session);
+      if (needsSetup) {
+        parts.push(`## Current CLI Tool\nThis thread uses **${info.desc}** (\`${info.cli}\`), but it is **NOT SET UP** yet. Before doing any coding work, output [SETUP_CLI:${info.cli}] to start authentication. Do NOT attempt to use the CLI or write code until authentication is complete.`);
+      } else {
+        parts.push(`## Current CLI Tool\nThis thread uses **${info.desc}** (\`${info.cli}\`). Send all coding requests to this CLI via the \`coding-agent\` skill.`);
+      }
+    }
+  }
+
+  // Project workspace rules
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);
-
-    // Read app name from ellulai.json if available
     let appNameLine = '';
     try {
       const ellulaiJsonPath = path.join(projectPath, 'ellulai.json');
       if (fs.existsSync(ellulaiJsonPath)) {
         const pjson = JSON.parse(fs.readFileSync(ellulaiJsonPath, 'utf8')) as { name?: string };
         if (pjson.name) {
-          appNameLine = `The "name" field in ellulai.json is "${pjson.name}" — this is USER-DEFINED. NEVER change the "name" field in ellulai.json or package.json.`;
+          appNameLine = `The app name is "${pjson.name}" (user-defined — never change it).`;
         }
       }
     } catch {}
 
-    fullContext += `## MANDATORY RULES
-1. WORKSPACE: You are working ONLY inside: ${projectPath}. ALL file operations MUST stay within this directory. NEVER create new projects. NEVER modify files outside this directory.
-2. APP NAME: ${appNameLine || 'The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.'}
-3. This is an EXISTING project. Do NOT create a new project, re-scaffold, or re-initialize.
-
-`;
+    parts.push(`## Workspace Rules
+- You are working ONLY inside: ${projectPath}
+- ALL file operations MUST stay within this directory
+- NEVER create new projects, re-scaffold, or re-initialize existing ones
+- ${appNameLine || 'Never change the "name" field in ellulai.json or package.json.'}`);
   }
 
-  if (globalContext) fullContext += globalContext + '\n\n';
-  if (projectContext) fullContext += projectContext;
+  // Dev preview — tell agent the actual preview URL so it can share with users
+  if (DEV_DOMAIN) {
+    parts.push(`## Dev Preview
+Your dev preview URL: **https://${DEV_DOMAIN}**
+Apps listening on port 3000 are served at this URL via reverse proxy.
+When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
+After starting a dev server, verify with \`curl localhost:3000\` then share the preview URL.`);
+  }
 
-  if (!fullContext.trim()) return message;
+  // CLI auth status — accurate for ALL tools including active session
+  const cliStatus = ['claude', 'codex', 'gemini']
+    .map(cli => {
+      const needsSetup = checkCliNeedsSetup(cli);
+      const label = session === cli ? ' (current thread)' : '';
+      return `${cli}: ${needsSetup ? 'NOT SET UP' : 'ready'}${label}`;
+    })
+    .join(', ');
+  parts.push(`## CLI Auth Status\n${cliStatus}\n\nIf any CLI is NOT SET UP and the user wants to use it, output [SETUP_CLI:toolname] and the system will handle authentication. Do NOT attempt coding work with an unauthenticated CLI.`);
 
-  return `<system_context>
-${fullContext.trim()}
-</system_context>
+  // Global + project context
+  if (globalContext) parts.push(globalContext);
+  if (projectContext) parts.push(projectContext);
 
-User request: ${message}`;
+  return parts.join('\n\n');
+}
+
+/**
+ * Legacy context wrapper — now a pass-through since context is sent
+ * via the system message in buildSystemPrompt().
+ */
+export function withContext(
+  message: string,
+  _globalContext: string,
+  _projectContext: string,
+  _projectName?: string | null,
+  _session?: string | null
+): string {
+  return message;
 }
 
 /**

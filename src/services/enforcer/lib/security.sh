@@ -9,7 +9,7 @@ detect_security_tier() {
   local HAS_SSH_KEY=false
   local HAS_PASSKEY=false
 
-  if [ -f ${SVC_HOME}/.ssh/authorized_keys ] && [ -s ${SVC_HOME}/.ssh/authorized_keys ]; then
+  if [ -f "${SVC_HOME}/.ssh/authorized_keys" ] && [ -s "${SVC_HOME}/.ssh/authorized_keys" ]; then
     HAS_SSH_KEY=true
   fi
 

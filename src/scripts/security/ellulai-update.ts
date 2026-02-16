@@ -286,7 +286,7 @@ chmod 644 "$VERSION_FILE"
 log "Restarting services..."
 
 # Restart all services (not just the 3 Node.js ones)
-AGENT_SERVICES="ellulai-sovereign-shield ellulai-file-api ellulai-agent-bridge ellulai-enforcer ellulai-term-proxy ellulai-perf-monitor"
+AGENT_SERVICES="ellulai-sovereign-shield ellulai-file-api ellulai-agent-bridge ellulai-enforcer ellulai-term-proxy ellulai-perf-monitor ellulai-watchdog"
 
 RESTARTED=0
 for SVC in $AGENT_SERVICES; do

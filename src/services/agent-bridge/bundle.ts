@@ -105,7 +105,8 @@ export function getAgentBridgeService(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
   return `[Unit]
 Description=ellul.ai Agent Bridge (Vibe Mode)
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple

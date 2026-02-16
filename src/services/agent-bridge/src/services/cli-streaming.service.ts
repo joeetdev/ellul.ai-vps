@@ -21,13 +21,6 @@ import {
   ensureThreadStateDir,
   withThreadLock,
 } from './thread.service';
-import {
-  sendToVibeSession,
-  closeVibeSession,
-  closeAllVibeSessions,
-  setupContextFiles,
-  type VibeSessionType,
-} from './vibe-cli.service';
 import { getActiveProject } from './context.service';
 import { addThinkingStep } from './processing-state';
 
@@ -411,8 +404,6 @@ export function resetOpencodeSession(): void {
   globalOpencodeSessionId = null;
 }
 
-// Re-export vibe session cleanup functions
-export { closeVibeSession, closeAllVibeSessions } from './vibe-cli.service';
 
 /**
  * Get CLI spawn environment with isolated HOME for per-thread state.
@@ -559,9 +550,6 @@ async function sendToOpencodeOneShot(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // Ensure CLAUDE.md context files are available
-  setupContextFiles(project || undefined);
-
   return new Promise((resolve, reject) => {
     const opencodePath = path.join(process.env.HOME || '/home/' + (process.env.USER || 'dev'), '.opencode', 'bin', 'opencode');
     const args = ['run', '--format', 'json', '--thinking'];
@@ -936,25 +924,7 @@ export async function sendToClaudeStreaming(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // PRIMARY: One-shot mode with structured JSON output (thinking, tools, reasoning)
-  try {
-    return await sendToClaudeOneShot(message, ws, useContinue, threadId, project);
-  } catch (err) {
-    console.error('[Claude] One-shot error:', (err as Error).message);
-  }
-
-  // FALLBACK: Persistent tmux session (unstructured terminal output)
-  if (threadId) {
-    try {
-      const result = await sendToVibeSession(threadId, 'claude', message, undefined, project || undefined);
-      return { text: [result.text || 'Done'], reasoning: [], tools: result.tools };
-    } catch (err) {
-      console.error('[Claude] Persistent session fallback error:', (err as Error).message);
-      throw err;
-    }
-  }
-
-  throw new Error('Claude: one-shot failed and no thread for tmux fallback');
+  return sendToClaudeOneShot(message, ws, useContinue, threadId, project);
 }
 
 // One-shot Claude — structured JSON output with thinking, tools, and reasoning persistence
@@ -965,9 +935,6 @@ async function sendToClaudeOneShot(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // Ensure CLAUDE.md context files are available for CLI to read
-  setupContextFiles(project || undefined);
-
   return new Promise((resolve, reject) => {
     // Pre-flight: ensure claude binary is installed
     try { requireCliBinary('claude'); } catch (e) { return reject(e); }
@@ -1106,29 +1073,7 @@ export async function sendToCodexStreaming(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // PRIMARY: One-shot mode with structured JSON output (thinking, tools, reasoning)
-  try {
-    return await sendToCodexOneShot(message, ws, useLast, threadId, project);
-  } catch (err) {
-    console.error('[Codex] One-shot error:', (err as Error).message);
-  }
-
-  // FALLBACK: Persistent tmux session (unstructured terminal output)
-  if (threadId) {
-    try {
-      const result = await sendToVibeSession(threadId, 'codex', message, (chunk) => {
-        if (chunk.trim()) {
-          sendThinkingStep(ws, chunk, threadId);
-        }
-      }, project || undefined);
-      return { text: [result.text || 'Done'], reasoning: [], tools: result.tools };
-    } catch (err) {
-      console.error('[Codex] Persistent session fallback error:', (err as Error).message);
-      throw err;
-    }
-  }
-
-  throw new Error('Codex: one-shot failed and no thread for tmux fallback');
+  return sendToCodexOneShot(message, ws, useLast, threadId, project);
 }
 
 // One-shot Codex — structured JSON output with thinking, tools, and reasoning persistence
@@ -1139,9 +1084,6 @@ async function sendToCodexOneShot(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // Ensure CLAUDE.md context files are available for CLI to read
-  setupContextFiles(project || undefined);
-
   return new Promise((resolve, reject) => {
     // Pre-flight: ensure codex binary is installed
     try { requireCliBinary('codex'); } catch (e) { return reject(e); }
@@ -1265,29 +1207,7 @@ export async function sendToGeminiStreaming(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // PRIMARY: One-shot mode with structured JSON output (thinking, tools, reasoning)
-  try {
-    return await sendToGeminiOneShot(message, ws, useResume, threadId, project);
-  } catch (err) {
-    console.error('[Gemini] One-shot error:', (err as Error).message);
-  }
-
-  // FALLBACK: Persistent tmux session (unstructured terminal output)
-  if (threadId) {
-    try {
-      const result = await sendToVibeSession(threadId, 'gemini', message, (chunk) => {
-        if (chunk.trim()) {
-          sendThinkingStep(ws, chunk, threadId);
-        }
-      }, project || undefined);
-      return { text: [result.text || 'Done'], reasoning: [], tools: result.tools };
-    } catch (err) {
-      console.error('[Gemini] Persistent session fallback error:', (err as Error).message);
-      throw err;
-    }
-  }
-
-  throw new Error('Gemini: one-shot failed and no thread for tmux fallback');
+  return sendToGeminiOneShot(message, ws, useResume, threadId, project);
 }
 
 // One-shot Gemini — structured JSON output with thinking, tools, and reasoning persistence
@@ -1298,9 +1218,6 @@ async function sendToGeminiOneShot(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // Ensure CLAUDE.md context files are available for CLI to read
-  setupContextFiles(project || undefined);
-
   return new Promise((resolve, reject) => {
     // Pre-flight: ensure gemini binary is installed
     try { requireCliBinary('gemini'); } catch (e) { return reject(e); }

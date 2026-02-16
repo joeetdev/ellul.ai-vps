@@ -7,21 +7,20 @@
  * Uses only OpenAI-compatible /chat/completions endpoints.
  *
  * The Logic Flow (free models tried first, paid as safety net):
- *   1. Kimi K2.5 Free             - Strong reasoning (Free)
- *   2. MiniMax M2.1 Free          - Recommended by OpenCode (Free)
- *   3. Grok Code (grok-code)      - Purpose-built for code (Free)
- *   4. GLM 4.7 Free               - Strong general purpose (Free)
- *   5. Big Pickle (big-pickle)    - General purpose (Free)
- *   6. GPT 5 Nano (gpt-5-nano)   - Lightweight GPT (Free)
- *   7. DeepSeek V3                - Paid safety net (~$0.30/1M)
+ *   1. MiniMax M2.5 Free          - Strong general purpose (Free)
+ *   2. Big Pickle (big-pickle)    - General purpose (Free)
+ *   3. GPT 5 Nano (gpt-5-nano)   - Lightweight GPT (Free)
+ *   4. DeepSeek V3                - Paid safety net (~$0.30/1M)
+ *
+ * Free model list synced from: https://opencode.ai/docs/zen/
  *
  * API Endpoints:
  *   - OpenCode: https://opencode.ai/zen/v1/chat/completions
  *   - DeepSeek: https://api.deepseek.com/v1/chat/completions
  *
  * Required Environment Variables:
- *   - OPENCODE_API_KEY: For free tier models (1-6)
- *   - DEEPSEEK_API_KEY: For paid fallback (7)
+ *   - OPENCODE_API_KEY: For free tier models (1-3)
+ *   - DEEPSEEK_API_KEY: For paid fallback (4)
  */
 
 export interface WaterfallModelConfig {
@@ -42,39 +41,12 @@ export interface WaterfallModelConfig {
  * DeepSeek API: https://api.deepseek.com/v1/chat/completions
  */
 export const WATERFALL_MODELS: WaterfallModelConfig[] = [
-  // === FREE TIER (OpenCode) - OpenAI-compatible models ===
-  {
-    id: "free-kimi",
-    name: "Kimi K2.5",
-    provider: "opencode",
-    modelId: "kimi-k2.5-free",
-    baseUrl: "https://opencode.ai/zen/v1",
-    isPaid: false,
-    description: "Free - Strong reasoning capabilities",
-  },
+  // === FREE TIER (OpenCode Zen) - synced from https://opencode.ai/docs/zen/ ===
   {
     id: "free-minimax",
-    name: "MiniMax M2.1",
+    name: "MiniMax M2.5",
     provider: "opencode",
-    modelId: "minimax-m2.1-free",
-    baseUrl: "https://opencode.ai/zen/v1",
-    isPaid: false,
-    description: "Free - Recommended by OpenCode",
-  },
-  {
-    id: "free-grok",
-    name: "Grok Code Fast 1",
-    provider: "opencode",
-    modelId: "grok-code",
-    baseUrl: "https://opencode.ai/zen/v1",
-    isPaid: false,
-    description: "Free - Purpose-built for code",
-  },
-  {
-    id: "free-glm",
-    name: "GLM 4.7",
-    provider: "opencode",
-    modelId: "glm-4.7-free",
+    modelId: "minimax-m2.5-free",
     baseUrl: "https://opencode.ai/zen/v1",
     isPaid: false,
     description: "Free - Strong general purpose",
@@ -164,25 +136,59 @@ export function getPrimaryModel(): WaterfallModelConfig {
 }
 
 /**
+ * Generate the OpenClaw config JSON for a server.
+ * Configures the gateway, auth token, and ellulai provider
+ * so OpenClaw can route requests through the ellul.ai AI proxy.
+ *
+ * IMPORTANT: This config is baked into the VPS at provisioning time and never
+ * updates. We use a stable "default" model ID — the AI proxy ignores it and
+ * runs the full waterfall regardless. This means we can swap free models in
+ * the proxy without re-provisioning any servers.
+ */
+export function getOpenclawConfigJson(apiUrl: string, aiProxyToken: string): string {
+  return JSON.stringify(
+    {
+      commands: { native: "auto", nativeSkills: "auto" },
+      gateway: {
+        mode: "local",
+        auth: { mode: "token", token: aiProxyToken },
+        http: { endpoints: { chatCompletions: { enabled: true } } },
+      },
+      agents: {
+        defaults: {
+          model: { primary: "ellulai/default" },
+        },
+      },
+      models: {
+        mode: "merge",
+        providers: {
+          ellulai: {
+            baseUrl: `${apiUrl}/api/ai`,
+            apiKey: aiProxyToken,
+            api: "openai-completions",
+            models: [
+              { id: "default", name: "ellul.ai AI", reasoning: false, input: ["text"] },
+            ],
+          },
+        },
+      },
+    },
+    null,
+    2
+  );
+}
+
+/**
  * Generate the OpenCode config JSON for a server.
- * Uses the primary model from the waterfall as the configured model.
- * The proxy will still run the full waterfall regardless of what model
- * is configured here — this just tells OpenCode what to request.
+ *
+ * Same as OpenClaw — uses a stable "default" model ID. The AI proxy's
+ * waterfall handles actual model selection, so this config never goes stale.
  */
 export function getOpencodeConfigJson(apiUrl: string, aiProxyToken: string): string {
-  const model = getPrimaryModel();
-  // Register ALL waterfall models so OpenCode knows about them when user switches
-  const models: Record<string, { name: string; maxTokens: number }> = {};
-  for (const m of WATERFALL_MODELS) {
-    models[m.modelId] = {
-      name: m.name,
-      maxTokens: 16384,
-    };
-  }
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
-      model: `ellulai/${model.modelId}`,
+      model: "ellulai/default",
       provider: {
         ellulai: {
           npm: "@ai-sdk/openai-compatible",
@@ -191,7 +197,12 @@ export function getOpencodeConfigJson(apiUrl: string, aiProxyToken: string): str
             baseURL: `${apiUrl}/api/ai`,
             apiKey: aiProxyToken,
           },
-          models,
+          models: {
+            default: {
+              name: "ellul.ai AI",
+              maxTokens: 16384,
+            },
+          },
         },
       },
     },

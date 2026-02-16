@@ -501,6 +501,31 @@ const server = http.createServer(async (req, res) => {
             JSON.stringify(ellulaiConfig, null, 2)
           );
 
+          // Initialize OpenClaw workspace files + create agent (fire-and-forget)
+          try {
+            const { exec: execCmd } = await import('child_process');
+            // Write dev-focused workspace files before agent creation
+            const ocDir = path.join(appPath, '.openclaw');
+            if (!fs.existsSync(ocDir)) fs.mkdirSync(ocDir, { recursive: true });
+            const soulPath = path.join(appPath, 'SOUL.md');
+            if (!fs.existsSync(soulPath)) {
+              fs.writeFileSync(soulPath, `# SOUL.md — Dev Assistant\n\nYou are a focused development assistant for the **${dirName}** project.\n\n## Core Principles\n- **Ship code, not conversation.** Help the user build, debug, and deploy.\n- **Be concise and action-oriented.** Suggest what to do next, don't philosophize.\n- **Read before asking.** Check project files, README, package.json before asking the user what the project is.\n- **Stay in scope.** All work happens inside this project directory.\n\n## CLI Setup\nIf a CLI tool isn't authenticated, help the user set it up.\nOutput [SETUP_CLI:toolname] and the system handles the rest — don't try to run login commands yourself.\n`, 'utf8');
+            }
+            const agentsPath = path.join(appPath, 'AGENTS.md');
+            if (!fs.existsSync(agentsPath)) {
+              fs.writeFileSync(agentsPath, `# AGENTS.md — Workspace Instructions\n\n## Every Session\n1. Read \`SOUL.md\` — your identity and principles\n2. Check project files (README.md, package.json) for context\n\n## Rules\n- ALL file operations stay within this workspace\n- Never change the "name" field in ellulai.json or package.json\n- Never re-scaffold or re-initialize the project\n\n## CLI Setup\nWhen the user needs a CLI that shows "NOT SET UP" in your CLI Auth Status:\n1. Tell the user you'll set it up\n2. Output the marker: [SETUP_CLI:claude] (or codex, gemini)\n3. The system handles authentication — wait for the user to complete it\n4. Never try to run login commands yourself\n`, 'utf8');
+            }
+            const heartbeatPath = path.join(appPath, 'HEARTBEAT.md');
+            if (!fs.existsSync(heartbeatPath)) {
+              fs.writeFileSync(heartbeatPath, '# Keep empty to skip heartbeat checks for dev agents.\n', 'utf8');
+            }
+
+            execCmd(`openclaw agents add "dev-${dirName}" --workspace "${appPath}" --non-interactive`, { timeout: 15000 }, (err) => {
+              if (err) console.warn(`[file-api] OpenClaw agent creation failed for ${dirName}:`, err.message);
+              else console.log(`[file-api] OpenClaw agent "dev-${dirName}" created`);
+            });
+          } catch {}
+
           // Return app info
           const app = {
             name: name,
@@ -605,6 +630,14 @@ const server = http.createServer(async (req, res) => {
           });
           npmInstall.unref();
         }
+
+        // Create OpenClaw agent for the new project (fire-and-forget)
+        try {
+          exec(`openclaw agents add "dev-${dirName}" --workspace "${appPath}" --non-interactive`, { timeout: 15000 }, (err) => {
+            if (err) console.warn(`[file-api] OpenClaw agent creation failed for ${dirName}:`, err.message);
+            else console.log(`[file-api] OpenClaw agent "dev-${dirName}" created`);
+          });
+        } catch {}
 
         // Return app info
         const app = {
@@ -776,7 +809,13 @@ const server = http.createServer(async (req, res) => {
           cleanup.push('caddy-reload');
         }
 
-        // 7. Remove the app directory recursively
+        // 7. Delete OpenClaw agent for this project
+        try {
+          await runCmd(`openclaw agents delete "dev-${app.directory}" 2>/dev/null || true`);
+          cleanup.push('openclaw-agent');
+        } catch {}
+
+        // 8. Remove the app directory recursively
         fs.rmSync(appPath, { recursive: true, force: true });
         cleanup.push('directory');
 

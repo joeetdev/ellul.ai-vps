@@ -42,6 +42,9 @@ daemon.ellul.ai:3006 {
     handle @daemon {
         reverse_proxy localhost:3002
     }
+    handle_path /api/watchdog/* {
+        reverse_proxy 127.0.0.1:7710
+    }
     respond "Not Found" 404
 }
 DAEMONEOF
@@ -53,6 +56,9 @@ ${MY_IP}:3006 {
     @daemon path /api/mount-volume /api/flush-volume /api/migrate/* /api/update-identity /api/luks-init /api/luks-unlock /api/luks-close /api/backup-identity /api/restore-identity
     handle @daemon {
         reverse_proxy localhost:3002
+    }
+    handle_path /api/watchdog/* {
+        reverse_proxy 127.0.0.1:7710
     }
     respond "Not Found" 404
 }
@@ -70,6 +76,9 @@ daemon.ellul.ai:3006 {
     handle @daemon {
         reverse_proxy localhost:3002
     }
+    handle_path /api/watchdog/* {
+        reverse_proxy 127.0.0.1:7710
+    }
     respond "Not Found" 404
 }
 DAEMONEOF
@@ -84,9 +93,18 @@ ${MY_IP}:3006 {
     handle @daemon {
         reverse_proxy localhost:3002
     }
+    handle_path /api/watchdog/* {
+        reverse_proxy 127.0.0.1:7710
+    }
     respond "Not Found" 404
 }
 DAEMONEOF
+    NEEDS_RELOAD=true
+  # Auto-fix: daemon.caddy exists but is missing the watchdog proxy
+  elif ! grep -q 'watchdog' /etc/caddy/sites-enabled/daemon.caddy; then
+    log "DAEMON: Adding missing watchdog proxy to daemon.caddy..."
+    # Insert watchdog handle_path before the respond line
+    sed -i '/respond "Not Found" 404/i\    handle_path /api/watchdog/* {\n        reverse_proxy 127.0.0.1:7710\n    }' /etc/caddy/sites-enabled/daemon.caddy
     NEEDS_RELOAD=true
   fi
 

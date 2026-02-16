@@ -413,7 +413,7 @@ export function registerWorkflowRoutes(app: Hono): void {
         console.log(`${LOG} Found package.json — running npm install...`);
         try {
           execSync(
-            `su - ${targetUser} -c "cd ${targetDir} && npm install --prefer-offline 2>&1"`,
+            `runuser -l ${targetUser} -c "cd ${targetDir} && npm install --prefer-offline 2>&1"`,
             { stdio: 'pipe', timeout: 120000 }
           );
           console.log(`${LOG} npm install complete`);

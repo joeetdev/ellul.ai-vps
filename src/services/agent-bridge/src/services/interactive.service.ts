@@ -687,3 +687,297 @@ export function killInteractiveSession(ws: WsClient): void {
 export function hasInteractiveSession(ws: WsClient): boolean {
   return interactiveSessions.has(ws);
 }
+
+// ─── In-Chat CLI Auth ──────────────────────────────────
+//
+// Agent-triggered auth flow: the OpenClaw agent outputs [SETUP_CLI:claude]
+// and the bridge intercepts it, spawns a PTY login process, auto-skips
+// noise (theme picker, press-enter), and surfaces just the auth URL
+// in the chat. User pastes the code back, bridge routes it to PTY.
+
+const chatAuthSessions = new Map<WsClient, InteractiveState & { threadId?: string | null }>();
+
+/**
+ * Start an interactive CLI auth flow within the chat conversation.
+ * Spawns PTY, auto-skips noise, surfaces auth URL as chat output.
+ */
+export function startCliAuthInChat(
+  session: string,
+  ws: WsClient,
+  threadId?: string | null,
+): void {
+  // Kill any existing in-chat auth for this ws
+  cancelCliAuthInChat(ws);
+
+  const defaults: Record<string, string> = {
+    claude: 'claude login',
+    codex: 'codex login',
+    gemini: 'gemini auth login',
+  };
+  const cmd = defaults[session];
+  if (!cmd) {
+    ws.send(JSON.stringify({ type: 'output', content: `No setup available for ${session}.`, threadId, timestamp: Date.now() }));
+    return;
+  }
+
+  const cmdParts = cmd.split(' ');
+  const proc = spawn('pty-wrap', cmdParts, {
+    cwd: PROJECTS_DIR,
+    env: { ...getCliSpawnEnv(), TERM: 'xterm-256color', COLUMNS: '2000', LINES: '30' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true,
+  });
+
+  let buffer = '';
+  let debounceTimer: NodeJS.Timeout | null = null;
+  let lastFlush = 0;
+  let authUrlSent = false;
+
+  const timeoutHandle = setTimeout(() => {
+    if (!proc.killed) {
+      try { process.kill(-proc.pid!, 'SIGTERM'); } catch {
+        try { proc.kill('SIGTERM'); } catch {}
+      }
+      ws.send(JSON.stringify({ type: 'output', content: `${session} setup timed out. You can try again.`, threadId, timestamp: Date.now() }));
+    }
+    chatAuthSessions.delete(ws);
+  }, INTERACTIVE_TIMEOUT_MS);
+
+  const sessionState: InteractiveState & { threadId?: string | null } = {
+    proc, timeout: timeoutHandle, session, awaitingResponse: false, threadId,
+  };
+  chatAuthSessions.set(ws, sessionState);
+
+  ws.send(JSON.stringify({
+    type: 'output',
+    content: `Setting up ${session}...`,
+    threadId,
+    timestamp: Date.now(),
+  }));
+
+  function flushBuffer() {
+    if (!buffer.trim()) { buffer = ''; return; }
+    const now = Date.now();
+    if (now - lastFlush < 200) { buffer = ''; return; }
+
+    // Extract URLs from raw buffer before stripping ANSI
+    const rawUrls: string[] = [];
+    const urlStart = buffer.indexOf('https://');
+    if (urlStart !== -1) {
+      let rawUrl = buffer.slice(urlStart);
+      rawUrl = rawUrl.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+      rawUrl = rawUrl.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+      rawUrl = rawUrl.replace(/\x1b[()][AB012]/g, '');
+      rawUrl = rawUrl.replace(/[\x00-\x1f\x7f]/g, '');
+      const urlMatch = rawUrl.match(/^(https:\/\/[^\s"'<>]+)/);
+      if (urlMatch?.[1]) {
+        rawUrls.push(urlMatch[1].replace(/[.,;:)]+$/, ''));
+      }
+    }
+
+    const parsed = parseCliOutput(buffer);
+    // Merge raw URLs with parsed URLs (take longest)
+    if (rawUrls[0] && parsed.urls[0]) {
+      parsed.urls = [rawUrls[0].length >= parsed.urls[0].length ? rawUrls[0] : parsed.urls[0]];
+    } else if (rawUrls.length > 0) {
+      parsed.urls = rawUrls;
+    }
+    buffer = '';
+
+    // Auto-skip: theme picker (loose regex — Dragon #3)
+    if (parsed.options.length >= 2) {
+      const isThemePicker = parsed.options.some(o => /theme|dark\s*mode|light\s*mode/i.test(o.label));
+      if (isThemePicker) {
+        console.log('[ChatAuth] Auto-selecting dark mode theme');
+        const darkOption = parsed.options.find(o => /dark/i.test(o.label)) || parsed.options[0];
+        const targetIdx = darkOption ? parseInt(darkOption.number, 10) - 1 : 0;
+        const currentIdx = parsed.activeArrowIdx || 0;
+        const moves = targetIdx - currentIdx;
+        const arrow = moves > 0 ? '\x1b[B' : '\x1b[A';
+        for (let i = 0; i < Math.abs(moves); i++) {
+          proc.stdin?.write(arrow);
+        }
+        setTimeout(() => proc.stdin?.write('\r'), 50);
+        lastFlush = now;
+        return;
+      }
+
+      // Auto-skip: login method selection — pick first option
+      const isLoginMethod = parsed.options.some(o => /login|auth|sign\s*in|browser/i.test(o.label));
+      if (isLoginMethod) {
+        console.log('[ChatAuth] Auto-selecting first login method');
+        proc.stdin?.write('\r');
+        lastFlush = now;
+        return;
+      }
+    }
+
+    // Auto-skip: press enter to continue (loose regex — Dragon #3)
+    if (parsed.inputPrompt && /press\s*enter|hit\s*enter|continue/i.test(parsed.inputPrompt) && !parsed.urls.length) {
+      console.log('[ChatAuth] Auto-pressing Enter to continue');
+      proc.stdin?.write('\r');
+      lastFlush = now;
+      return;
+    }
+
+    const fullText = parsed.contextBefore.concat(parsed.contextAfter).join('\n');
+
+    // Also catch press-enter in full text (loose regex)
+    if (/press\s*enter|hit\s*enter|press\s*any\s*key/i.test(fullText) && !parsed.urls.length && !parsed.inputPrompt) {
+      console.log('[ChatAuth] Auto-pressing Enter (fullText match)');
+      proc.stdin?.write('\r');
+      lastFlush = now;
+      return;
+    }
+
+    // Auth success detection
+    const authSuccessIndicators = [
+      /authenticat(ed|ion)\s*(success|complete|done)/i,
+      /login\s*successful/i,
+      /logged\s*in\s*(as|successfully)/i,
+      /signed\s*in\s*(as|successfully)/i,
+      /successfully\s*(authenticat|logged|signed|connect)/i,
+      /what can i help/i,
+      /how can i help/i,
+    ];
+    const authDone = authSuccessIndicators.some(r => r.test(fullText));
+    if (authDone && !checkCliNeedsSetup(session)) {
+      console.log(`[ChatAuth] ${session} auth complete`);
+      syncAuthToRealHome(session, threadId);
+      if (!proc.killed) {
+        try { process.kill(-proc.pid!, 'SIGTERM'); } catch {
+          try { proc.kill('SIGTERM'); } catch {}
+        }
+      }
+      clearTimeout(timeoutHandle);
+      chatAuthSessions.delete(ws);
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: `${session} is now authenticated and ready to use!`,
+        threadId,
+        timestamp: Date.now(),
+      }));
+      return;
+    }
+
+    // Auth URL found — surface to user
+    if (parsed.urls.length > 0 && !authUrlSent) {
+      authUrlSent = true;
+      const authUrl = parsed.urls[0];
+      lastFlush = now;
+      sessionState.awaitingResponse = true;
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: `To authenticate **${session}**, open this URL in your browser:\n\n${authUrl}\n\nThen paste the code you receive here. Type **cancel** to abort.`,
+        threadId,
+        timestamp: Date.now(),
+      }));
+      return;
+    }
+
+    // Input prompt (auth code entry) — already covered by URL message above
+    if (parsed.inputPrompt && !authUrlSent) {
+      lastFlush = now;
+      sessionState.awaitingResponse = true;
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: `Paste the authentication code here. Type **cancel** to abort.`,
+        threadId,
+        timestamp: Date.now(),
+      }));
+      return;
+    }
+
+    lastFlush = now;
+  }
+
+  function onData(data: Buffer) {
+    buffer += data.toString();
+    if (buffer.length > MAX_BUFFER_SIZE) {
+      buffer = buffer.slice(-MAX_BUFFER_SIZE);
+    }
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(flushBuffer, DEBOUNCE_MS);
+  }
+
+  proc.stdout?.on('data', onData);
+  proc.stderr?.on('data', onData);
+
+  proc.on('close', () => {
+    clearTimeout(timeoutHandle);
+    if (debounceTimer) { clearTimeout(debounceTimer); flushBuffer(); }
+    chatAuthSessions.delete(ws);
+
+    if (!checkCliNeedsSetup(session)) {
+      syncAuthToRealHome(session, threadId);
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: `${session} is now authenticated and ready to use!`,
+        threadId,
+        timestamp: Date.now(),
+      }));
+    }
+  });
+
+  proc.on('error', (err) => {
+    clearTimeout(timeoutHandle);
+    chatAuthSessions.delete(ws);
+    if (err.message.includes('ENOENT')) {
+      ws.send(JSON.stringify({ type: 'output', content: `${session} is still installing. Try again in a moment.`, threadId, timestamp: Date.now() }));
+    } else {
+      ws.send(JSON.stringify({ type: 'output', content: `${session} setup error: ${err.message}`, threadId, timestamp: Date.now() }));
+    }
+  });
+}
+
+/**
+ * Check if there's an active in-chat auth session for a WebSocket client.
+ */
+export function hasCliAuthInChat(ws: WsClient): boolean {
+  return chatAuthSessions.has(ws);
+}
+
+/**
+ * Route user's message to the active in-chat auth PTY process.
+ */
+export function respondToCliAuthInChat(ws: WsClient, message: string): void {
+  const state = chatAuthSessions.get(ws);
+  if (!state || !state.proc || state.proc.killed) {
+    ws.send(JSON.stringify({ type: 'output', content: 'No active authentication session.', threadId: state?.threadId, timestamp: Date.now() }));
+    return;
+  }
+
+  // Reset timeout on user activity
+  clearTimeout(state.timeout);
+  state.timeout = setTimeout(() => {
+    if (!state.proc.killed) {
+      try { process.kill(-state.proc.pid!, 'SIGTERM'); } catch {
+        try { state.proc.kill('SIGTERM'); } catch {}
+      }
+      ws.send(JSON.stringify({ type: 'output', content: `${state.session} setup timed out.`, threadId: state.threadId, timestamp: Date.now() }));
+    }
+    chatAuthSessions.delete(ws);
+  }, INTERACTIVE_TIMEOUT_MS);
+
+  // Write the auth code to PTY stdin
+  const cleanMessage = message.trim();
+  state.proc.stdin?.write(cleanMessage);
+  setTimeout(() => state.proc.stdin?.write('\r'), 200);
+}
+
+/**
+ * Cancel an in-chat auth session. Kills PTY and cleans up.
+ */
+export function cancelCliAuthInChat(ws: WsClient): void {
+  const state = chatAuthSessions.get(ws);
+  if (state) {
+    clearTimeout(state.timeout);
+    if (!state.proc.killed) {
+      try { process.kill(-state.proc.pid!, 'SIGTERM'); } catch {
+        try { state.proc.kill('SIGTERM'); } catch {}
+      }
+    }
+    chatAuthSessions.delete(ws);
+    console.log(`[ChatAuth] Cancelled ${state.session} auth for ws`);
+  }
+}

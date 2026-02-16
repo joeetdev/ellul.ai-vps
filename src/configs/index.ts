@@ -8,3 +8,4 @@ export * from "./system";
 export * from "./terminal";
 export * from "./docs";
 export * from "./ai";
+export * from "./openclaw";

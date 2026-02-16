@@ -124,7 +124,8 @@ ${bundledCode}
 export function getSovereignShieldService(): string {
   return `[Unit]
 Description=ellul.ai Sovereign Shield (Passkey Auth)
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
