@@ -39,6 +39,8 @@ import {
   CONTEXT_CACHE_MS,
   ELLULAI_MODELS,
   DEV_DOMAIN,
+  PROGRESS_INTERVAL_MS,
+  STALE_POLL_THRESHOLD,
   type SessionType,
 } from './config';
 import { validateAgentToken, extractAgentToken } from './auth';
@@ -131,6 +133,10 @@ interface ConnectionState {
   claudeActiveThreads: Set<string>;
   codexActiveThreads: Set<string>;
   geminiActiveThreads: Set<string>;
+  // Track threads with in-flight OpenClaw requests (for cleanup on disconnect).
+  // When the WebSocket closes, we cancel these to prevent zombie requests
+  // from clogging OpenClaw's internal lane queue.
+  inflightThreads: Set<string>;
 }
 
 // Context cache
@@ -175,74 +181,85 @@ Type below to get started. For example:
 }
 
 /**
- * Condense verbose AI responses for non-tool models.
+ * Detect if a paragraph is model narration (internal monologue about tool calls)
+ * vs user-facing content (the actual response).
  *
- * Good models use the coding-agent tool → produce brief responses naturally.
- * Non-tool models narrate every step as text → wall of text.
+ * Narration = model describing its process ("Let me check...", "I can see the file...")
+ * Content   = model communicating with the user ("Hey!", "What would you like?")
  *
- * This function is the safety net: it detects verbose narration and extracts
- * just the outcome. Applied post-stream so it doesn't affect tool-using models.
+ * Used by both the streaming filter (real-time) and condense (post-stream safety net).
+ */
+function isNarrationParagraph(text: string): boolean {
+  const t = text.trim();
+  if (!t) return true;
+
+  // Short fragments from tool output leaks (but keep questions, greetings, and affirmations)
+  if (t.length < 15 && !t.includes('?') && !/^(hey|hi|hello|welcome|on it|got it|sure|working on it)\b/i.test(t)) return true;
+
+  // "Let me [verb]..." — announcing an action
+  if (/^Let me\b/i.test(t)) return true;
+
+  // "I'll / I will / I'm going to [verb]"
+  if (/^I('ll| will| am going to)\b/i.test(t)) return true;
+
+  // "Now/First/Next, let me..." / "Now I'll..."
+  if (/^(Now|First|Next|Then)[, ]+(?:let me|I'll|I will)\b/i.test(t)) return true;
+
+  // "[Exclamation]! I can see..." / "[Exclamation], let me..."
+  if (/^(Good|Perfect|Great|Excellent|OK|Alright|Right)[!.,]\s*(I can see|I see|Let me|I'll|Now|It looks|That)\b/i.test(t)) return true;
+
+  // Lines ending with ":" — about to show tool output (not markdown headers or questions)
+  if (t.endsWith(':') && t.length < 150 && !t.startsWith('#') && !t.includes('?')) return true;
+
+  // "I see/found/notice [technical thing]" — reporting file/project observations
+  if (/^I (see|found|notice|can see|checked|read)\b/i.test(t) &&
+      /\b(file|director|workspace|project|config|json|package|module|code|setup|structure|bootstrap)\b/i.test(t) &&
+      !t.includes('?') && t.length < 200) return true;
+
+  // Progressive tense action descriptions ("Checking...", "Reading...", "Installing...")
+  if (/^(Checking|Reading|Examining|Inspecting|Reviewing|Analyzing|Scanning|Browsing|Loading|Running|Executing|Installing|Setting up|Creating|Writing|Saving|Updating|Modifying|Looking at)\b/i.test(t) &&
+      t.length < 200 && !t.includes('?')) return true;
+
+  return false;
+}
+
+/**
+ * Post-stream safety net: strip narration from verbose responses.
+ *
+ * The streaming filter handles narration in real-time, but text can arrive
+ * without paragraph breaks (mushed together). This catches what the filter misses.
+ *
+ * Strategy: classify each paragraph as narration or content, keep only content.
  */
 function condenseVerboseResponse(text: string): string | null {
-  // Short responses don't need condensing
-  if (text.length < 400) return null;
+  // Short responses are fine as-is
+  if (text.length < 300) return null;
 
-  const lines = text.split('\n').filter(l => l.trim());
-  if (lines.length < 6) return null;
-
-  // Score verbose signals — each pattern adds weight
-  let score = 0;
-  for (const line of lines) {
-    if (/^\s*\d+[\.\)]\s/.test(line)) score += 2;       // numbered steps
-    if (/^\s*[-*•]\s/.test(line)) score += 1;            // bullet points
-    if (/^\s*```/.test(line)) score += 2;                 // code fences
-    if (/\b(First[, ]I|Then I|Next[, ]I|Now[, ]I|I'll now|Let me |I've also|I also |I then |After that|Finally[, ]I|I went ahead|I proceeded|I started by|I checked|I created|I installed|I set up|I configured|I added|I updated|I modified|Here's what|Here's a summary|Here are the|Let me walk|I ran |I opened|I wrote|I built|I generated|I launched|I initialized)/i.test(line)) score += 2; // narration
-  }
-
-  // Not verbose — good model gave a clean response
-  if (score < 4) return null;
-
-  // Extract the meaningful outcome from the verbose mess
   const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
-  const urlPattern = /https?:\/\/\S+/;
-  const outcomePattern = /\b(running|live|access|preview|visit|available|ready|done|complete|success|deployed|started|created|listening|served|built)\b/i;
+  if (paragraphs.length < 2) return null;
 
-  // Scan paragraphs bottom-up for the outcome (models usually end with it)
-  for (let i = paragraphs.length - 1; i >= 0; i--) {
-    const p = paragraphs[i]!.trim();
+  // Classify each paragraph
+  const content: string[] = [];
+  let narrationCount = 0;
 
-    // Skip short sign-offs ("Let me know if you need anything!")
-    if (p.length < 30 && !urlPattern.test(p)) continue;
-    // Skip code blocks
-    if (p.startsWith('```')) continue;
-    // Skip bullet/step lists
-    if (/^\s*[\d\-*•]/.test(p)) continue;
-
-    if (outcomePattern.test(p) || urlPattern.test(p)) {
-      // Strip filler prefixes
-      const cleaned = p.replace(/^(So[, ]|In summary[,: ]+|To summarize[,: ]+|In short[,: ]+|Overall[,: ]+|That's it[.!] ?)/i, '').trim();
-      // Cap at ~2 sentences max
-      const sentences = cleaned.match(/[^.!?]+[.!?]+/g);
-      if (sentences && sentences.length > 2) {
-        return sentences.slice(0, 2).join('').trim();
-      }
-      return cleaned;
+  for (const p of paragraphs) {
+    if (isNarrationParagraph(p.trim())) {
+      narrationCount++;
+    } else {
+      content.push(p.trim());
     }
   }
 
-  // No outcome paragraph found — take the last non-list, non-code paragraph
-  for (let i = paragraphs.length - 1; i >= 0; i--) {
-    const p = paragraphs[i]!.trim();
-    if (p.length > 30 && !p.startsWith('```') && !/^\s*[\d\-*•]/.test(p)) {
-      const sentences = p.match(/[^.!?]+[.!?]+/g);
-      if (sentences && sentences.length > 2) {
-        return sentences.slice(0, 2).join('').trim();
-      }
-      return p;
-    }
+  // If little narration, the response is already clean — don't touch it
+  if (narrationCount < 2) return null;
+
+  // Return only content paragraphs (the actual user-facing response)
+  if (content.length > 0) {
+    return content.join('\n\n');
   }
 
-  return null;
+  // All narration — take the last paragraph as a fallback
+  return paragraphs[paragraphs.length - 1]?.trim() || null;
 }
 
 // Create HTTP server with health endpoint
@@ -323,6 +340,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     claudeActiveThreads: new Set(),
     codexActiveThreads: new Set(),
     geminiActiveThreads: new Set(),
+    inflightThreads: new Set(),
   };
 
   console.log('[Bridge] New connection (authenticated), project:', state.currentProject);
@@ -515,6 +533,16 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         return;
       }
 
+      // In-chat CLI auth option selection (from cli_prompt sent during chat auth flow)
+      if (msgType === 'cli_auth_response' && msg.value !== undefined) {
+        respondToCliAuthInChat(
+          ws,
+          msg.value as string,
+          (msg.selectionType as 'number' | 'arrow') || 'number',
+        );
+        return;
+      }
+
       // ============ Command Execution ============
       if (msgType === 'command' && msg.content) {
         const userMessage = (msg.content as string).trim();
@@ -581,6 +609,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           }
         };
 
+        // Declared outside try so finally can clean it up
+        let progressInterval: ReturnType<typeof setInterval> | null = null;
+
         try {
           const project = (msg.project as string) || commandProject;
 
@@ -617,8 +648,47 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           // Auth: user's own API keys via `claude login` etc. — no extra token cost.
           const threadModel = commandThreadId ? getThread(commandThreadId)?.lastModel : null;
 
-          // Accumulate streamed text so each 'output' message contains the full response so far
-          let accumulatedText = '';
+          // Streaming narration filter:
+          // rawText    = everything from OpenClaw (for SETUP_CLI detection + fallback)
+          // displayText = filtered text shown to user (narration stripped)
+          // paraBuffer  = incomplete paragraph waiting for \n\n boundary
+          let rawText = '';
+          let displayText = '';
+          let paraBuffer = '';
+          let narrationFilterOn = true;   // Active until first non-narration paragraph
+          let firstParaSeen = false;
+
+          // Relay agent UX: synthetic initial message + progress timer + stale detection
+          // Guarantees user sees feedback even when model text is all narration.
+          ws.send(JSON.stringify({ type: 'output', content: 'Working on your request...', threadId: commandThreadId, timestamp: Date.now() }));
+
+          let stalePollCount = 0;
+          let lastPollOutput = '';
+          let staleWarned = false;
+
+          const PROGRESS_MESSAGES = [
+            'Still working on it...',
+            'The coding tool is running...',
+            'Still processing — this may take a minute...',
+          ];
+          let progressIdx = 0;
+
+          progressInterval = setInterval(() => {
+            // Only send progress if user hasn't seen any real output yet
+            if (!displayText.trim()) {
+              const msg = PROGRESS_MESSAGES[Math.min(progressIdx, PROGRESS_MESSAGES.length - 1)];
+              progressIdx++;
+              try {
+                ws.send(JSON.stringify({ type: 'output', content: msg, threadId: commandThreadId, timestamp: Date.now() }));
+              } catch {}
+            }
+          }, PROGRESS_INTERVAL_MS);
+
+          // Track in-flight request so we can cancel it if the WebSocket closes.
+          // Only track real thread IDs — ephemeral ones are one-off and don't clog the queue.
+          if (commandThreadId) {
+            state.inflightThreads.add(commandThreadId);
+          }
 
           const response = await sendToOpenClaw(
             commandThreadId || `ephemeral-${Date.now()}`,
@@ -628,17 +698,57 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               switch (chunk.type) {
                 case 'text':
                   if (chunk.content) {
-                    accumulatedText += chunk.content;
+                    rawText += chunk.content;
 
-                    // Dragon #1: Check accumulated text for CLI setup trigger (handles split chunks)
-                    const setupMatch = accumulatedText.match(/\[SETUP_CLI:(\w+)\]/);
+                    // Dragon #1: Check raw text for CLI setup trigger (handles split chunks)
+                    const setupMatch = rawText.match(/\[SETUP_CLI:(\w+)\]/);
                     if (setupMatch?.[1]) {
                       const cliSession = setupMatch[1];
-                      accumulatedText = accumulatedText.replace(/\[SETUP_CLI:\w+\]/, '').trim();
+                      rawText = rawText.replace(/\[SETUP_CLI:\w+\]/, '').trim();
+                      displayText = displayText.replace(/\[SETUP_CLI:\w+\]/, '').trim();
                       startCliAuthInChat(cliSession, ws, commandThreadId);
                     }
 
-                    ws.send(JSON.stringify({ type: 'output', content: accumulatedText, threadId: commandThreadId, timestamp: Date.now() }));
+                    // Fast path: filter already disabled (clean model), stream directly
+                    if (!narrationFilterOn) {
+                      displayText += chunk.content;
+                      ws.send(JSON.stringify({ type: 'output', content: displayText, threadId: commandThreadId, timestamp: Date.now() }));
+                      break;
+                    }
+
+                    // Buffer text and process complete paragraphs (split on \n\n)
+                    paraBuffer += chunk.content;
+
+                    while (paraBuffer.includes('\n\n')) {
+                      const idx = paraBuffer.indexOf('\n\n');
+                      const para = paraBuffer.substring(0, idx).trim();
+                      paraBuffer = paraBuffer.substring(idx + 2);
+
+                      if (!para) continue;
+
+                      // First paragraph decides if we need filtering at all
+                      if (!firstParaSeen) {
+                        firstParaSeen = true;
+                        if (!isNarrationParagraph(para)) {
+                          // Clean model — disable filter, send everything accumulated so far
+                          narrationFilterOn = false;
+                          displayText = rawText;
+                          ws.send(JSON.stringify({ type: 'output', content: displayText, threadId: commandThreadId, timestamp: Date.now() }));
+                          break;
+                        }
+                      }
+
+                      if (isNarrationParagraph(para)) {
+                        // Route narration to thinking steps (visible as collapsible progress)
+                        if (commandThreadId) {
+                          addThinkingStep(commandThreadId, para.substring(0, 100));
+                        }
+                      } else {
+                        // Actual content — stream to chat
+                        displayText += (displayText ? '\n\n' : '') + para;
+                        ws.send(JSON.stringify({ type: 'output', content: displayText, threadId: commandThreadId, timestamp: Date.now() }));
+                      }
+                    }
                   }
                   break;
                 case 'tool_use':
@@ -649,6 +759,24 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
                 case 'tool_result':
                   if (commandThreadId) {
                     addThinkingStep(commandThreadId, `${chunk.tool}: ${(chunk.output || '').substring(0, 200)}`);
+
+                    // Stale-activity detection: track consecutive empty/identical process poll results
+                    if (chunk.tool === 'process') {
+                      const pollOutput = (chunk.output || '').trim();
+                      if (!pollOutput || pollOutput === '(no new output)' || pollOutput.includes('(no new output)') || pollOutput === lastPollOutput) {
+                        stalePollCount++;
+                        if (stalePollCount >= STALE_POLL_THRESHOLD && !staleWarned) {
+                          staleWarned = true;
+                          const staleMsg = 'The coding tool is still running but hasn\'t produced output in a while. It may be working on something large — hang tight.';
+                          try {
+                            ws.send(JSON.stringify({ type: 'output', content: staleMsg, threadId: commandThreadId, timestamp: Date.now() }));
+                          } catch {}
+                        }
+                      } else {
+                        stalePollCount = 0;
+                      }
+                      lastPollOutput = pollOutput;
+                    }
                   }
                   break;
                 case 'file_edit':
@@ -673,17 +801,39 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
           // sendToOpenClaw ALWAYS returns a response (never throws).
           // On error, response.text contains a user-friendly error message.
-          let output = response.text.trim() || 'Something went wrong. Please try again.';
 
-          // Post-process: condense verbose narration into brief summary.
-          // Free models can't use tools, so they narrate every step as text.
-          // This replaces the wall-of-text with just the outcome summary.
+          // Flush remaining paragraph buffer from the streaming narration filter
+          if (narrationFilterOn && paraBuffer.trim()) {
+            const remaining = paraBuffer.trim();
+            if (isNarrationParagraph(remaining)) {
+              if (commandThreadId) {
+                addThinkingStep(commandThreadId, remaining.substring(0, 100));
+              }
+            } else {
+              displayText += (displayText ? '\n\n' : '') + remaining;
+            }
+          }
+
+          // Build final output:
+          // 1. Use filtered displayText if we have it
+          // 2. Otherwise condense the raw response (all text was narration)
+          // 3. Last resort: use raw response as-is
+          let output: string;
+          if (displayText.trim()) {
+            output = displayText.trim();
+          } else {
+            const raw = (response.text || '').replace(/\[SETUP_CLI:\w+\]/g, '').trim();
+            output = condenseVerboseResponse(raw) || raw || 'Something went wrong. Please try again.';
+          }
+
+          // Safety net: condense if still verbose after streaming filter
           const condensed = condenseVerboseResponse(output);
           if (condensed) {
             output = condensed;
-            // Send final output event with condensed text (replaces verbose version in UI)
-            ws.send(JSON.stringify({ type: 'output', content: condensed, threadId: commandThreadId, timestamp: Date.now() }));
           }
+
+          // Send final cleaned output (replaces streamed text in UI)
+          ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
 
           // Mark thread context as active for this session
           if (commandThreadId) {
@@ -709,6 +859,17 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             // WebSocket already closed — nothing we can do
           }
         } finally {
+          // Clean up progress timer
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            progressInterval = null;
+          }
+
+          // Remove from inflight tracking (request complete or failed)
+          if (commandThreadId) {
+            state.inflightThreads.delete(commandThreadId);
+          }
+
           // ALWAYS end processing — this stops the thinking spinner on the frontend.
           // Without this, the UI hangs in "thinking" state forever.
           if (commandThreadId) {
@@ -893,6 +1054,18 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     killInteractiveSession(ws);
     cancelCliAuthInChat(ws);
     unsubscribeAllProcessing(ws);
+
+    // Cancel any in-flight OpenClaw requests for this connection.
+    // Without this, disconnected clients leave zombie requests in OpenClaw's lane queue,
+    // blocking subsequent requests for the same thread/agent.
+    if (state.inflightThreads.size > 0) {
+      console.log(`[Bridge] Cancelling ${state.inflightThreads.size} in-flight request(s) on disconnect`);
+      for (const threadId of state.inflightThreads) {
+        closeOpenClawConnection(threadId);
+      }
+      state.inflightThreads.clear();
+    }
+
     console.log('[Bridge] Connection closed');
   });
 

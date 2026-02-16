@@ -1,26 +1,20 @@
 /**
  * AI Model Waterfall Configuration
  *
- * Sophisticated "Waterfall Fallback" strategy for high-reliability AI.
- * Aggressively hunts for free compute before falling back to paid.
+ * Free models are auto-discovered from OpenCode Zen's /models endpoint
+ * (in ai-proxy.ts). This file only defines the paid safety net.
  *
- * Uses only OpenAI-compatible /chat/completions endpoints.
- *
- * The Logic Flow (free models tried first, paid as safety net):
- *   1. MiniMax M2.5 Free          - Strong general purpose (Free)
- *   2. Big Pickle (big-pickle)    - General purpose (Free)
- *   3. GPT 5 Nano (gpt-5-nano)   - Lightweight GPT (Free)
- *   4. DeepSeek V3                - Paid safety net (~$0.30/1M)
- *
- * Free model list synced from: https://opencode.ai/docs/zen/
+ * Architecture:
+ *   1. [Auto-discovered free models from Zen — refreshed every 30 min]
+ *   2. DeepSeek V3 — paid safety net (~$0.30/1M)
  *
  * API Endpoints:
- *   - OpenCode: https://opencode.ai/zen/v1/chat/completions
+ *   - OpenCode Zen: https://opencode.ai/zen/v1/chat/completions
  *   - DeepSeek: https://api.deepseek.com/v1/chat/completions
  *
  * Required Environment Variables:
- *   - OPENCODE_API_KEY: For free tier models (1-3)
- *   - DEEPSEEK_API_KEY: For paid fallback (4)
+ *   - OPENCODE_API_KEY: For Zen free models
+ *   - DEEPSEEK_API_KEY: For paid fallback
  */
 
 export interface WaterfallModelConfig {
@@ -34,42 +28,10 @@ export interface WaterfallModelConfig {
 }
 
 /**
- * THE WATERFALL: Order matters! Top is tried first.
- * Only coding-capable models with OpenAI-compatible /chat/completions endpoint.
- *
- * OpenCode API: https://opencode.ai/zen/v1/chat/completions
- * DeepSeek API: https://api.deepseek.com/v1/chat/completions
+ * THE WATERFALL: Paid safety net only.
+ * Free models are auto-discovered from Zen in ai-proxy.ts.
  */
 export const WATERFALL_MODELS: WaterfallModelConfig[] = [
-  // === FREE TIER (OpenCode Zen) - synced from https://opencode.ai/docs/zen/ ===
-  {
-    id: "free-minimax",
-    name: "MiniMax M2.5",
-    provider: "opencode",
-    modelId: "minimax-m2.5-free",
-    baseUrl: "https://opencode.ai/zen/v1",
-    isPaid: false,
-    description: "Free - Strong general purpose",
-  },
-  {
-    id: "free-pickle",
-    name: "Big Pickle",
-    provider: "opencode",
-    modelId: "big-pickle",
-    baseUrl: "https://opencode.ai/zen/v1",
-    isPaid: false,
-    description: "Free - General purpose",
-  },
-  {
-    id: "free-gpt-nano",
-    name: "GPT 5 Nano",
-    provider: "opencode",
-    modelId: "gpt-5-nano",
-    baseUrl: "https://opencode.ai/zen/v1",
-    isPaid: false,
-    description: "Free - Lightweight GPT",
-  },
-  // === PAID SAFETY NET (DeepSeek) - Last resort ===
   {
     id: "paid-deepseek",
     name: "DeepSeek V3",

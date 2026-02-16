@@ -11,6 +11,7 @@
 import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { REQUEST_TIMEOUT_MS } from "../config";
 
 const OPENCLAW_PORT = 18790;
 const OPENCLAW_HTTP_URL = `http://127.0.0.1:${OPENCLAW_PORT}`;
@@ -154,6 +155,10 @@ function recordConnectivityFailure(): void {
 
 /** Check if an error is a true connectivity issue (vs model/response quality) */
 function isConnectivityError(err: Error): boolean {
+  // AbortError is intentional (user sent new message or request timed out) — NOT a connectivity issue.
+  // Counting aborts as failures was causing the circuit breaker to trip on normal usage.
+  if (err.name === "AbortError") return false;
+
   const msg = err.message.toLowerCase();
   return (
     msg.includes("econnrefused") ||
@@ -163,8 +168,7 @@ function isConnectivityError(err: Error): boolean {
     msg.includes("fetch failed") ||
     msg.includes("no response body") ||
     msg.includes("socket hang up") ||
-    msg.includes("network") ||
-    err.name === "AbortError"
+    msg.includes("network")
   );
 }
 
@@ -214,6 +218,17 @@ export async function sendToOpenClaw(
 
   const controller = new AbortController();
   activeRequests.set(threadId, controller);
+
+  // Auto-abort after REQUEST_TIMEOUT_MS to prevent forever-hung requests
+  // from clogging OpenClaw's internal lane queue.
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    if (!controller.signal.aborted) {
+      timedOut = true;
+      console.log(`[OpenClaw] Request timeout for thread ${threadId.substring(0, 8)} after ${REQUEST_TIMEOUT_MS / 1000}s`);
+      controller.abort();
+    }
+  }, REQUEST_TIMEOUT_MS);
 
   const token = getGatewayToken();
   const model = project ? `openclaw:dev-${project}` : "openclaw";
@@ -324,6 +339,14 @@ export async function sendToOpenClaw(
                 if (finishReason === "stop") {
                   onChunk({ type: "status", status: "idle" });
                 }
+
+                // OpenClaw terminates requests when the lane is overloaded
+                // (stale requests from rapid user messages). Treat as completion
+                // with whatever text was accumulated so far.
+                if (finishReason === "terminated") {
+                  console.warn(`[OpenClaw] Request terminated by gateway for thread ${threadId.substring(0, 8)} (lane overloaded)`);
+                  onChunk({ type: "status", status: "idle" });
+                }
               } catch {
                 // Malformed SSE data — skip
               }
@@ -366,11 +389,15 @@ export async function sendToOpenClaw(
     }
 
     if (lastError?.name === "AbortError") {
-      return { text: "", tools: [], reasoning: [] }; // cancelled — no message needed
+      if (timedOut) {
+        return errorResponse("The request timed out. Please try again with a simpler message.");
+      }
+      return { text: "", tools: [], reasoning: [] }; // intentional cancel — no message needed
     }
 
     return errorResponse("The AI agent is not responding right now. Please try again in a moment.");
   } finally {
+    clearTimeout(timeoutId);
     activeRequests.delete(threadId);
   }
 }

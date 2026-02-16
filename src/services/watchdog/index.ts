@@ -19,7 +19,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/ellulai/src/services/watchdog
-ExecStart=/usr/bin/node /opt/ellulai/src/services/watchdog/server.js
+ExecStart=/usr/bin/node /opt/ellulai/src/services/watchdog/server.cjs
 Restart=always
 RestartSec=5
 User=root

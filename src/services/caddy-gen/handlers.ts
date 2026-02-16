@@ -279,8 +279,12 @@ function mainHandler(): Lines {
   lines.push(...indent([`import /etc/caddy/agents.d/*.caddy`], 2));
   lines.push("");
 
+  // Catch-all: auth gate + static landing page.
+  // web_locked: sovereign-shield redirects to passkey login
+  // standard: sovereign-shield allows navigation through (landing page is public)
   lines.push(
     ...indent([`handle {`], 2),
+    ...forwardAuthBlock(3),
     ...indent([`root * /var/www/ellulai`], 3),
     ...indent([`rewrite * /index.html`], 3),
     ...indent([`file_server`], 3),

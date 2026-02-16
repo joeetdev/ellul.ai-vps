@@ -38,6 +38,10 @@ export const MAX_BUFFER_SIZE = 64 * 1024; // 64KB buffer limit
 export const DEBOUNCE_MS = 1200; // Wait for TUI to finish writing full frames
 export const CONTEXT_CACHE_MS = 30000; // Refresh context every 30 seconds
 
+// Relay agent UX — progress updates & stale detection
+export const PROGRESS_INTERVAL_MS = 25000; // 25s between progress updates when user has no output
+export const STALE_POLL_THRESHOLD = 10; // consecutive empty polls before warning user
+
 // CLI environment variable mapping
 export const CLI_KEY_MAP: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',

@@ -9,8 +9,9 @@
 import { execFile } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
-import { readdirSync, statSync, existsSync, writeFileSync, mkdirSync } from 'fs';
+import { readdirSync, statSync, existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { PROJECTS_DIR, DEV_DOMAIN } from '../config';
+import { getOpenclawIdentity, getOpenclawUser } from '../../../../configs/openclaw';
 
 const OPENCLAW_BIN_PATHS = [
   join(homedir(), '.openclaw', 'bin', 'openclaw'),
@@ -60,6 +61,49 @@ export function getProjectAgentId(projectName: string): string {
   return `dev-${projectName}`;
 }
 
+// File tools the model MUST NOT have — forces it to use coding-agent (bash+process) instead.
+// NOTE: Do NOT deny 'exec' — 'bash' is an alias for 'exec' in OpenClaw's tool system,
+// and the coding-agent skill needs bash (pty:true) to launch CLI tools.
+const DENIED_TOOLS = ['write', 'read', 'edit', 'apply_patch'];
+
+/**
+ * Deny native file/exec tools on an agent so it can only use bash+process.
+ * Uses `openclaw config` to find the agent's index and set tools.sandbox.tools.deny.
+ */
+async function setAgentToolDeny(agentId: string): Promise<void> {
+  try {
+    // Find the agent's index in the config list
+    const output = await runOpenclaw(['config', 'get', 'agents.list']);
+    const list = JSON.parse(output) as { id: string }[];
+    const idx = list.findIndex((a) => a.id === agentId);
+    if (idx === -1) {
+      console.warn(`[AgentService] Agent "${agentId}" not found in config, skipping tool deny`);
+      return;
+    }
+
+    // Check if deny is already set
+    try {
+      const existing = await runOpenclaw(['config', 'get', `agents.list[${idx}].tools.sandbox.tools.deny`]);
+      const parsed = JSON.parse(existing) as string[];
+      if (Array.isArray(parsed) && DENIED_TOOLS.every((t) => parsed.includes(t))) {
+        return; // Already configured
+      }
+    } catch {
+      // Path doesn't exist yet — needs to be set
+    }
+
+    await runOpenclaw([
+      'config', 'set',
+      `agents.list[${idx}].tools.sandbox.tools.deny`,
+      JSON.stringify(DENIED_TOOLS),
+      '--json',
+    ]);
+    console.log(`[AgentService] Set tool deny for "${agentId}": ${DENIED_TOOLS.join(', ')}`);
+  } catch (err) {
+    console.warn(`[AgentService] Failed to set tool deny for "${agentId}":`, (err as Error).message);
+  }
+}
+
 /**
  * List all OpenClaw agents.
  */
@@ -87,9 +131,12 @@ export async function listAgents(): Promise<string[]> {
 
 /**
  * Initialize OpenClaw workspace files for a project directory.
- * Writes dev-focused SOUL.md and AGENTS.md so the agent boots as a
- * development assistant instead of running the default bootstrap flow
- * ("Hey! Who am I?"). Files are only written if they don't already exist.
+ * Writes relay agent config (SOUL.md, AGENTS.md) and identity files
+ * (IDENTITY.md, USER.md) so the agent boots as a relay instead of
+ * running OpenClaw's default bootstrap flow ("Hey! Who am I?").
+ *
+ * SOUL.md + AGENTS.md are always kept in sync (platform-managed).
+ * IDENTITY.md + USER.md are write-once (signal "already bootstrapped").
  */
 function initWorkspaceFiles(workspace: string, projectName: string): void {
   try {
@@ -98,68 +145,101 @@ function initWorkspaceFiles(workspace: string, projectName: string): void {
       mkdirSync(ocDir, { recursive: true });
     }
 
-    // SOUL.md — dev assistant identity (replaces default "who am I?" bootstrap)
+    // SOUL.md — relay agent identity (always overwrite to ensure relay behavior)
+    // Platform-managed: enforces relay pattern so the model delegates to CLI tools.
     const soulPath = join(workspace, 'SOUL.md');
-    if (!existsSync(soulPath)) {
-      const previewSection = DEV_DOMAIN
-        ? `\n## Dev Preview
+    const previewSection = DEV_DOMAIN
+      ? `\n## Dev Preview
 Apps listening on port 3000 are served at: https://${DEV_DOMAIN}
 Configure dev servers to bind \`0.0.0.0:3000\` internally, but always tell the user their preview is at the URL above.
 After starting a dev server, verify with \`curl localhost:3000\` then share the preview URL.\n`
-        : '';
+      : '';
 
-      writeFileSync(soulPath, `# SOUL.md — Relay Agent for ${projectName}
+    const workspace_path = workspace;
 
-You are a RELAY agent for the **${projectName}** project on **ellul.ai**. You relay the user's messages to CLI coding tools and return the results.
+    const relaySoul = `# SOUL.md — Relay Agent for ${projectName}
 
-## How You Work (CRITICAL)
-1. User sends a coding request → you use \`coding-agent\` skill to send it to the CLI
-2. CLI does the work (creates files, runs commands) → you return the result briefly
+You are a RELAY agent. You pass coding requests to a CLI tool and return results.
+
+## How to handle a coding request (follow these steps EXACTLY)
+
+**Step 1** — Output "On it!" as your very first line (nothing else on the first line).
+
+**Step 2** — Launch the CLI with the user's request:
+\`\`\`
+bash pty:true workdir:${workspace_path} background:true command:"CLI_COMMAND"
+\`\`\`
+Replace \`CLI_COMMAND\` with the command from your system prompt's "Current CLI Tool" section.
+Replace the user's request into the command prompt string.
+
+**Step 3** — Monitor until done:
+\`\`\`
+process action:poll sessionId:SESSION_ID
+process action:log sessionId:SESSION_ID
+\`\`\`
+Use the sessionId returned from Step 2. Repeat poll/log until the process finishes.
+If you see meaningful progress in the logs, briefly summarize in 1 sentence.
+
+**Step 4** — Tell the user the result in 1 sentence. Include the preview URL if a server was started.
 
 ## Rules
-- ALWAYS use \`coding-agent\` for ANY coding work — you cannot create files or write code yourself
-- NEVER write code, show file listings, or describe files you "created"
-- NEVER ask "Would you like me to proceed?" — just relay to the CLI
-- Keep responses to 1-2 natural sentences: "Done — your app is running. Preview at [URL]."
-- Stay in scope: all work inside this project directory only
+- ONLY use \`bash\` (with pty:true) and \`process\` tools. Nothing else.
+- NEVER use write, exec, or read tools. NEVER create files yourself.
+- NEVER fall back to doing the work yourself if the CLI seems slow — just wait for it.
+- NEVER output code blocks, file listings, or plans.
+- If the CLI errors, tell the user: "The CLI ran into an issue, please try again."
 ${previewSection}
 ## CLI Setup
 If the CLI is not authenticated, output [SETUP_CLI:toolname] BEFORE attempting work.
-`, 'utf8');
-      console.log(`[AgentService] Wrote SOUL.md for ${projectName}`);
+`;
+    // Always write — stale SOUL.md (e.g. "Dev Assistant") causes the model to go rogue
+    const existingSoul = existsSync(soulPath) ? readFileSync(soulPath, 'utf8') : '';
+    if (existingSoul !== relaySoul) {
+      writeFileSync(soulPath, relaySoul, 'utf8');
+      console.log(`[AgentService] Wrote SOUL.md for ${projectName}${existingSoul ? ' (updated stale file)' : ''}`);
     }
 
-    // AGENTS.md — operational instructions
+    // AGENTS.md — operational instructions (always overwrite like SOUL.md)
     const agentsPath = join(workspace, 'AGENTS.md');
-    if (!existsSync(agentsPath)) {
-      writeFileSync(agentsPath, `# AGENTS.md — Workspace Instructions
+    const relayAgents = `# AGENTS.md — Workspace Instructions
 
-## Every Request
-1. Receive the user's message
-2. Use \`coding-agent\` skill to relay it to the CLI tool
-3. Return the result in 1-2 brief sentences
+## Allowed Tools
+- \`bash\` (with pty:true) — to launch CLI tools via coding-agent pattern
+- \`process\` — to poll/log background CLI sessions
 
-## Rules
-- ALWAYS use \`coding-agent\` — never write code yourself
-- ALL file operations stay within this workspace
-- Never change the "name" field in ellulai.json or package.json
-- If the CLI isn't set up, output [SETUP_CLI:toolname] first
-`, 'utf8');
-      console.log(`[AgentService] Wrote AGENTS.md for ${projectName}`);
+## Forbidden Tools
+- \`write\` — never create or edit files yourself
+- \`exec\` — never run commands directly
+- \`read\` — never read project files (the CLI tool does that)
+
+## If Something Goes Wrong
+Report the error to the user. NEVER attempt the work yourself.
+`;
+    const existingAgents = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : '';
+    if (existingAgents !== relayAgents) {
+      writeFileSync(agentsPath, relayAgents, 'utf8');
+      console.log(`[AgentService] Wrote AGENTS.md for ${projectName}${existingAgents ? ' (updated stale file)' : ''}`);
+    }
+
+    // IDENTITY.md + USER.md — signals to OpenClaw that the workspace is already
+    // bootstrapped. Without these, OpenClaw creates BOOTSTRAP.md on every wake
+    // which triggers the "Who am I?" identity discovery flow.
+    const identityPath = join(workspace, 'IDENTITY.md');
+    if (!existsSync(identityPath)) {
+      writeFileSync(identityPath, getOpenclawIdentity(), 'utf8');
+      console.log(`[AgentService] Wrote IDENTITY.md for ${projectName}`);
+    }
+
+    const userPath = join(workspace, 'USER.md');
+    if (!existsSync(userPath)) {
+      writeFileSync(userPath, getOpenclawUser(), 'utf8');
+      console.log(`[AgentService] Wrote USER.md for ${projectName}`);
     }
 
     // HEARTBEAT.md — skip heartbeat for dev agents
     const heartbeatPath = join(workspace, 'HEARTBEAT.md');
     if (!existsSync(heartbeatPath)) {
       writeFileSync(heartbeatPath, `# Keep empty to skip heartbeat checks for dev agents.\n`, 'utf8');
-    }
-
-    // Remove BOOTSTRAP.md if it exists — prevents "Who am I?" flow
-    const bootstrapPath = join(workspace, 'BOOTSTRAP.md');
-    if (existsSync(bootstrapPath)) {
-      const { unlinkSync } = require('fs');
-      unlinkSync(bootstrapPath);
-      console.log(`[AgentService] Removed BOOTSTRAP.md for ${projectName} (prevents identity bootstrap)`);
     }
   } catch (err) {
     console.warn(`[AgentService] Failed to init workspace files for ${projectName}:`, (err as Error).message);
@@ -182,7 +262,8 @@ export async function ensureProjectAgent(projectName: string): Promise<boolean> 
   // Create agent
   const workspace = join(PROJECTS_DIR, projectName);
   try {
-    // Initialize workspace files BEFORE agent creation so OpenClaw picks them up
+    // Initialize workspace files BEFORE agent creation so OpenClaw picks them up.
+    // IDENTITY.md + USER.md prevent OpenClaw from creating BOOTSTRAP.md.
     initWorkspaceFiles(workspace, projectName);
 
     console.log(`[AgentService] Creating agent "${agentId}" with workspace ${workspace}`);
@@ -193,6 +274,11 @@ export async function ensureProjectAgent(projectName: string): Promise<boolean> 
     ]);
     knownAgents.add(agentId);
     console.log(`[AgentService] Agent "${agentId}" created`);
+
+    // Deny native file/exec tools so the model MUST use coding-agent (bash+process).
+    // Without this, the model uses write/exec directly and bypasses the CLI tool.
+    await setAgentToolDeny(agentId);
+
     return true;
   } catch (err) {
     console.error(`[AgentService] Failed to create agent "${agentId}":`, (err as Error).message);
@@ -251,12 +337,15 @@ export async function reconcileAgents(): Promise<void> {
     const agentId = getProjectAgentId(project);
     const workspace = join(PROJECTS_DIR, project);
 
-    // Ensure workspace files exist (even for existing agents)
+    // Ensure workspace files are up-to-date (even for existing agents)
     initWorkspaceFiles(workspace, project);
 
     if (!agentSet.has(agentId)) {
       const ok = await ensureProjectAgent(project);
       if (ok) created++;
+    } else {
+      // Ensure tool deny is set for existing agents
+      await setAgentToolDeny(agentId);
     }
   }
 

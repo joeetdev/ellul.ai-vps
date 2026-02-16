@@ -195,6 +195,17 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
     if (tier === 'standard') {
       const jwtPayload = verifyJwtToken(c.req);
       if (!jwtPayload) {
+        // Allow browser navigation to landing page without JWT (standard tier has
+        // no VPS-side login page — the landing page is just a "privately managed" placeholder).
+        // API/XHR requests still require JWT.
+        // NOTE: Terminal/vibe/code/dev paths are handled by earlier checks and never reach here.
+        const isNav = isNavigationRequest(c);
+        if (isNav) {
+          c.header('X-Auth-User', 'anonymous');
+          c.header('X-Auth-Tier', 'standard');
+          c.header('X-Auth-Session', 'none');
+          return c.json({ authenticated: true, tier: 'standard', anonymous: true }, 200);
+        }
         return c.json({ error: 'Authentication required' }, 401);
       }
       // Set auth headers for downstream services

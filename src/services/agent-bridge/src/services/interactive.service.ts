@@ -802,14 +802,52 @@ export function startCliAuthInChat(
         return;
       }
 
-      // Auto-skip: login method selection — pick first option
-      const isLoginMethod = parsed.options.some(o => /login|auth|sign\s*in|browser/i.test(o.label));
-      if (isLoginMethod) {
-        console.log('[ChatAuth] Auto-selecting first login method');
-        proc.stdin?.write('\r');
-        lastFlush = now;
-        return;
-      }
+      // Present meaningful options to user in chat (login method, etc.)
+      // Filter noise from context lines for a clean prompt
+      const context = parsed.contextBefore
+        .filter(l =>
+          !l.match(/^(Tips for|Choose the|To change this|Script started|Script done|Let.s get started)/i) &&
+          !l.match(/Welcome to/i) &&
+          !l.match(/v\d+\.\d+\.\d+/) &&
+          !l.match(/Claude Code|Codex CLI|Gemini CLI/i) &&
+          !l.match(/^[^a-zA-Z]*$/)
+        )
+        .join('\n');
+
+      sessionState.awaitingResponse = true;
+      ws.send(JSON.stringify({
+        type: 'cli_prompt',
+        session,
+        context: context || undefined,
+        options: parsed.options,
+        selectionType: parsed.selectionType,
+        activeIndex: parsed.activeArrowIdx,
+        inChatAuth: true,
+        threadId,
+        timestamp: now,
+      }));
+      lastFlush = now;
+      return;
+    }
+
+    // Yes/No prompt — surface to user as selectable options
+    if (parsed.yesNoMatch) {
+      sessionState.awaitingResponse = true;
+      ws.send(JSON.stringify({
+        type: 'cli_prompt',
+        session,
+        context: parsed.contextBefore.join('\n') || undefined,
+        options: [
+          { number: 'y', label: 'Yes', description: '' },
+          { number: 'n', label: 'No', description: '' },
+        ],
+        selectionType: 'number',
+        inChatAuth: true,
+        threadId,
+        timestamp: now,
+      }));
+      lastFlush = now;
+      return;
     }
 
     // Auto-skip: press enter to continue (loose regex — Dragon #3)
@@ -938,9 +976,15 @@ export function hasCliAuthInChat(ws: WsClient): boolean {
 }
 
 /**
- * Route user's message to the active in-chat auth PTY process.
+ * Route user's message or option selection to the active in-chat auth PTY process.
+ *
+ * @param selectionType - 'arrow' for arrow-key menus, 'number' for numbered lists, 'text' for raw input (auth codes)
  */
-export function respondToCliAuthInChat(ws: WsClient, message: string): void {
+export function respondToCliAuthInChat(
+  ws: WsClient,
+  message: string,
+  selectionType: 'number' | 'arrow' | 'text' = 'text',
+): void {
   const state = chatAuthSessions.get(ws);
   if (!state || !state.proc || state.proc.killed) {
     ws.send(JSON.stringify({ type: 'output', content: 'No active authentication session.', threadId: state?.threadId, timestamp: Date.now() }));
@@ -959,10 +1003,34 @@ export function respondToCliAuthInChat(ws: WsClient, message: string): void {
     chatAuthSessions.delete(ws);
   }, INTERACTIVE_TIMEOUT_MS);
 
-  // Write the auth code to PTY stdin
-  const cleanMessage = message.trim();
-  state.proc.stdin?.write(cleanMessage);
-  setTimeout(() => state.proc.stdin?.write('\r'), 200);
+  state.awaitingResponse = false;
+
+  if (selectionType === 'arrow') {
+    // Arrow-key selection: navigate down to target index, then Enter
+    const targetIdx = parseInt(message, 10);
+    if (isNaN(targetIdx) || targetIdx < 1) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Invalid selection.', threadId: state.threadId, timestamp: Date.now() }));
+      return;
+    }
+    // Arrow menus start at index 0 (first item highlighted) — move down (targetIdx - 1) times
+    const moves = targetIdx - 1;
+    for (let i = 0; i < moves; i++) {
+      state.proc.stdin?.write('\x1b[B');
+    }
+    setTimeout(() => state.proc.stdin?.write('\r'), 50);
+    console.log(`[ChatAuth] Arrow selection: moved ${moves} down, pressing Enter`);
+  } else if (selectionType === 'number') {
+    // Numbered selection: type the number and Enter
+    const cleanResponse = message.trim();
+    state.proc.stdin?.write(cleanResponse);
+    setTimeout(() => state.proc.stdin?.write('\r'), 200);
+    console.log(`[ChatAuth] Number selection: ${cleanResponse}`);
+  } else {
+    // Plain text input (auth codes, etc.)
+    const cleanMessage = message.trim();
+    state.proc.stdin?.write(cleanMessage);
+    setTimeout(() => state.proc.stdin?.write('\r'), 200);
+  }
 }
 
 /**

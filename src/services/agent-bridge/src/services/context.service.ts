@@ -132,12 +132,12 @@ export function loadProjectContext(projectName: string | null): string {
   return loadAppContext(projectName);
 }
 
-// Session → CLI tool descriptions (for first-message context injection)
-const SESSION_CLI_INFO: Record<string, { cli: string; desc: string }> = {
-  claude: { cli: 'claude', desc: 'Claude Code (Anthropic)' },
-  codex: { cli: 'codex', desc: 'Codex CLI (OpenAI)' },
-  gemini: { cli: 'gemini', desc: 'Gemini CLI (Google)' },
-  opencode: { cli: 'opencode', desc: 'OpenCode' },
+// Session → CLI tool info (for system prompt injection)
+const SESSION_CLI_INFO: Record<string, { cli: string; desc: string; cmd: string }> = {
+  claude: { cli: 'claude', desc: 'Claude Code (Anthropic)', cmd: "claude 'REQUEST'" },
+  codex: { cli: 'codex', desc: 'Codex CLI (OpenAI)', cmd: "codex exec --full-auto 'REQUEST'" },
+  gemini: { cli: 'gemini', desc: 'Gemini CLI (Google)', cmd: "gemini 'REQUEST'" },
+  opencode: { cli: 'opencode', desc: 'OpenCode', cmd: "opencode run 'REQUEST'" },
 };
 
 /**
@@ -153,30 +153,40 @@ export function buildSystemPrompt(
 ): string {
   const parts: string[] = [];
 
-  // Core identity — concise but complete. No verbose examples or NEVER lists.
-  // Post-processing handles non-tool models that ignore these rules anyway.
-  parts.push(`You are a relay agent on ellul.ai (cloud dev environment). You are a MESSAGE RELAY between the user and a CLI coding tool.
-
-Use the \`coding-agent\` skill for ALL coding work — building apps, creating files, editing code, running commands. You cannot write code yourself; only the CLI tool can modify files on the server.
-
-Rules:
-- If you didn't invoke \`coding-agent\`, nothing was created — never describe files you didn't make
-- Never ask "Would you like me to proceed?" — relay to the CLI immediately
-- Never show plans, file listings, or code blocks — let the CLI do the work
-- For non-coding questions, answer directly in 1-2 sentences
-- After the CLI completes, reply with ONE sentence summarizing the outcome and the preview URL if applicable`);
-
-  // Current session — tell agent exactly which CLI tool it's running through
+  // Core identity + exact command template. The model gets a concrete, mechanical
+  // pattern to follow — no skill file reading or command construction needed.
   if (session) {
     const info = SESSION_CLI_INFO[session];
     if (info) {
       const needsSetup = session !== 'opencode' && checkCliNeedsSetup(session);
       if (needsSetup) {
-        parts.push(`## Current CLI Tool\nThis thread uses **${info.desc}** (\`${info.cli}\`), but it is **NOT SET UP** yet. Before doing any coding work, output [SETUP_CLI:${info.cli}] to start authentication. Do NOT attempt to use the CLI or write code until authentication is complete.`);
+        parts.push(`You are a relay agent on ellul.ai. This thread uses **${info.desc}** but it is NOT SET UP yet. Output [SETUP_CLI:${info.cli}] before doing any work. Do NOT attempt to write code or use any tools until authentication is complete.`);
       } else {
-        parts.push(`## Current CLI Tool\nThis thread uses **${info.desc}** (\`${info.cli}\`). Send all coding requests to this CLI via the \`coding-agent\` skill.`);
+        const projectPath = projectName ? path.join(PROJECTS_DIR, projectName) : '~/projects';
+        parts.push(`You are a relay agent on ellul.ai. When the user asks you to build or code something, do EXACTLY this:
+
+STEP 1: Output "On it!" as your very first line (nothing else on the first line).
+
+STEP 2: Launch the CLI:
+bash pty:true workdir:${projectPath} background:true command:"${info.cmd}"
+Replace REQUEST with the user's actual request.
+
+STEP 3: Monitor until done:
+process action:poll sessionId:SESSION_ID
+process action:log sessionId:SESSION_ID
+Repeat poll/log until the CLI finishes. If you see meaningful progress in the logs, briefly summarize in 1 sentence.
+
+STEP 4: Tell the user the result in 1 sentence.
+
+RULES:
+- ONLY use bash (with pty:true) and process tools. NEVER use write, exec, or read.
+- NEVER create files yourself. NEVER fall back to doing the work if the CLI is slow — wait for it.
+- NEVER output code blocks, plans, or file listings.
+- For non-coding questions, just answer directly.`);
       }
     }
+  } else {
+    parts.push(`You are a relay agent on ellul.ai. Use the coding-agent skill for all coding work. Never use write, exec, or read tools directly.`);
   }
 
   // Project workspace rules
