@@ -12,6 +12,9 @@ import { PATHS, HOME } from '../config';
 
 /**
  * Get current security tier.
+ *
+ * SECURITY: Fail-secure — checks tier file first, then marker file as fallback.
+ * Must align with sovereign-shield's getCurrentTier() logic.
  */
 export function getCurrentTier(): 'standard' | 'web_locked' {
   try {
@@ -20,9 +23,12 @@ export function getCurrentTier(): 'standard' | 'web_locked' {
       return tier;
     }
   } catch {
-    // Detect from state
-    if (fs.existsSync('/etc/ellulai/.sovereign-shield-active')) return 'web_locked';
+    // Tier file missing or unreadable — fall through to marker checks
   }
+  // Fallback: check web_locked marker (crash recovery / tier file corruption)
+  if (fs.existsSync('/etc/ellulai/.web_locked_activated')) return 'web_locked';
+  // Legacy fallback: sovereign-shield active marker
+  if (fs.existsSync('/etc/ellulai/.sovereign-shield-active')) return 'web_locked';
   return 'standard';
 }
 

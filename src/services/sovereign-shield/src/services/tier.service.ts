@@ -90,7 +90,31 @@ function computeTierFromGroundTruth(): SecurityTier {
   }
 
   // ==========================================================================
-  // SLOW PATH: No marker, check actual state
+  // CROSS-CHECK: Read the immutable tier file as a safety net.
+  // If the tier file says "web_locked" but marker is missing (crash recovery,
+  // filesystem inconsistency, chattr race), trust the tier file and restore
+  // the marker. The tier file is protected by chattr +i so it can't be
+  // tampered with via SSH.
+  // ==========================================================================
+  try {
+    const tierFileValue = fs.readFileSync(TIER_FILE, 'utf8').trim();
+    if (tierFileValue === 'web_locked') {
+      // Tier file says web_locked — restore missing marker (crash recovery)
+      try {
+        fs.writeFileSync(WEB_LOCKED_MARKER, Date.now().toString());
+        fs.chmodSync(WEB_LOCKED_MARKER, 0o400);
+        console.log('[shield] SECURITY: Tier file says web_locked, restored missing marker (crash recovery)');
+      } catch (e) {
+        console.error('[shield] SECURITY: Could not restore marker, but tier file is authoritative:', (e as Error).message);
+      }
+      return 'web_locked';
+    }
+  } catch {
+    // Tier file missing or unreadable — continue to DB check
+  }
+
+  // ==========================================================================
+  // SLOW PATH: No marker, tier file doesn't say web_locked, check actual state
   // ==========================================================================
 
   // Check for passkeys (only if no marker - new setup or never upgraded)
@@ -100,8 +124,8 @@ function computeTierFromGroundTruth(): SecurityTier {
       hasPasskey = (db.prepare('SELECT COUNT(*) as c FROM credential').get() as { c: number }).c > 0;
     }
   } catch (e) {
-    // DB error with no marker = standard (can't fail-secure without marker)
-    console.error('[shield] DB query failed, no web_locked marker - defaulting to standard');
+    // DB error with no marker and tier file not web_locked = standard
+    console.error('[shield] DB query failed, no web_locked marker or tier file - defaulting to standard');
   }
 
   if (hasPasskey) {
@@ -114,7 +138,7 @@ function computeTierFromGroundTruth(): SecurityTier {
     return 'web_locked';
   }
 
-  // No marker, no passkeys, terminal not disabled = standard
+  // No marker, tier file not web_locked, no passkeys = standard
   return 'standard';
 }
 

@@ -193,7 +193,9 @@ except Exception: print('error')
               iptables -t nat $rule 2>/dev/null || true
             done
           fi
-          runuser -l "$PS_USER" -c 'curl -fsSL https://openclaw.ai/install.sh | bash' 2>&1 | tail -5
+          # Use npm install directly — the installer script's "setup" phase tries
+          # to read /dev/tty which fails in non-interactive contexts.
+          runuser -l "$PS_USER" -c 'npm install -g openclaw@latest' 2>&1 | tail -5
           # Restore NAT rules
           if [ -n "$SAVED_NAT" ]; then
             echo "$SAVED_NAT" | while read -r rule; do
