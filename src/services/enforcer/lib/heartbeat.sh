@@ -128,6 +128,8 @@ heartbeat() {
   enforce_settings "$TERMINAL_ENABLED" "$SSH_ENABLED"
   ensure_daemon_port
   ensure_cors_headers
+  ensure_gateway_host_rewrite
+  ensure_gateway_origin
 }
 
 # Raw heartbeat with full processing - writes local status for WebSocket broadcast
@@ -177,6 +179,8 @@ heartbeat_raw() {
   enforce_settings "$TERMINAL_ENABLED" "$SSH_ENABLED"
   ensure_daemon_port
   ensure_cors_headers
+  ensure_gateway_host_rewrite
+  ensure_gateway_origin
 
   if [ "$HTTP_CODE" = "200" ]; then
     HEARTBEAT_FAILURES=0

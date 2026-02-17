@@ -176,6 +176,19 @@ function authedRoute(route: AuthedRoute): Lines {
 export function generateCaddyHandlers(scope: "ai" | "app" | "all"): string {
   const lines: Lines = [];
 
+  // Gateway Worker uses resolveOverride which changes the TLS SNI (and Host header)
+  // to the origin hostname (o-{ipTag}.{zone}). Caddy's strict SNI-Host enforcement
+  // (auto-enabled by mTLS) accepts the connection because the origin hostname is in
+  // the site block addresses, but the internal @code/@main/@dev host matchers won't
+  // match the rewritten Host. Restore the original hostname from X-Forwarded-Host
+  // (set by the Worker) so the existing host matchers work unchanged.
+  if (scope !== "all") {
+    lines.push(...indent([
+      `@has_xfh header X-Forwarded-Host *`,
+      `request_header @has_xfh Host {http.request.header.X-Forwarded-Host}`,
+    ], 1));
+  }
+
   if (scope === "ai" || scope === "all") {
     lines.push(...codeHandler());
     lines.push(...mainHandler());

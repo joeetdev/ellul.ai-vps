@@ -51,10 +51,24 @@ get_dev_command() {
   esac
 }
 
+kill_tree() {
+  local pid=$1
+  # Kill all children recursively, then the parent
+  local children=$(pgrep -P $pid 2>/dev/null)
+  for child in $children; do
+    kill_tree $child
+  done
+  kill $pid 2>/dev/null
+}
+
 port_in_use_by_other() {
   local pids=$(lsof -ti :$PORT 2>/dev/null)
+  # Get all PIDs in our process tree
+  local our_pids="$$ $DEV_PID"
+  [ -n "$DEV_PID" ] && our_pids="$our_pids $(pgrep -P $DEV_PID 2>/dev/null) $(pgrep -g $DEV_PID 2>/dev/null)"
   for pid in $pids; do
-    [ "$pid" != "$$" ] && [ "$pid" != "$DEV_PID" ] && return 0
+    echo " $our_pids " | grep -q " $pid " && continue
+    return 0
   done
   return 1
 }
@@ -65,7 +79,7 @@ CURRENT_SCRIPT=""
 
 cleanup() {
   log "Shutting down preview server..."
-  [ -n "$DEV_PID" ] && kill $DEV_PID 2>/dev/null
+  [ -n "$DEV_PID" ] && kill_tree $DEV_PID
   exit 0
 }
 trap cleanup SIGTERM SIGINT

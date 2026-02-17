@@ -143,7 +143,7 @@ Environment=NODE_ENV=production
 NoNewPrivileges=true
 ProtectSystem=strict
 PrivateTmp=true
-ReadWritePaths=/etc/ellulai /etc/caddy /home
+ReadWritePaths=/etc/ellulai /etc/caddy /home /var/log/caddy
 
 [Install]
 WantedBy=multi-user.target

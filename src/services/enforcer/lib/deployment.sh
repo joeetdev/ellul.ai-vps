@@ -2,11 +2,115 @@
 # Enforcer Deployment Functions
 # Ensures daemon API port (3006) is available in Caddyfile.
 # Ensures base CORS headers are present in Caddyfile.
+# Ensures gateway origin hostname is in Caddy site block addresses.
 #
 # Phase 4 cleanup: switch_deployment_model() was moved to the sovereign-shield
 # bridge and is no longer processed by the enforcer. Deployment model switching
 # (Cloudflare Edge / Direct Connect) is now handled via WebSocket bridge commands
 # routed through sovereign-shield (port 3005) instead of heartbeat polling.
+
+# Convert IPv4 address to hex tag (matches ipToTag() in gateway-kv.service.ts).
+# e.g. 178.156.170.66 → b29caa42
+ip_to_tag() {
+  local ip="$1"
+  if echo "$ip" | grep -q ':'; then
+    echo -n "$ip" | md5sum | cut -c1-8
+  else
+    echo "$ip" | awk -F. '{printf "%02x%02x%02x%02x", $1, $2, $3, $4}'
+  fi
+}
+
+# Ensure gateway origin hostname is in Caddy site block addresses.
+# The gateway Worker uses resolveOverride which sends SNI as o-{ipTag}.{zone}.
+# Caddy's strict SNI-Host enforcement (auto-enabled by mTLS) rejects connections
+# if the SNI doesn't match any configured site block address.
+# This adds the origin hostname so Caddy accepts the gateway Worker's connections.
+# Only applies to gateway deployment model (auto_https off + no direct connect).
+ensure_gateway_origin() {
+  local CADDYFILE="/etc/caddy/Caddyfile"
+  [ ! -f "$CADDYFILE" ] && return
+
+  # Only for gateway/cloudflare model (has auto_https off and origin certs)
+  grep -q 'auto_https off' "$CADDYFILE" 2>/dev/null || return
+  grep -q 'origin-pull-ca.pem' "$CADDYFILE" 2>/dev/null || return
+
+  local MY_IP=$(get_public_ip)
+  [ -z "$MY_IP" ] && return
+
+  local TAG=$(ip_to_tag "$MY_IP")
+  local ORIGIN_AI="o-${TAG}.ellul.ai"
+  local ORIGIN_APP="o-${TAG}.ellul.app"
+
+  # Already patched? Skip.
+  grep -q "$ORIGIN_AI" "$CADDYFILE" 2>/dev/null && return
+
+  log "GATEWAY: Adding origin hostname ${ORIGIN_AI} to Caddyfile site blocks..."
+
+  local TMPFILE
+  TMPFILE=$(mktemp)
+
+  # Add origin hostname to both site block address lines:
+  # Before: srv.ellul.ai:443, code.ellul.ai:443 {
+  # After:  srv.ellul.ai:443, code.ellul.ai:443, o-tag.ellul.ai:443 {
+  # Before: dev.ellul.app:443 {
+  # After:  dev.ellul.app:443, o-tag.ellul.app:443 {
+  sed "s/\(\.ellul\.ai:443\) {$/\1, ${ORIGIN_AI}:443 {/" "$CADDYFILE" \
+    | sed "s/\(\.ellul\.app:443\) {$/\1, ${ORIGIN_APP}:443 {/" \
+    > "$TMPFILE"
+
+  if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then
+    mv "$TMPFILE" "$CADDYFILE"
+    caddy reload --config "$CADDYFILE" --adapter caddyfile 2>/dev/null || true
+    log "GATEWAY: Origin hostname added and Caddy reloaded"
+  else
+    rm -f "$TMPFILE"
+    log "GATEWAY: WARNING — Caddy validation failed after adding origin hostname, reverted"
+  fi
+}
+
+# Ensure gateway Host rewrite is present.
+# The gateway Worker sends X-Forwarded-Host with the original hostname because
+# resolveOverride rewrites the Host header to the origin hostname (o-{tag}.{zone}).
+# This request_header directive restores the original Host so @code/@main/@dev matchers work.
+# Only applies to gateway deployment model (mTLS + auto_https off).
+ensure_gateway_host_rewrite() {
+  local CADDYFILE="/etc/caddy/Caddyfile"
+  [ ! -f "$CADDYFILE" ] && return
+
+  # Only for gateway/cloudflare model
+  grep -q 'auto_https off' "$CADDYFILE" 2>/dev/null || return
+  grep -q 'origin-pull-ca.pem' "$CADDYFILE" 2>/dev/null || return
+
+  # Already patched? Skip.
+  grep -q 'request_header @has_xfh Host' "$CADDYFILE" 2>/dev/null && return
+
+  log "GATEWAY: Adding Host rewrite from X-Forwarded-Host to Caddyfile..."
+
+  local TMPFILE
+  TMPFILE=$(mktemp)
+
+  # Insert the two-line rewrite after the first opening { of each site block with :443
+  # Targets: lines like "srv.ellul.ai:443, code.ellul.ai:443, o-tag.ellul.ai:443 {"
+  awk '
+    /\.ellul\.(ai|app):443.*\{$/ && !done_block[NR] {
+      print
+      print "    @has_xfh header X-Forwarded-Host *"
+      print "    request_header @has_xfh Host {http.request.header.X-Forwarded-Host}"
+      done_block[NR] = 1
+      next
+    }
+    { print }
+  ' "$CADDYFILE" > "$TMPFILE"
+
+  if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then
+    mv "$TMPFILE" "$CADDYFILE"
+    caddy reload --config "$CADDYFILE" --adapter caddyfile 2>/dev/null || true
+    log "GATEWAY: Host rewrite added and Caddy reloaded"
+  else
+    rm -f "$TMPFILE"
+    log "GATEWAY: WARNING — Caddy validation failed after adding Host rewrite, reverted"
+  fi
+}
 
 # Ensure base CORS headers exist at the top of @code and @main handle blocks.
 # Servers provisioned before the CORS fix (afd1d87) are missing these headers,
