@@ -288,6 +288,26 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
 
   const ready = waitForReady(8000);
 
+  // Register as deployment so it shows in the dashboard's "Deployed" section
+  if (ready) {
+    try {
+      const { detectApps } = require('./apps.service');
+      const apps = detectApps();
+      const app = apps.find((a: { directory: string }) => a.directory === appDirectory);
+      const name = appDirectory.toLowerCase().replace(/[^a-z0-9-]/g, '');
+      fetch('http://localhost:3005/api/workflow/expose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          port: 3000,
+          projectPath: appPath,
+          stack: app?.framework || 'Unknown',
+        }),
+      }).catch(() => {});
+    } catch {}
+  }
+
   return { success: true, ready };
 }
 
@@ -295,6 +315,19 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
  * Stop preview.
  */
 export function stopPreview(): void {
+  // Clean up preview deployment metadata (port 3000 apps)
+  try {
+    const appsDir = `${HOME}/.ellulai/apps`;
+    if (fs.existsSync(appsDir)) {
+      for (const f of fs.readdirSync(appsDir).filter(f => f.endsWith('.json'))) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(`${appsDir}/${f}`, 'utf8'));
+          if (meta.port === 3000) fs.unlinkSync(`${appsDir}/${f}`);
+        } catch {}
+      }
+    }
+  } catch {}
+
   runPm2('pm2 delete preview 2>/dev/null || true');
   runPm2('fuser -k 3000/tcp 2>/dev/null || true');
 }

@@ -22,6 +22,7 @@ mkdir -p "$CONTEXT_DIR"
 
 generate_global() {
   DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "YOUR-DOMAIN")
+  SHORT_ID=$(echo "$DOMAIN" | grep -o '^[a-f0-9]\\{8\\}')
   DEV_DOMAIN=$(cat /etc/ellulai/dev-domain 2>/dev/null || echo "dev.$DOMAIN")
 
   if [ "$TIER" = "free" ]; then
@@ -97,7 +98,7 @@ Do NOT report task complete until verification passes!
 
 ## Ports
 - Dev/Preview: 3000 (→ https://$DEV_DOMAIN)
-- Production: 3001+ (→ https://APPNAME-$DOMAIN)
+- Production: 3001+ (→ https://<app-name>-$SHORT_ID.ellul.app)
 - Reserved: 7681-7700
 
 ## Secrets
@@ -382,6 +383,8 @@ generate_context_files() {
   # Generate CLAUDE.md, AGENTS.md, and GEMINI.md in the project directory
   # Uses marker-based approach to preserve user content
   DOMAIN=$(cat /etc/ellulai/domain 2>/dev/null || echo "YOUR-DOMAIN")
+  SHORT_ID=$(echo "$DOMAIN" | grep -o '^[a-f0-9]\\{8\\}')
+  DIR_NAME=$(basename "$TARGET_DIR")
   DEV_DOMAIN=$(cat /etc/ellulai/dev-domain 2>/dev/null || echo "dev.$DOMAIN")
 
   # Read app name from ellulai.json if it exists
@@ -469,7 +472,7 @@ NEVER run ellulai-expose again for this project.
     # Paid tier: full content
     GENERATED_BLOCK="<!-- ELLULAI:START — Auto-generated rules. Do not edit between these markers. -->
 # ellul.ai ($DOMAIN)
-Preview: https://$DEV_DOMAIN (port 3000) | Production: https://APPNAME-$DOMAIN
+Preview: https://$DEV_DOMAIN (port 3000) | Production: https://$DIR_NAME-$SHORT_ID.ellul.app
 
 ## RULES (ALWAYS FOLLOW)
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.

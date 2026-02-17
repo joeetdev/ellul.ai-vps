@@ -38,6 +38,13 @@ import {
   initWatchers,
   initServerStatusWatcher,
 } from './services/websocket.service';
+import {
+  listOpenclawWorkspaceFiles,
+  getOpenclawWorkspaceFile,
+  saveOpenclawWorkspaceFile,
+  getOpenclawChannels,
+  saveOpenclawChannel,
+} from './services/openclaw.service';
 
 // Auth is handled by sovereign-shield via Caddy forward_auth.
 // file-api trusts X-Auth-User headers set by the forward_auth layer.
@@ -1249,6 +1256,67 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(result));
         return;
       }
+    }
+
+    // GET/POST /api/openclaw/workspace
+    if (pathname === '/api/openclaw/workspace') {
+      const wsFile = parsedUrl.query.file as string | undefined;
+
+      if (req.method === 'GET' && !wsFile) {
+        const files = listOpenclawWorkspaceFiles();
+        res.writeHead(200);
+        res.end(JSON.stringify({ files }));
+        return;
+      }
+
+      if (req.method === 'GET' && wsFile) {
+        const result = getOpenclawWorkspaceFile(wsFile);
+        if (!result) {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: 'File not found' }));
+          return;
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify(result));
+        return;
+      }
+
+      if (req.method === 'POST') {
+        const body = await parseBody(req);
+        const { file, content } = body as { file?: string; content?: string };
+        if (!file || content === undefined) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Missing file or content' }));
+          return;
+        }
+        const result = saveOpenclawWorkspaceFile(file, content);
+        res.writeHead(result.success ? 200 : 400);
+        res.end(JSON.stringify(result));
+        return;
+      }
+    }
+
+    // GET /api/openclaw/channels
+    if (req.method === 'GET' && pathname === '/api/openclaw/channels') {
+      const channels = getOpenclawChannels();
+      res.writeHead(200);
+      res.end(JSON.stringify({ channels }));
+      return;
+    }
+
+    // PUT /api/openclaw/channels/:channel
+    if (req.method === 'PUT' && pathname.startsWith('/api/openclaw/channels/')) {
+      const channel = pathname.split('/').pop();
+      if (!channel) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Missing channel' }));
+        return;
+      }
+      const body = await parseBody(req);
+      const result = saveOpenclawChannel(channel, body as Record<string, unknown>);
+      res.writeHead(result.success ? 200 : 400);
+      res.end(JSON.stringify(result));
+      return;
     }
 
     // GET /api/assets/:app/icon

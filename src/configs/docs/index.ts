@@ -94,8 +94,8 @@ This will build and deploy with auto-SSL.
 
 ## Manual Deploy
 1. npm run build
-2. pm2 start npm --name APPNAME -- start -- -p 3000
-3. sudo ellulai-expose APPNAME 3000
+2. pm2 start npm --name <app-name> -- start -- -p 3000
+3. sudo ellulai-expose <app-name> 3000
 
 ## Key Commands
 - ship - Auto-deploy current project
@@ -124,6 +124,7 @@ export function getGlobalClaudeMd(domain: string, tier?: string, svcHome: string
   const devDomain = domain === "__DOMAIN__"
     ? "__DEV_DOMAIN__"
     : domain.replace("-srv.", "-dev.").replace("-dc.", "-ddev.").replace(/\.ellul\.ai$/, ".ellul.app");
+  const shortId = domain.match(/^([a-f0-9]{8})-/)?.[1] || domain.split('.')[0];
 
   if (tier === "starter") {
     return `# ellul.ai Sandbox: ${domain}
@@ -171,7 +172,7 @@ pm2 start|logs|restart|delete NAME`;
 This is a cloud VPS at ${domain}
 
 Preview: https://${devDomain} (port 3000)
-Apps: https://APPNAME-${domain} | Custom domains: ellulai-expose NAME PORT mydomain.com
+Apps: https://<app-name>-${shortId}.ellul.app | Custom domains: ellulai-expose NAME PORT mydomain.com
 
 ## Available Tools
 AI: opencode (ready) | claude, codex, gemini, aider (install on first use)
@@ -195,7 +196,7 @@ Preview is then live at: https://${devDomain}
 
 ## Deploy
 Run: ship (auto-build + deploy with SSL)
-Manual: npm run build → pm2 start npm --name APPNAME -- start -- -p 3000 → sudo ellulai-expose APPNAME 3000
+Manual: npm run build → pm2 start npm --name <app-name> -- start -- -p 3000 → sudo ellulai-expose <app-name> 3000
 
 ## Commands
 ship | ellulai-expose NAME PORT | ellulai-apps | pm2 logs|restart NAME`;
@@ -224,7 +225,7 @@ export function getProjectsClaudeMd(tier?: string, domain?: string): string {
 3. **SECURITY**: NEVER touch /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Structure
-- Each project in its own folder: ~/projects/APPNAME/
+- Each project in its own folder: ~/projects/<app-name>/
 - ALWAYS create a \`ellulai.json\` file in the project root (dashboard won't detect without it)
 - \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
 - type: "frontend" | "backend" | "library"
@@ -269,7 +270,7 @@ pm2 start|logs|restart|delete NAME`;
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
 ## Project Structure
-- Each project in its own folder: ~/projects/APPNAME/
+- Each project in its own folder: ~/projects/<app-name>/
 - ALWAYS create a \`ellulai.json\` file in the project root (dashboard won't detect without it)
 - \`{ "type": "frontend", "previewable": true, "name": "My App", "summary": "..." }\`
 - type: "frontend" | "backend" | "library"

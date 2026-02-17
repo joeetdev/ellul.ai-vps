@@ -9,11 +9,11 @@
  *   const script = getFileApiScript(serverId);
  */
 
-import * as esbuild from 'esbuild';
-import * as path from 'path';
-import * as fs from 'fs';
-import { fileURLToPath } from 'url';
-import { VERSION } from '../../version';
+import * as esbuild from "esbuild";
+import * as path from "path";
+import * as fs from "fs";
+import { fileURLToPath } from "url";
+import { VERSION } from "../../version";
 
 // Cache for bundled script
 let cachedBundle: string | null = null;
@@ -28,9 +28,9 @@ function getSourceDir(): string {
 
   // If we're in dist (compiled), go up to package root and into src/
   // Check for /dist/ in path OR path ending with /dist
-  if (currentDir.includes('/dist/') || currentDir.endsWith('/dist')) {
-    const packageRoot = currentDir.replace(/\/dist(\/.*)?$/, '');
-    return path.join(packageRoot, 'src', 'services', 'file-api');
+  if (currentDir.includes("/dist/") || currentDir.endsWith("/dist")) {
+    const packageRoot = currentDir.replace(/\/dist(\/.*)?$/, "");
+    return path.join(packageRoot, "src", "services", "file-api");
   }
 
   // Already in src/
@@ -44,24 +44,35 @@ async function bundleModular(): Promise<string> {
   if (cachedBundle) return cachedBundle;
 
   const sourceDir = getSourceDir();
-  const entryPoint = path.join(sourceDir, 'src', 'main.ts');
+  const entryPoint = path.join(sourceDir, "src", "main.ts");
 
   const result = await esbuild.build({
     entryPoints: [entryPoint],
     bundle: true,
-    platform: 'node',
-    target: 'node18',
-    format: 'cjs',
+    platform: "node",
+    target: "node18",
+    format: "cjs",
     minify: false,
     write: false,
     external: [
-      'fs', 'path', 'crypto', 'http', 'https', 'url', 'events', 'stream', 'util', 'os',
-      'child_process', 'ws', 'chokidar',
+      "fs",
+      "path",
+      "crypto",
+      "http",
+      "https",
+      "url",
+      "events",
+      "stream",
+      "util",
+      "os",
+      "child_process",
+      "ws",
+      "chokidar",
     ],
   });
 
   if (!result.outputFiles?.[0]) {
-    throw new Error('esbuild produced no output');
+    throw new Error("esbuild produced no output");
   }
 
   cachedBundle = result.outputFiles[0].text;
@@ -88,9 +99,9 @@ ${bundledCode}
  * Get the file API script synchronously (for compatibility).
  */
 export function getFileApiScriptSync(serverId: string): string {
-  const preBundledPath = path.join(__dirname, 'dist', 'server.js');
+  const preBundledPath = path.join(__dirname, "dist", "server.js");
   if (fs.existsSync(preBundledPath)) {
-    const bundledCode = fs.readFileSync(preBundledPath, 'utf8');
+    const bundledCode = fs.readFileSync(preBundledPath, "utf8");
     return `// File API v${VERSION.components.fileApi}
 // ellul.ai Code Browser Backend
 process.env.ELLULAI_SERVER_ID = ${JSON.stringify(serverId)};
@@ -98,7 +109,9 @@ ${bundledCode}
 `;
   }
 
-  throw new Error('Pre-bundled file-api not found. Run build first or use async getFileApiScript()');
+  throw new Error(
+    "Pre-bundled file-api not found. Run build first or use async getFileApiScript()",
+  );
 }
 
 /**
@@ -126,10 +139,12 @@ Restart=on-failure
 RestartSec=5
 
 # Security hardening
-NoNewPrivileges=true
+# NOTE: NoNewPrivileges intentionally omitted — file-api delegates to
+# privileged helper scripts via sudo (update-identity, mount-volume,
+# restore-identity). NoNewPrivileges blocks setuid binaries like sudo.
 ProtectSystem=strict
 PrivateTmp=true
-ReadWritePaths=${svcHome} /etc/ellulai/vibe
+ReadWritePaths=${svcHome} /etc/ellulai /etc/caddy /opt/ellulai /etc/fstab
 
 [Install]
 WantedBy=multi-user.target
