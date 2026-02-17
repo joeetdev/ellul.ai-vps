@@ -11,7 +11,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { readdirSync, statSync, existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { PROJECTS_DIR, DEV_DOMAIN } from '../config';
-import { getOpenclawIdentity, getOpenclawUser } from '../../../../configs/openclaw';
+import { getOpenclawIdentity, getOpenclawUser, getOpenclawSoul, getOpenclawAgents, getOpenclawTools, getOpenclawBootstrap } from '../../../../configs/openclaw';
 
 const OPENCLAW_BIN_PATHS = [
   join(homedir(), '.openclaw', 'bin', 'openclaw'),
@@ -131,12 +131,11 @@ export async function listAgents(): Promise<string[]> {
 
 /**
  * Initialize OpenClaw workspace files for a project directory.
- * Writes relay agent config (SOUL.md, AGENTS.md) and identity files
- * (IDENTITY.md, USER.md) so the agent boots as a relay instead of
- * running OpenClaw's default bootstrap flow ("Hey! Who am I?").
+ * Writes identity, personality, and workspace context files so the
+ * agent boots with proper configuration instead of running OpenClaw's
+ * default bootstrap flow ("Hey! Who am I?").
  *
- * SOUL.md + AGENTS.md are always kept in sync (platform-managed).
- * IDENTITY.md + USER.md are write-once (signal "already bootstrapped").
+ * All files are kept in sync with our config generators on each call.
  */
 function initWorkspaceFiles(workspace: string, projectName: string): void {
   try {
@@ -145,65 +144,30 @@ function initWorkspaceFiles(workspace: string, projectName: string): void {
       mkdirSync(ocDir, { recursive: true });
     }
 
-    // SOUL.md — relay agent identity (always overwrite to ensure relay behavior)
-    // Platform-managed: enforces relay pattern so the model delegates to CLI tools.
-    const soulPath = join(workspace, 'SOUL.md');
-    const previewSection = DEV_DOMAIN
-      ? `\n## Dev Preview
-Apps listening on port 3000 are served at: https://${DEV_DOMAIN}
-Configure dev servers to bind \`0.0.0.0:3000\` internally, but always tell the user their preview is at the URL above.
-After starting a dev server, verify with \`curl localhost:3000\` then share the preview URL.\n`
-      : '';
+    // Write workspace files from our config generators. These provide
+    // identity, personality, and workspace context for OpenClaw agents.
+    // BOOTSTRAP.md tells OpenClaw the agent is pre-configured (skips
+    // the default "Who am I?" discovery flow on first message).
+    const files: [string, string, () => string][] = [
+      ['BOOTSTRAP.md', 'bootstrap status', getOpenclawBootstrap],
+      ['SOUL.md', 'agent personality', getOpenclawSoul],
+      ['AGENTS.md', 'workspace rules', getOpenclawAgents],
+      ['TOOLS.md', 'available tools', getOpenclawTools],
+      ['IDENTITY.md', 'agent identity', getOpenclawIdentity],
+      ['USER.md', 'user context', getOpenclawUser],
+    ];
 
-    const relaySoul = `# SOUL.md — Relay Agent for ${projectName}
-
-You are a RELAY agent on ellul.ai. You delegate ALL coding work to a CLI tool and return results. You NEVER write code yourself.
-
-## Rules
-- ONLY use \`bash\` (with pty:true) and \`process\` tools. Nothing else.
-- NEVER use write, exec, or read tools. NEVER create files yourself.
-- NEVER fall back to doing the work yourself if the CLI seems slow — just wait for it.
-- NEVER output code blocks, file listings, or plans.
-- Follow the EXACT steps in the system prompt for launching and monitoring the CLI.
-- If the CLI errors, tell the user briefly and suggest trying again.
-${previewSection}
-`;
-    // Always write — stale SOUL.md (e.g. "Dev Assistant") causes the model to go rogue
-    const existingSoul = existsSync(soulPath) ? readFileSync(soulPath, 'utf8') : '';
-    if (existingSoul !== relaySoul) {
-      writeFileSync(soulPath, relaySoul, 'utf8');
-      console.log(`[AgentService] Wrote SOUL.md for ${projectName}${existingSoul ? ' (updated stale file)' : ''}`);
+    for (const [filename, label, generator] of files) {
+      const filePath = join(workspace, filename);
+      const desired = generator();
+      const existing = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
+      if (existing !== desired) {
+        writeFileSync(filePath, desired, 'utf8');
+        console.log(`[AgentService] Wrote ${filename} for ${projectName}${existing ? ' (updated)' : ''}`);
+      }
     }
 
-    // AGENTS.md — operational instructions (always overwrite like SOUL.md)
-    const agentsPath = join(workspace, 'AGENTS.md');
-    const relayAgents = `# AGENTS.md — Workspace Instructions
-
-You are a relay agent. Follow the system prompt steps exactly. Only use bash and process tools.
-Never use write, exec, or read tools. Never attempt coding work yourself.
-`;
-    const existingAgents = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : '';
-    if (existingAgents !== relayAgents) {
-      writeFileSync(agentsPath, relayAgents, 'utf8');
-      console.log(`[AgentService] Wrote AGENTS.md for ${projectName}${existingAgents ? ' (updated stale file)' : ''}`);
-    }
-
-    // IDENTITY.md + USER.md — signals to OpenClaw that the workspace is already
-    // bootstrapped. Without these, OpenClaw creates BOOTSTRAP.md on every wake
-    // which triggers the "Who am I?" identity discovery flow.
-    const identityPath = join(workspace, 'IDENTITY.md');
-    if (!existsSync(identityPath)) {
-      writeFileSync(identityPath, getOpenclawIdentity(), 'utf8');
-      console.log(`[AgentService] Wrote IDENTITY.md for ${projectName}`);
-    }
-
-    const userPath = join(workspace, 'USER.md');
-    if (!existsSync(userPath)) {
-      writeFileSync(userPath, getOpenclawUser(), 'utf8');
-      console.log(`[AgentService] Wrote USER.md for ${projectName}`);
-    }
-
-    // HEARTBEAT.md — skip heartbeat for dev agents
+    // HEARTBEAT.md — skip heartbeat for dev agents (write-once)
     const heartbeatPath = join(workspace, 'HEARTBEAT.md');
     if (!existsSync(heartbeatPath)) {
       writeFileSync(heartbeatPath, `# Keep empty to skip heartbeat checks for dev agents.\n`, 'utf8');
@@ -219,20 +183,28 @@ Never use write, exec, or read tools. Never attempt coding work yourself.
 export async function ensureProjectAgent(projectName: string): Promise<boolean> {
   const agentId = getProjectAgentId(projectName);
 
+  const workspace = join(PROJECTS_DIR, projectName);
+
   // Check cache first
-  if (knownAgents.has(agentId)) return true;
+  if (knownAgents.has(agentId)) {
+    // Agent exists — still ensure workspace files are correct.
+    // reconcileAgents does this at startup, but is skipped if OpenClaw
+    // isn't reachable yet. This is our safety net.
+    initWorkspaceFiles(workspace, projectName);
+    return true;
+  }
 
   // Refresh agent list
   const agents = await listAgents();
-  if (agents.includes(agentId)) return true;
+  if (agents.includes(agentId)) {
+    // Agent exists but wasn't cached — sync workspace files + tool deny
+    initWorkspaceFiles(workspace, projectName);
+    await setAgentToolDeny(agentId);
+    return true;
+  }
 
   // Create agent
-  const workspace = join(PROJECTS_DIR, projectName);
   try {
-    // Initialize workspace files BEFORE agent creation so OpenClaw picks them up.
-    // IDENTITY.md + USER.md prevent OpenClaw from creating BOOTSTRAP.md.
-    initWorkspaceFiles(workspace, projectName);
-
     console.log(`[AgentService] Creating agent "${agentId}" with workspace ${workspace}`);
     await runOpenclaw([
       'agents', 'add', agentId,
@@ -241,6 +213,19 @@ export async function ensureProjectAgent(projectName: string): Promise<boolean> 
     ]);
     knownAgents.add(agentId);
     console.log(`[AgentService] Agent "${agentId}" created`);
+
+    // `openclaw agents add` writes default workspace files (SOUL.md = "Dev Assistant",
+    // BOOTSTRAP.md, etc.) synchronously. The gateway also detects the config change
+    // and may write additional files during its reload (~500ms later).
+    // We MUST wait for both to finish before overwriting with our relay versions,
+    // otherwise the gateway's async file writes clobber ours.
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Now overwrite with our relay config — gateway reload is done by now.
+    // This includes writing our own BOOTSTRAP.md (says "already bootstrapped")
+    // over OpenClaw's default one (says "Who am I?").
+    initWorkspaceFiles(workspace, projectName);
+    console.log(`[AgentService] Wrote relay workspace files for "${agentId}"`);
 
     // Deny native file/exec tools so the model MUST use coding-agent (bash+process).
     // Without this, the model uses write/exec directly and bypasses the CLI tool.

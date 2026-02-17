@@ -39,9 +39,9 @@ import {
   CONTEXT_CACHE_MS,
   ELLULAI_MODELS,
   DEV_DOMAIN,
-  STALE_POLL_THRESHOLD,
   type SessionType,
 } from './config';
+import { startZenModelRefresh, getZenModelList } from './services/zen-models.service';
 import { validateAgentToken, extractAgentToken } from './auth';
 import {
   loadCliEnv,
@@ -52,23 +52,25 @@ import {
 import {
   loadGlobalContext,
   loadProjectContext,
-  buildSystemPrompt,
+  buildClawSystemPrompt,
   getActiveProject,
 } from './services/context.service';
-import {
-  sendToOpenClaw,
-  closeOpenClawConnection,
-  closeAllOpenClawConnections,
-  checkOpenClawHealth,
-  SESSION_MODEL_LABELS,
-  type OpenClawChunk,
-} from './services/openclaw-client.service';
+import { sendToOpenClaw, type OpenClawChunk } from './services/openclaw-client.service';
+import { ensureProjectAgent } from './services/openclaw-agent.service';
 import {
   getProviders,
   setApiKey,
   setModel,
+  getCurrentModel,
+  ensureOpencodeServer,
+  sendToOpencodeStreaming,
+  sendToClaudeStreaming,
+  sendToCodexStreaming,
+  sendToGeminiStreaming,
+  type CliResponse,
 } from './services/cli-streaming.service';
 import {
+  checkCliNeedsSetup,
   startInteractiveCli,
   respondToInteractiveCli,
   killInteractiveSession,
@@ -77,10 +79,16 @@ import {
   respondToCliAuthInChat,
   cancelCliAuthInChat,
 } from './services/interactive.service';
-import {
-  ensureProjectAgent,
-  reconcileAgents,
-} from './services/openclaw-agent.service';
+
+// Display labels for session model names (used in welcome messages and get_current_model)
+const SESSION_MODEL_LABELS: Record<string, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  opencode: 'OpenCode',
+  main: 'OpenCode',
+  claw: 'Claw',
+};
 
 // Processing state for in-progress thread operations (thinking step buffer)
 import {
@@ -128,10 +136,6 @@ interface ConnectionState {
   currentSession: SessionType;
   currentProject: string | null;
   currentThreadId: string | null;
-  // Track threads with in-flight OpenClaw requests (for cleanup on disconnect).
-  // When the WebSocket closes, we cancel these to prevent zombie requests
-  // from clogging OpenClaw's internal lane queue.
-  inflightThreads: Set<string>;
 }
 
 // Context cache
@@ -173,88 +177,6 @@ Type below to get started. For example:
 - "Create a hello world app"
 - "Build a React landing page"
 - "Set up an Express API"${previewLine}`;
-}
-
-/**
- * Detect if a paragraph is model narration (internal monologue about tool calls)
- * vs user-facing content (the actual response).
- *
- * Narration = model describing its process ("Let me check...", "I can see the file...")
- * Content   = model communicating with the user ("Hey!", "What would you like?")
- *
- * Used by both the streaming filter (real-time) and condense (post-stream safety net).
- */
-function isNarrationParagraph(text: string): boolean {
-  const t = text.trim();
-  if (!t) return true;
-
-  // Short fragments from tool output leaks (but keep questions, greetings, and affirmations)
-  if (t.length < 15 && !t.includes('?') && !/^(hey|hi|hello|welcome|on it|got it|sure|working on it)\b/i.test(t)) return true;
-
-  // "Let me [verb]..." — announcing an action
-  if (/^Let me\b/i.test(t)) return true;
-
-  // "I'll / I will / I'm going to [verb]"
-  if (/^I('ll| will| am going to)\b/i.test(t)) return true;
-
-  // "Now/First/Next, let me..." / "Now I'll..."
-  if (/^(Now|First|Next|Then)[, ]+(?:let me|I'll|I will)\b/i.test(t)) return true;
-
-  // "[Exclamation]! I can see..." / "[Exclamation], let me..."
-  if (/^(Good|Perfect|Great|Excellent|OK|Alright|Right)[!.,]\s*(I can see|I see|Let me|I'll|Now|It looks|That)\b/i.test(t)) return true;
-
-  // Lines ending with ":" — about to show tool output (not markdown headers or questions)
-  if (t.endsWith(':') && t.length < 150 && !t.startsWith('#') && !t.includes('?')) return true;
-
-  // "I see/found/notice [technical thing]" — reporting file/project observations
-  if (/^I (see|found|notice|can see|checked|read)\b/i.test(t) &&
-      /\b(file|director|workspace|project|config|json|package|module|code|setup|structure|bootstrap)\b/i.test(t) &&
-      !t.includes('?') && t.length < 200) return true;
-
-  // Progressive tense action descriptions ("Checking...", "Reading...", "Installing...")
-  if (/^(Checking|Reading|Examining|Inspecting|Reviewing|Analyzing|Scanning|Browsing|Loading|Running|Executing|Installing|Setting up|Creating|Writing|Saving|Updating|Modifying|Looking at)\b/i.test(t) &&
-      t.length < 200 && !t.includes('?')) return true;
-
-  return false;
-}
-
-/**
- * Post-stream safety net: strip narration from verbose responses.
- *
- * The streaming filter handles narration in real-time, but text can arrive
- * without paragraph breaks (mushed together). This catches what the filter misses.
- *
- * Strategy: classify each paragraph as narration or content, keep only content.
- */
-function condenseVerboseResponse(text: string): string | null {
-  // Short responses are fine as-is
-  if (text.length < 300) return null;
-
-  const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
-  if (paragraphs.length < 2) return null;
-
-  // Classify each paragraph
-  const content: string[] = [];
-  let narrationCount = 0;
-
-  for (const p of paragraphs) {
-    if (isNarrationParagraph(p.trim())) {
-      narrationCount++;
-    } else {
-      content.push(p.trim());
-    }
-  }
-
-  // If little narration, the response is already clean — don't touch it
-  if (narrationCount < 2) return null;
-
-  // Return only content paragraphs (the actual user-facing response)
-  if (content.length > 0) {
-    return content.join('\n\n');
-  }
-
-  // All narration — take the last paragraph as a fallback
-  return paragraphs[paragraphs.length - 1]?.trim() || null;
 }
 
 // Create HTTP server with health endpoint
@@ -332,7 +254,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     currentSession: DEFAULT_SESSION as SessionType,
     currentProject: urlProject,
     currentThreadId: null,
-    inflightThreads: new Set(),
   };
 
   console.log('[Bridge] New connection (authenticated), project:', state.currentProject);
@@ -421,6 +342,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               connected: result.connected,
               currentModel: result.currentModel,
               ellulaiModels: ELLULAI_MODELS,
+              zenModels: result.zenModels,
               timestamp: Date.now(),
             })
           );
@@ -469,14 +391,12 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
       }
 
       if (msgType === 'get_current_model') {
-        const model = SESSION_MODEL_LABELS[state.currentSession] || null;
-        ws.send(
-          JSON.stringify({
-            type: 'current_model',
-            model,
-            timestamp: Date.now(),
-          })
-        );
+        try {
+          const model = await getCurrentModel();
+          ws.send(JSON.stringify({ type: 'current_model', model, timestamp: Date.now() }));
+        } catch {
+          ws.send(JSON.stringify({ type: 'current_model', model: null, timestamp: Date.now() }));
+        }
         return;
       }
 
@@ -568,6 +488,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         // Track processing state so reconnecting clients can catch up on thinking steps
         if (commandThreadId) {
           startProcessing(commandThreadId, commandSession);
+          // Ensure the sending ws receives thinking_step updates (belt-and-suspenders:
+          // also subscribed on create_thread and set_thread, but this covers edge cases)
+          subscribeProcessing(commandThreadId, ws);
         }
 
         // Helper to save messages to thread (uses captured threadId)
@@ -604,215 +527,107 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         try {
           const project = (msg.project as string) || commandProject;
 
-          const globalCtx = refreshGlobalContext();
-          const projectCtx = project ? loadProjectContext(project) : '';
+          if (commandSession === 'claw') {
+            // Claw mode: direct to OpenClaw agent, no CLI middleman
+            if (project) {
+              await ensureProjectAgent(project);
+            }
 
-          // System prompt sent on EVERY request — OpenClaw HTTP API is stateless
-          // (no conversation memory between requests), so the agent needs the CLI
-          // command template and workspace rules each time.
-          const systemPrompt = buildSystemPrompt(globalCtx, projectCtx, project, commandSession);
-          const contextualMessage = msg.content as string;
+            const globalCtx = refreshGlobalContext();
+            const projectCtx = loadProjectContext(project);
+            const systemPrompt = buildClawSystemPrompt(globalCtx, projectCtx, project);
 
-          // Ensure per-project agent exists (lazy creation on first message)
-          if (project) {
-            await ensureProjectAgent(project);
-          }
-
-          // All AI sessions route through OpenClaw agent
-          // OpenClaw is the middleman — it uses the local CLIs (claude, codex, etc.)
-          // as tools, orchestrates the work, and reports back what it did.
-          // Auth: user's own API keys via `claude login` etc. — no extra token cost.
-          const threadModel = commandThreadId ? getThread(commandThreadId)?.lastModel : null;
-
-          // Streaming narration filter:
-          // rawText    = everything from OpenClaw (for SETUP_CLI detection + fallback)
-          // displayText = filtered text shown to user (narration stripped)
-          // paraBuffer  = incomplete paragraph waiting for \n\n boundary
-          let rawText = '';
-          let displayText = '';
-          let paraBuffer = '';
-          let narrationFilterOn = true;   // Active until first non-narration paragraph
-          let firstParaSeen = false;
-
-          // Stale-activity detection: track consecutive empty/identical process poll results
-          let stalePollCount = 0;
-          let lastPollOutput = '';
-          let staleWarned = false;
-
-          // Track in-flight request so we can cancel it if the WebSocket closes.
-          // Only track real thread IDs — ephemeral ones are one-off and don't clog the queue.
-          if (commandThreadId) {
-            state.inflightThreads.add(commandThreadId);
-          }
-
-          const response = await sendToOpenClaw(
-            commandThreadId || `ephemeral-${Date.now()}`,
-            contextualMessage,
-            commandSession,
-            (chunk: OpenClawChunk) => {
-              switch (chunk.type) {
-                case 'text':
-                  if (chunk.content) {
-                    rawText += chunk.content;
-
-                    // Dragon #1: Check raw text for CLI setup trigger (handles split chunks)
-                    const setupMatch = rawText.match(/\[SETUP_CLI:(\w+)\]/);
-                    if (setupMatch?.[1]) {
-                      const cliSession = setupMatch[1];
-                      rawText = rawText.replace(/\[SETUP_CLI:\w+\]/, '').trim();
-                      displayText = displayText.replace(/\[SETUP_CLI:\w+\]/, '').trim();
-                      startCliAuthInChat(cliSession, ws, commandThreadId);
-                    }
-
-                    // Fast path: filter already disabled (clean model), stream directly
-                    if (!narrationFilterOn) {
-                      displayText += chunk.content;
-                      ws.send(JSON.stringify({ type: 'output', content: displayText, threadId: commandThreadId, timestamp: Date.now() }));
-                      break;
-                    }
-
-                    // Buffer text and process complete paragraphs (split on \n\n)
-                    paraBuffer += chunk.content;
-
-                    while (paraBuffer.includes('\n\n')) {
-                      const idx = paraBuffer.indexOf('\n\n');
-                      const para = paraBuffer.substring(0, idx).trim();
-                      paraBuffer = paraBuffer.substring(idx + 2);
-
-                      if (!para) continue;
-
-                      // First paragraph decides if we need filtering at all
-                      if (!firstParaSeen) {
-                        firstParaSeen = true;
-                        if (!isNarrationParagraph(para)) {
-                          // Clean model — disable filter, send everything accumulated so far
-                          narrationFilterOn = false;
-                          displayText = rawText;
-                          ws.send(JSON.stringify({ type: 'output', content: displayText, threadId: commandThreadId, timestamp: Date.now() }));
-                          break;
-                        }
-                      }
-
-                      if (isNarrationParagraph(para)) {
-                        // Route narration to thinking steps (visible as collapsible progress)
-                        if (commandThreadId) {
-                          addThinkingStep(commandThreadId, para.substring(0, 100));
-                        }
-                      } else {
-                        // Actual content — stream to chat
-                        displayText += (displayText ? '\n\n' : '') + para;
-                        ws.send(JSON.stringify({ type: 'output', content: displayText, threadId: commandThreadId, timestamp: Date.now() }));
-                      }
-                    }
-                  }
-                  break;
-                case 'tool_use':
+            let streamedText = '';
+            const openclawResponse = await sendToOpenClaw(
+              commandThreadId || `claw-${Date.now()}`,
+              userMessage,
+              'claw',
+              (chunk: OpenClawChunk) => {
+                if (chunk.type === 'text' && chunk.content) {
+                  streamedText += chunk.content;
+                  ws.send(JSON.stringify({
+                    type: 'output',
+                    content: streamedText,
+                    threadId: commandThreadId,
+                    timestamp: Date.now(),
+                  }));
+                } else if (chunk.type === 'tool_use' && chunk.tool) {
                   if (commandThreadId) {
                     addThinkingStep(commandThreadId, `Using ${chunk.tool}...`);
                   }
-                  break;
-                case 'tool_result':
-                  if (commandThreadId) {
-                    addThinkingStep(commandThreadId, `${chunk.tool}: ${(chunk.output || '').substring(0, 200)}`);
+                }
+              },
+              null,
+              project,
+              systemPrompt,
+            );
 
-                    // Stale-activity detection: track consecutive empty/identical process poll results
-                    if (chunk.tool === 'process') {
-                      const pollOutput = (chunk.output || '').trim();
-                      if (!pollOutput || pollOutput === '(no new output)' || pollOutput.includes('(no new output)') || pollOutput === lastPollOutput) {
-                        stalePollCount++;
-                        if (stalePollCount >= STALE_POLL_THRESHOLD && !staleWarned) {
-                          staleWarned = true;
-                          if (commandThreadId) {
-                            addThinkingStep(commandThreadId, 'Coding tool still running — waiting for output...');
-                          }
-                        }
-                      } else {
-                        stalePollCount = 0;
-                      }
-                      lastPollOutput = pollOutput;
-                    }
-                  }
-                  break;
-                case 'file_edit':
-                  if (commandThreadId) {
-                    addThinkingStep(commandThreadId, `Edited ${chunk.path}`);
-                  }
-                  break;
-                case 'status':
-                  if (chunk.status === 'thinking') {
-                    ws.send(JSON.stringify({ type: 'thinking', session: commandSession, threadId: commandThreadId, timestamp: Date.now() }));
-                  }
-                  break;
-                case 'error':
-                  ws.send(JSON.stringify({ type: 'error', message: chunk.message, threadId: commandThreadId, timestamp: Date.now() }));
-                  break;
-              }
-            },
-            threadModel,
-            project,
-            systemPrompt,
-          );
-
-          // sendToOpenClaw ALWAYS returns a response (never throws).
-          // On error, response.text contains a user-friendly error message.
-
-          // Flush remaining paragraph buffer from the streaming narration filter
-          if (narrationFilterOn && paraBuffer.trim()) {
-            const remaining = paraBuffer.trim();
-            if (isNarrationParagraph(remaining)) {
-              if (commandThreadId) {
-                addThinkingStep(commandThreadId, remaining.substring(0, 100));
-              }
-            } else {
-              displayText += (displayText ? '\n\n' : '') + remaining;
-            }
-          }
-
-          // Build final output:
-          // 1. Use filtered displayText if we have it
-          // 2. Otherwise condense the raw response (all text was narration)
-          // 3. Last resort: use raw response as-is
-          let output: string;
-          if (displayText.trim()) {
-            output = displayText.trim();
+            const output = openclawResponse.text.trim() || 'Done';
+            ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
+            ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
+            saveToThread(msg.content as string, output, openclawResponse.reasoning);
           } else {
-            const raw = (response.text || '').replace(/\[SETUP_CLI:\w+\]/g, '').trim();
-            output = condenseVerboseResponse(raw) || raw || 'Something went wrong. Please try again.';
+          // Auth pre-flight: check if CLI needs setup before invoking
+          // opencode/main don't need external auth (uses free models)
+          const sessionNeedsAuth = commandSession !== 'opencode' && commandSession !== 'main';
+          if (sessionNeedsAuth && checkCliNeedsSetup(commandSession)) {
+            console.log(`[Bridge] ${commandSession} needs auth setup, starting in-chat auth`);
+            startCliAuthInChat(commandSession, ws, commandThreadId);
+            ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
+            return;
           }
 
-          // Safety net: condense if still verbose after streaming filter
-          const condensed = condenseVerboseResponse(output);
-          if (condensed) {
-            output = condensed;
+          // Dispatch directly to CLI — no AI middleman
+          let cliResponse: CliResponse;
+          switch (commandSession) {
+            case 'claude':
+              cliResponse = await sendToClaudeStreaming(userMessage, ws, true, commandThreadId, project);
+              break;
+            case 'codex':
+              cliResponse = await sendToCodexStreaming(userMessage, ws, true, commandThreadId, project);
+              break;
+            case 'gemini':
+              cliResponse = await sendToGeminiStreaming(userMessage, ws, true, commandThreadId, project);
+              break;
+            case 'opencode':
+            case 'main':
+            default:
+              cliResponse = await sendToOpencodeStreaming(userMessage, ws, commandThreadId, project);
+              break;
           }
 
-          // Send final cleaned output (replaces streamed text in UI)
+          // Build final output from CLI response
+          const output = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
+            || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
+
+          // Send final output + ack
           ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
-
-          // Always send ack — this tells the frontend the request is complete
           ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
 
-          // Always save to thread — even errors, so user sees them on refresh
-          saveToThread(msg.content as string, output, response.reasoning);
+          // Save to thread
+          saveToThread(msg.content as string, output, cliResponse.reasoning);
+          }
         } catch (err) {
-          // This should rarely fire now (sendToOpenClaw handles its own errors),
-          // but guard against unexpected failures (WebSocket send errors, etc.)
           const errMsg = (err as Error).message || 'Unknown error';
-          console.error(`[Bridge] Unexpected error in message handler: ${errMsg}`);
+          console.error(`[Bridge] CLI error: ${errMsg}`);
           try {
-            ws.send(JSON.stringify({ type: 'error', message: 'Something went wrong. Please try again.', threadId: commandThreadId, timestamp: Date.now() }));
+            // Reactive auth fallback: if CLI throws auth error, start in-chat auth
+            if (errMsg.match(/unauthori|authenticate|login|api.key|not.logged|credential|permission|forbidden|401|403/i)
+              && ['claude', 'codex', 'gemini'].includes(commandSession)) {
+              startCliAuthInChat(commandSession, ws, commandThreadId);
+            } else {
+              // Surface install-state errors directly, generic message for others
+              const userMsg = (errMsg.includes('installing') || errMsg.includes('not installed'))
+                ? errMsg
+                : 'Something went wrong. Please try again.';
+              ws.send(JSON.stringify({ type: 'error', message: userMsg, threadId: commandThreadId, timestamp: Date.now() }));
+            }
             ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
           } catch {
-            // WebSocket already closed — nothing we can do
+            // WebSocket already closed
           }
         } finally {
-          // Remove from inflight tracking (request complete or failed)
-          if (commandThreadId) {
-            state.inflightThreads.delete(commandThreadId);
-          }
-
-          // ALWAYS end processing — this stops the thinking spinner on the frontend.
-          // Without this, the UI hangs in "thinking" state forever.
+          // ALWAYS end processing — stops thinking spinner on frontend
           if (commandThreadId) {
             endProcessing(commandThreadId);
           }
@@ -835,6 +650,8 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           state.currentThreadId = thread.id;
           // Persist as active thread for this project (survives refresh/device switch)
           setActiveThreadId(thread.id, state.currentProject);
+          // Subscribe to processing updates (thinking steps) for the new thread
+          subscribeProcessing(thread.id, ws);
           // Also switch connection to that session
           state.currentSession = session;
           console.log(`[Bridge] Created thread ${thread.id.substring(0, 8)}... for project ${state.currentProject}, session ${session}, firstThread=${isFirstThread}`);
@@ -907,9 +724,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           const success = deleteThread(threadId);
 
           if (success) {
-            // Close OpenClaw connection for this thread
-            closeOpenClawConnection(threadId);
-
             // Clear current thread if it was the deleted one
             if (state.currentThreadId === threadId) {
               state.currentThreadId = null;
@@ -995,18 +809,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
     killInteractiveSession(ws);
     cancelCliAuthInChat(ws);
     unsubscribeAllProcessing(ws);
-
-    // Cancel any in-flight OpenClaw requests for this connection.
-    // Without this, disconnected clients leave zombie requests in OpenClaw's lane queue,
-    // blocking subsequent requests for the same thread/agent.
-    if (state.inflightThreads.size > 0) {
-      console.log(`[Bridge] Cancelling ${state.inflightThreads.size} in-flight request(s) on disconnect`);
-      for (const threadId of state.inflightThreads) {
-        closeOpenClawConnection(threadId);
-      }
-      state.inflightThreads.clear();
-    }
-
     console.log('[Bridge] Connection closed');
   });
 
@@ -1019,16 +821,17 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 httpServer.listen(PORT, '127.0.0.1', async () => {
   console.log(`[Bridge] Running on http://127.0.0.1:${PORT}`);
 
-  // Check OpenClaw agent health
-  const openclawHealthy = await checkOpenClawHealth();
-  console.log(`[Bridge] OpenClaw agent: ${openclawHealthy ? 'reachable' : 'NOT reachable (will connect on first message)'}`);
-
-  // Reconcile per-project agents with existing projects
-  if (openclawHealthy) {
-    reconcileAgents().catch((err) => {
-      console.error('[Bridge] Agent reconciliation failed:', (err as Error).message);
-    });
-  }
+  // Ensure OpenCode server is running (needed for opencode/main sessions)
+  ensureOpencodeServer().then((ready) => {
+    console.log(`[Bridge] OpenCode server: ${ready ? 'running' : 'unavailable (will retry on first message)'}`);
+    // Start Zen model discovery after OpenCode is ready (needs /config PATCH endpoint)
+    if (ready) {
+      startZenModelRefresh();
+      console.log('[Bridge] Zen model refresh started');
+    }
+  }).catch((err) => {
+    console.error('[Bridge] OpenCode server startup error:', (err as Error).message);
+  });
 
   console.log('[Bridge] Ready');
 });
@@ -1036,7 +839,6 @@ httpServer.listen(PORT, '127.0.0.1', async () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('[Bridge] Shutting down...');
-  closeAllOpenClawConnections();
   wss.close();
   httpServer.close();
   process.exit(0);
@@ -1044,7 +846,6 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('[Bridge] Shutting down...');
-  closeAllOpenClawConnections();
   wss.close();
   httpServer.close();
   process.exit(0);

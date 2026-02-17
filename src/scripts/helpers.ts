@@ -155,6 +155,7 @@ SERVER_ID=""
 DOMAIN=""
 USER_ID=""
 BILLING_TIER=""
+DEPLOYMENT_MODEL=""
 
 while [ \$# -gt 0 ]; do
   case "\$1" in
@@ -162,6 +163,7 @@ while [ \$# -gt 0 ]; do
     --domain=*) DOMAIN="\${1#*=}" ;;
     --user-id=*) USER_ID="\${1#*=}" ;;
     --billing-tier=*) BILLING_TIER="\${1#*=}" ;;
+    --deployment-model=*) DEPLOYMENT_MODEL="\${1#*=}" ;;
     *) echo '{"success":false,"error":"Unknown argument: '\$1'"}'; exit 1 ;;
   esac
   shift
@@ -198,6 +200,19 @@ fi
 # Update billing tier
 if [ -n "\$BILLING_TIER" ]; then
   echo -n "\$BILLING_TIER" > /etc/ellulai/billing-tier
+fi
+
+# Update metadata.json to keep it consistent with identity files
+if [ -f /opt/ellulai/metadata.json ]; then
+  jq --arg sid "\$SERVER_ID" \\
+     --arg dom "\${DOMAIN:-\$(jq -r '.domain // empty' /opt/ellulai/metadata.json)}" \\
+     --arg uid "\${USER_ID:-\$(jq -r '.user_id // empty' /opt/ellulai/metadata.json)}" \\
+     --arg dm "\${DEPLOYMENT_MODEL:-\$(jq -r '.deployment_model // empty' /opt/ellulai/metadata.json)}" \\
+     '.server_id=\$sid | .domain=\$dom | .user_id=\$uid | .deployment_model=\$dm' \\
+     /opt/ellulai/metadata.json > /opt/ellulai/metadata.json.tmp \\
+  && mv /opt/ellulai/metadata.json.tmp /opt/ellulai/metadata.json \\
+  && chmod 600 /opt/ellulai/metadata.json \\
+  || true
 fi
 
 # Regenerate Ed25519 heartbeat keypair (new identity = new keys)
@@ -289,12 +304,18 @@ CADDY_REGEN=false
 if [ -n "\$DOMAIN" ]; then
   SHORT_ID="\${SERVER_ID:0:8}"
 
-  MODEL="cloudflare"
-  if [ -f /etc/caddy/Caddyfile ]; then
-    if ! grep -q "auto_https off" /etc/caddy/Caddyfile 2>/dev/null; then
-      MODEL="direct"
-    elif grep -q "tls internal" /etc/caddy/Caddyfile 2>/dev/null; then
-      MODEL="gateway"
+  # Resolve deployment model: explicit param → metadata.json → Caddyfile heuristic
+  MODEL="\$DEPLOYMENT_MODEL"
+  if [ -z "\$MODEL" ] && [ -f /opt/ellulai/metadata.json ]; then
+    MODEL=\$(jq -r '.deployment_model // empty' /opt/ellulai/metadata.json 2>/dev/null)
+  fi
+  if [ -z "\$MODEL" ]; then
+    # Legacy fallback: detect from Caddyfile (kept for backwards compat with old API)
+    MODEL="cloudflare"
+    if [ -f /etc/caddy/Caddyfile ]; then
+      if ! grep -q "auto_https off" /etc/caddy/Caddyfile 2>/dev/null; then
+        MODEL="direct"
+      fi
     fi
   fi
 

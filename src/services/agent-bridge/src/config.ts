@@ -26,7 +26,7 @@ export const PROJECTS_DIR = `${HOME}/projects`;
 export const CONTEXT_DIR = `${HOME}/.ellulai/context`;
 export const CLI_ENV_FILE = `${HOME}/.ellulai-env`;
 
-export const VALID_SESSIONS = ['main', 'opencode', 'claude', 'codex', 'gemini'] as const;
+export const VALID_SESSIONS = ['main', 'opencode', 'claude', 'codex', 'gemini', 'claw'] as const;
 export type SessionType = (typeof VALID_SESSIONS)[number];
 
 // Timeout settings
@@ -69,3 +69,7 @@ export const ELLULAI_MODELS = WATERFALL_MODELS.map((m) => ({
   name: m.name,
   isPaid: m.isPaid,
 }));
+
+// Zen model discovery
+export const ZEN_MODELS_URL = 'https://opencode.ai/zen/v1/models';
+export const ZEN_REFRESH_MS = 30 * 60 * 1000; // 30 minutes

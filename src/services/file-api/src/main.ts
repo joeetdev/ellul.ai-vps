@@ -1632,8 +1632,8 @@ const server = http.createServer(async (req, res) => {
     // Delegates to privileged helper script via sudo (file-api runs as dev/coder, not root).
     if (req.method === 'POST' && pathname === '/api/update-identity') {
       const body = await parseBody(req);
-      const { serverId, domain, userId, billingTier } = body as {
-        serverId?: string; domain?: string; userId?: string; billingTier?: string;
+      const { serverId, domain, userId, billingTier, deploymentModel } = body as {
+        serverId?: string; domain?: string; userId?: string; billingTier?: string; deploymentModel?: string;
       };
 
       if (!serverId) {
@@ -1664,6 +1664,11 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ success: false, error: 'Invalid billingTier format' }));
         return;
       }
+      if (deploymentModel && !safePattern.test(deploymentModel)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Invalid deploymentModel format' }));
+        return;
+      }
 
       try {
         const { execSync } = await import('child_process');
@@ -1673,6 +1678,7 @@ const server = http.createServer(async (req, res) => {
         if (domain) cmd += ` --domain=${domain}`;
         if (userId) cmd += ` --user-id=${userId}`;
         if (billingTier) cmd += ` --billing-tier=${billingTier}`;
+        if (deploymentModel) cmd += ` --deployment-model=${deploymentModel}`;
 
         // The identity script uses `caddy reload` (not restart) to apply the new
         // Caddyfile without dropping connections. The daemon port 3006 TLS session

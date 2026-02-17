@@ -364,7 +364,7 @@ function buildManifest(config: VpsConfig): FileEntry[] {
 
     // ── User config files ─────────────────────────────────────────
     { path: `${svcHome}/.bashrc`, content: getBashrcConfig(aiProxyToken), mode: 0o644, owner: svcUser },
-    { path: `${svcHome}/.config/opencode/config.json`, content: getOpencodeConfigJson(apiUrl, aiProxyToken), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/.config/opencode/config.json`, content: getOpencodeConfigJson(), mode: 0o644, owner: svcUser },
     { path: `${svcHome}/.ellulai/context/README.md`, content: getContextReadme(), mode: 0o644, owner: svcUser },
 
     // ── Welcome/docs files ────────────────────────────────────────

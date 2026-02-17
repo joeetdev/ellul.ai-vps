@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getCliSpawnEnv } from './cli-env.service';
 import { PROJECTS_DIR, OPENCODE_API_PORT, OPENCODE_BIN, CLI_TIMEOUT_MS, CLI_ONESHOT_TIMEOUT_MS, ELLULAI_MODELS } from '../config';
+import { getZenModelList, type ZenModel } from './zen-models.service';
 import {
   getThreadOpencodeSession,
   setThreadOpencodeSession,
@@ -1322,6 +1323,7 @@ export async function getProviders(): Promise<{
   connected: unknown[];
   currentModel: string | null;
   ellulaiModels: typeof ELLULAI_MODELS;
+  zenModels: ZenModel[];
 }> {
   const result = await httpRequest({
     hostname: '127.0.0.1',
@@ -1342,6 +1344,7 @@ export async function getProviders(): Promise<{
     connected: data?.connected || [],
     currentModel: configData?.model || null,
     ellulaiModels: ELLULAI_MODELS,
+    zenModels: getZenModelList(),
   };
 }
 
@@ -1363,6 +1366,7 @@ export async function setModel(model: string): Promise<boolean> {
   let configPatch: Record<string, unknown> = { model };
 
   // If ellulai model, configure the provider with proxy URL and token
+  // (legacy path — kept for backwards compat, new flow uses opencode/* Zen models)
   if (model.startsWith('ellulai/')) {
     let domain = '';
     try {
@@ -1390,6 +1394,7 @@ export async function setModel(model: string): Promise<boolean> {
       };
     }
   }
+  // opencode/* models use the built-in Zen provider — just set model, no provider config
 
   const result = await httpRequest(
     {

@@ -246,7 +246,7 @@ function devHandler(): Lines {
     ...indent([`uri query -_preview_token`], 3),
     ...indent([
       `reverse_proxy localhost:${PREVIEW_PORT} {`,
-      `    header_up Host {host}`,
+      `    header_up Host localhost`,
       `    header_up X-Real-IP {remote_host}`,
       `}`,
     ], 3),

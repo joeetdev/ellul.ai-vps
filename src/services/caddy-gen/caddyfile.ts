@@ -89,14 +89,18 @@ export function generateCaddyfileContent(opts: CaddyfileOptions): string {
     });
   } else {
     // Two site blocks: ai (srv + code) and app (dev preview)
+    // Gateway and Cloudflare both use CF origin certs for TLS.
+    // Gateway omits clientAuth (no Authenticated Origin Pulls mTLS).
+    // "tls internal" is NOT used — Caddy's internal CA fails to install
+    // its root cert because the caddy user can't sudo.
     const aiTls: SiteBlock["tls"] =
       deploymentModel === "cloudflare"
         ? { cert: "/etc/caddy/origin.crt", key: "/etc/caddy/origin.key", clientAuth: CF_AOP_CA }
-        : "internal";
+        : { cert: "/etc/caddy/origin.crt", key: "/etc/caddy/origin.key" };
     const appTls: SiteBlock["tls"] =
       deploymentModel === "cloudflare"
         ? { cert: "/etc/caddy/origin-app.crt", key: "/etc/caddy/origin-app.key", clientAuth: CF_AOP_CA }
-        : "internal";
+        : { cert: "/etc/caddy/origin-app.crt", key: "/etc/caddy/origin-app.key" };
 
     sites.push({
       addresses: [`${mainDomain}:443`, `${codeDomain}:443`],

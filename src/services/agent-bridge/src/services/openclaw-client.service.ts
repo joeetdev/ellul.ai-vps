@@ -332,6 +332,22 @@ export async function sendToOpenClaw(
                   onChunk({ type: "text", content: delta.content });
                 }
 
+                // Detect tool calls — OpenClaw streams these as delta.tool_calls
+                // in the OpenAI-compatible format. Emitting tool_use events lets
+                // main.ts flush the narration buffer and show thinking steps,
+                // so the user sees progress instead of "Thinking..." for minutes.
+                if (delta?.tool_calls) {
+                  for (const tc of delta.tool_calls as { index?: number; id?: string; function?: { name?: string; arguments?: string } }[]) {
+                    if (tc.function?.name) {
+                      const toolName = tc.function.name;
+                      if (!response.tools.includes(toolName)) {
+                        response.tools.push(toolName);
+                      }
+                      onChunk({ type: "tool_use", tool: toolName });
+                    }
+                  }
+                }
+
                 if (delta?.reasoning_content) {
                   response.reasoning.push(delta.reasoning_content);
                 }

@@ -143,30 +143,15 @@ export function getOpenclawConfigJson(apiUrl: string, aiProxyToken: string): str
 /**
  * Generate the OpenCode config JSON for a server.
  *
- * Same as OpenClaw — uses a stable "default" model ID. The AI proxy's
- * waterfall handles actual model selection, so this config never goes stale.
+ * Uses OpenCode's native Zen integration (built-in `opencode` provider).
+ * No custom provider config needed — the agent bridge's zen-models service
+ * auto-discovers the best free model and switches to it at startup.
  */
-export function getOpencodeConfigJson(apiUrl: string, aiProxyToken: string): string {
+export function getOpencodeConfigJson(): string {
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
-      model: "ellulai/default",
-      provider: {
-        ellulai: {
-          npm: "@ai-sdk/openai-compatible",
-          name: "ellul.ai AI",
-          options: {
-            baseURL: `${apiUrl}/api/ai`,
-            apiKey: aiProxyToken,
-          },
-          models: {
-            default: {
-              name: "ellul.ai AI",
-              maxTokens: 16384,
-            },
-          },
-        },
-      },
+      model: "opencode/kimi-k2.5-free",
     },
     null,
     2

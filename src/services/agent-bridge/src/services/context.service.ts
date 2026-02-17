@@ -183,11 +183,22 @@ Repeat poll/log until the CLI finishes. If you see meaningful progress in the lo
 
 STEP 4: Tell the user the result in 1-2 sentences.
 
+## Model Selection (opencode only)
+The CLI uses free models from OpenCode Zen. You can pick the model with the \`-m\` flag:
+\`opencode run -m PROVIDER/MODEL 'REQUEST'\`
+
+Run \`opencode models\` to see what's available. Pick the best quality model — prefer these in order:
+1. opencode/kimi-k2.5-free (best)
+2. opencode/minimax-m2.5-free
+3. Any other free model available
+
+If the user asks to change models, use \`opencode models\` to show them what's available and switch with \`-m\`.
+
 ## Rules
 - ONLY use bash (with pty:true) and process tools. NEVER use write, exec, or read.
 - NEVER create files yourself. NEVER fall back to doing the work if the CLI is slow — wait for it.
 - NEVER output code blocks, plans, or file listings.
-- For non-coding questions, just answer directly.`);
+- For non-coding questions (general knowledge, platform questions), just answer directly.`);
       }
     }
   } else {
@@ -235,6 +246,59 @@ After starting a dev server, verify with \`curl localhost:3000\` then share the 
   parts.push(`## CLI Auth Status\n${cliStatus}\n\nIf any CLI is NOT SET UP and the user wants to use it, output [SETUP_CLI:toolname] and the system will handle authentication. Do NOT attempt coding work with an unauthenticated CLI.`);
 
   // Global + project context
+  if (globalContext) parts.push(globalContext);
+  if (projectContext) parts.push(projectContext);
+
+  return parts.join('\n\n');
+}
+
+/**
+ * Build system prompt for Claw (direct agent) mode.
+ * Unlike buildSystemPrompt(), this has NO relay/CLI delegation instructions.
+ * The OpenClaw agent works directly with its native tools.
+ */
+export function buildClawSystemPrompt(
+  globalContext: string,
+  projectContext: string,
+  projectName?: string | null,
+): string {
+  const parts: string[] = [];
+
+  parts.push(`You are ellul, a full-stack coding assistant on ellul.ai. You help users build websites, apps, APIs, and other software projects.
+
+## Guidelines
+- Be concise and direct. Avoid unnecessary preamble.
+- Write clean, working code. Prefer simplicity over cleverness.
+- When making changes, explain what you did and why in 1-2 sentences.
+- If something is ambiguous, ask for clarification rather than guessing.`);
+
+  if (projectName) {
+    const projectPath = path.join(PROJECTS_DIR, projectName);
+    let appNameLine = '';
+    try {
+      const ellulaiJsonPath = path.join(projectPath, 'ellulai.json');
+      if (fs.existsSync(ellulaiJsonPath)) {
+        const pjson = JSON.parse(fs.readFileSync(ellulaiJsonPath, 'utf8')) as { name?: string };
+        if (pjson.name) {
+          appNameLine = `The app name is "${pjson.name}" (user-defined — never change it).`;
+        }
+      }
+    } catch {}
+
+    parts.push(`## Workspace Rules
+- You are working ONLY inside: ${projectPath}
+- ALL file operations MUST stay within this directory
+- NEVER create new projects, re-scaffold, or re-initialize existing ones
+- ${appNameLine || 'Never change the "name" field in ellulai.json or package.json.'}`);
+  }
+
+  if (DEV_DOMAIN) {
+    parts.push(`## Dev Preview
+Your dev preview URL: **https://${DEV_DOMAIN}**
+Apps listening on port 3000 are served at this URL via reverse proxy.
+When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.`);
+  }
+
   if (globalContext) parts.push(globalContext);
   if (projectContext) parts.push(projectContext);
 
