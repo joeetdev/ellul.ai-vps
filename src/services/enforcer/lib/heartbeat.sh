@@ -127,6 +127,7 @@ heartbeat() {
   local SSH_ENABLED=$(jq -r '.sshEnabled // "false"' "$SETTINGS_FILE" 2>/dev/null || echo "false")
   enforce_settings "$TERMINAL_ENABLED" "$SSH_ENABLED"
   ensure_daemon_port
+  ensure_cors_headers
 }
 
 # Raw heartbeat with full processing - writes local status for WebSocket broadcast
@@ -175,6 +176,7 @@ heartbeat_raw() {
   local SSH_ENABLED=$(jq -r '.sshEnabled // "false"' "$SETTINGS_FILE" 2>/dev/null || echo "false")
   enforce_settings "$TERMINAL_ENABLED" "$SSH_ENABLED"
   ensure_daemon_port
+  ensure_cors_headers
 
   if [ "$HTTP_CODE" = "200" ]; then
     HEARTBEAT_FAILURES=0

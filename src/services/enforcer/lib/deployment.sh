@@ -1,11 +1,59 @@
 #!/bin/bash
 # Enforcer Deployment Functions
 # Ensures daemon API port (3006) is available in Caddyfile.
+# Ensures base CORS headers are present in Caddyfile.
 #
 # Phase 4 cleanup: switch_deployment_model() was moved to the sovereign-shield
 # bridge and is no longer processed by the enforcer. Deployment model switching
 # (Cloudflare Edge / Direct Connect) is now handled via WebSocket bridge commands
 # routed through sovereign-shield (port 3005) instead of heartbeat polling.
+
+# Ensure base CORS headers exist at the top of @code and @main handle blocks.
+# Servers provisioned before the CORS fix (afd1d87) are missing these headers,
+# causing browsers to block responses that don't go through a specific sub-handler
+# (e.g., auth failures, 502s, catch-all routes).
+# Runs on every heartbeat — idempotent, skips instantly if already patched.
+ensure_cors_headers() {
+  local CADDYFILE="/etc/caddy/Caddyfile"
+  [ ! -f "$CADDYFILE" ] && return
+
+  # Already patched? Skip.
+  grep -q '# Base CORS for dashboard' "$CADDYFILE" 2>/dev/null && return
+
+  # Only patch if the Caddyfile has handle blocks (skip bare/minimal configs)
+  grep -q 'handle @code {' "$CADDYFILE" 2>/dev/null || grep -q 'handle @main {' "$CADDYFILE" 2>/dev/null || return
+
+  log "CORS: Patching base CORS headers into Caddyfile..."
+
+  local TMPFILE
+  TMPFILE=$(mktemp)
+  awk '
+    /handle @code \{/ {
+      print
+      print "        # Base CORS for dashboard — ensure allow-origin on all responses"
+      print "        header Access-Control-Allow-Origin \"https://console.ellul.ai\""
+      print "        header Access-Control-Allow-Credentials \"true\""
+      next
+    }
+    /handle @main \{/ {
+      print
+      print "        # Base CORS for dashboard — ensure allow-origin on all responses"
+      print "        header Access-Control-Allow-Origin \"https://console.ellul.ai\""
+      print "        header Access-Control-Allow-Credentials \"true\""
+      next
+    }
+    { print }
+  ' "$CADDYFILE" > "$TMPFILE"
+
+  if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then
+    mv "$TMPFILE" "$CADDYFILE"
+    caddy reload --config "$CADDYFILE" --adapter caddyfile 2>/dev/null || true
+    log "CORS: Base headers patched and Caddy reloaded"
+  else
+    rm -f "$TMPFILE"
+    log "CORS: WARNING — Caddy validation failed after patch, reverted"
+  fi
+}
 
 # Ensure daemon API port (3006) is available for callDaemon RPC.
 # Called on every heartbeat to bootstrap existing servers that were
