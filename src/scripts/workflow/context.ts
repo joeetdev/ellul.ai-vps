@@ -134,7 +134,7 @@ The following files and directories are security-critical. Modifying, deleting, 
 **NEVER modify these files:**
 - /etc/ellulai/shield-data/.web_locked_activated - Security tier marker (tampering = permanent lockout or security breach)
 - /etc/ellulai/security-tier - Security tier state
-- /etc/ellulai/.terminal_disabled - Terminal access control
+- /etc/ellulai/shield-data/.terminal-disabled - Terminal access control
 - /etc/ellulai/domain - Server domain configuration
 - /etc/ellulai/server_id - Server identity
 - \${HOME_DIR}/.ssh/authorized_keys - SSH authentication (tampering = permanent lockout)

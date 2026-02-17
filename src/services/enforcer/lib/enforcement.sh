@@ -50,7 +50,7 @@ enforce_settings() {
     fw_is_allowed 22 || fw_allow 22 'SSH'
   fi
 
-  local TERMINAL_DISABLED_MARKER="/etc/ellulai/.terminal-disabled"
+  local TERMINAL_DISABLED_MARKER="/etc/ellulai/shield-data/.terminal-disabled"
   if [ -f "$TERMINAL_DISABLED_MARKER" ]; then
     stop_all_terminals
   elif [ "$TERMINAL_ENABLED" = "false" ]; then

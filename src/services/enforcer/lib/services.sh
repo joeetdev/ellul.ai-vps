@@ -95,7 +95,7 @@ check_critical_services() {
   fi
 
   # Ensure all ttyd terminal services are running (for web_locked and standard modes)
-  if [ ! -f /etc/ellulai/.terminal-disabled ]; then
+  if [ ! -f /etc/ellulai/shield-data/.terminal-disabled ]; then
     for svc in $ALL_TERMINALS; do
       if ! svc_is_active "$svc"; then
         log "WARN: $svc is down, starting..."

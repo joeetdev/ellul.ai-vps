@@ -90,11 +90,9 @@ function computeTierFromGroundTruth(): SecurityTier {
   }
 
   // ==========================================================================
-  // CROSS-CHECK: Read the immutable tier file as a safety net.
+  // CROSS-CHECK: Read tier file as a safety net.
   // If the tier file says "web_locked" but marker is missing (crash recovery,
-  // filesystem inconsistency, chattr race), trust the tier file and restore
-  // the marker. The tier file is protected by chattr +i so it can't be
-  // tampered with via SSH.
+  // filesystem inconsistency), trust the tier file and restore the marker.
   // ==========================================================================
   try {
     const tierFileValue = fs.readFileSync(TIER_FILE, 'utf8').trim();
@@ -523,7 +521,7 @@ export async function executeTierSwitch(
 
       // STEP 2: Create web_locked activation marker (SECURITY: prevents accidental downgrade)
       writeMarker(WEB_LOCKED_MARKER, Date.now().toString());
-      console.log('[shield] SECURITY: web_locked marker created (fail-secure + immutable)');
+      console.log('[shield] SECURITY: web_locked marker created');
 
       // STEP 3: Update tier file
       writeTierFile('web_locked');

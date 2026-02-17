@@ -192,7 +192,7 @@ log "Downgrading to Standard..."
 # Step 1: Enable web terminal FIRST (remove disabled marker)
 # This ensures web access will work once tier switches
 log "Step 1: Enabling web terminal..."
-rm -f /etc/ellulai/.terminal-disabled
+rm -f /etc/ellulai/shield-data/.terminal-disabled
 
 # Step 2: Switch tier via API - this enables web terminal access
 # If this fails, user still has SSH access (safe state)
@@ -206,7 +206,7 @@ if echo "$SWITCH_RESULT" | grep -q '"error"'; then
   log "ERROR: Tier switch failed: $SWITCH_RESULT"
   log "Aborting - SSH access preserved for safety"
   # Restore terminal disabled marker since tier switch failed
-  touch /etc/ellulai/.terminal-disabled
+  touch /etc/ellulai/shield-data/.terminal-disabled
   exit 1
 fi
 

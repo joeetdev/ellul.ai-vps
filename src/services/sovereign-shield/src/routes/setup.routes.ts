@@ -405,7 +405,6 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
           execSync('ufw deny 22/tcp 2>/dev/null || true', { stdio: 'ignore' });
           fs.writeFileSync(SOVEREIGN_KEYS_FILE, '');
           fs.chmodSync(SOVEREIGN_KEYS_FILE, 0o400);
-          execSync('chattr +i ' + SOVEREIGN_KEYS_FILE + ' 2>/dev/null || true', { stdio: 'ignore' });
           fs.unlinkSync(PENDING_SSH_BLOCK_FILE);
           console.log('[shield] SSH blocked permanently after passkey registration');
         } catch (e) {
