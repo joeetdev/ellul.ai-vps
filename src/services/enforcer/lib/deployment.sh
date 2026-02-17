@@ -17,9 +17,7 @@ ensure_daemon_port() {
   mkdir -p /etc/caddy/sites-enabled
 
   # Detect public IP for TLS cert SAN (fallback mode only)
-  local MY_IP=$(curl -sf --connect-timeout 2 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null \
-    || curl -sf --connect-timeout 2 "http://169.254.169.254/hetzner/v1/metadata/public-ipv4" 2>/dev/null \
-    || ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+  local MY_IP=$(get_public_ip)
 
   if [ -z "$MY_IP" ]; then
     log "DAEMON: Could not detect public IP, skipping daemon port setup"
@@ -64,7 +62,7 @@ ${MY_IP}:3006 {
 }
 DAEMONEOF
     fi
-    ufw allow 3006/tcp comment 'Daemon API' 2>/dev/null || true
+    fw_allow 3006 'Daemon API'
     NEEDS_RELOAD=true
   elif [ "$HAS_ORIGIN_CERT" = true ] && grep -q 'tls internal' /etc/caddy/sites-enabled/daemon.caddy; then
     # Auto-upgrade: origin cert available but daemon.caddy still uses tls internal
@@ -104,7 +102,7 @@ DAEMONEOF
   elif ! grep -q 'watchdog' /etc/caddy/sites-enabled/daemon.caddy; then
     log "DAEMON: Adding missing watchdog proxy to daemon.caddy..."
     # Insert watchdog handle_path before the respond line
-    sed -i '/respond "Not Found" 404/i\    handle_path /api/watchdog/* {\n        reverse_proxy 127.0.0.1:7710\n    }' /etc/caddy/sites-enabled/daemon.caddy
+    sed_inplace '/respond "Not Found" 404/i\    handle_path /api/watchdog/* {\n        reverse_proxy 127.0.0.1:7710\n    }' /etc/caddy/sites-enabled/daemon.caddy
     NEEDS_RELOAD=true
   fi
 

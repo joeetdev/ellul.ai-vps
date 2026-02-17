@@ -219,8 +219,7 @@ case "\$1" in
     echo ""
     echo "  Terminal Sessions:"
     for name in main opencode claude codex gemini aider git branch save ship undo logs clean; do
-      STATUS=$(systemctl is-active "ttyd@\$name" 2>/dev/null || echo "inactive")
-      if [ "\$STATUS" = "active" ]; then
+      if svc_is_active "ttyd@\$name"; then
         echo -e "    \\033[32m*\\033[0m \$name"
       else
         echo -e "    \\033[90mo\\033[0m \$name"
@@ -243,7 +242,7 @@ case "\$1" in
     echo ""
     echo "  CPU Usage: $(get_cpu_usage)%"
     echo "  RAM Usage: $(get_ram_usage)%"
-    echo -n "  SSH: "; ufw status | grep -q "22/tcp.*ALLOW" && echo "OPEN" || echo "CLOSED"
+    echo -n "  SSH: "; fw_is_allowed 22 && echo "OPEN" || echo "CLOSED"
     echo ""
     ;;
   kill)
@@ -253,7 +252,7 @@ case "\$1" in
       exit 1
     fi
     log "Manually stopping session: \$SESSION"
-    systemctl stop "ttyd@\$SESSION" 2>/dev/null
+    svc_stop "ttyd@\$SESSION"
     echo "Stopped: \$SESSION"
     ;;
   *) echo "Usage: ellulai-env {sync|heartbeat|daemon|sessions|apps|status|kill <session>}" ;;
@@ -283,7 +282,7 @@ export function getEnforcerScript(apiUrl: string): string {
  *
  * @param aiProxyToken - The server's AI proxy token for authentication
  */
-export function getEnforcerService(aiProxyToken: string): string {
+export function getEnforcerService(_aiProxyToken?: string): string {
   return `[Unit]
 Description=ellul.ai State Enforcer
 After=network-online.target
@@ -298,12 +297,54 @@ Restart=always
 RestartSec=5
 User=root
 EnvironmentFile=-/etc/default/ellulai
-Environment=ELLULAI_AI_TOKEN=${aiProxyToken}
 StandardOutput=append:/var/log/ellulai-enforcer.log
 StandardError=append:/var/log/ellulai-enforcer.log
 
+# Security hardening (root required for systemd/service management)
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true
+
 [Install]
 WantedBy=multi-user.target`;
+}
+
+/**
+ * Get the launchd plist for macOS BYOS deployments.
+ *
+ * @param aiProxyToken - The server's AI proxy token for authentication
+ */
+export function getEnforcerLaunchdPlist(aiProxyToken: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.ellulai.enforcer</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/ellulai-env</string>
+        <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ELLULAI_AI_TOKEN</key>
+        <string>${aiProxyToken}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/var/log/ellulai-enforcer.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/ellulai-enforcer.log</string>
+</dict>
+</plist>`;
 }
 
 /**

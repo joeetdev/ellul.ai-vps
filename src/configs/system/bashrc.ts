@@ -31,7 +31,8 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/bash_completion" ] && \\. "$NVM_DIR/bash_completion"
 
 export PATH="$HOME/.local/bin:$PATH"
-export ELLULAI_AI_TOKEN="${aiProxyToken}"
+# AI token loaded from protected file (chmod 640) — not embedded in .bashrc for security
+[ -f /etc/ellulai/ai-proxy-token ] && export ELLULAI_AI_TOKEN="$(cat /etc/ellulai/ai-proxy-token 2>/dev/null)"
 export PORT=3000
 
 [ -f ~/.ellulai-env ] && source ~/.ellulai-env

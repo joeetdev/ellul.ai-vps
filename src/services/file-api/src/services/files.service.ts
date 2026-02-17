@@ -240,7 +240,7 @@ export function uploadFile(
     finalPath = path.join(uploadsDir, file.filename);
   }
 
-  // Security: ensure path stays within project
+  // Security: ensure path stays within project (check both resolved and real path)
   const resolvedPath = path.resolve(finalPath);
   if (!resolvedPath.startsWith(projectDir)) {
     return { success: false, error: 'Path traversal not allowed' };
@@ -248,6 +248,12 @@ export function uploadFile(
 
   // Create parent directory if needed
   fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+
+  // Resolve symlinks to prevent symlink-based traversal (TOCTOU mitigation)
+  const parentReal = fs.realpathSync(path.dirname(resolvedPath));
+  if (!parentReal.startsWith(path.resolve(projectDir))) {
+    return { success: false, error: 'Path traversal not allowed' };
+  }
 
   // Write the file
   fs.writeFileSync(resolvedPath, file.data);

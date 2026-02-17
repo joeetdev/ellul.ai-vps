@@ -48,10 +48,31 @@ get_deployed_apps() {
 
 # Get RAM usage percentage
 get_ram_usage() {
-  free | awk '/^Mem:/ {printf "%.0f", $3/$2 * 100}'
+  if [ "$IS_MACOS" = true ]; then
+    local page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo 4096)
+    local total_mem=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+    local vm_info=$(vm_stat 2>/dev/null)
+    local pages_active=$(echo "$vm_info" | awk '/Pages active:/ {gsub(/\./, "", $3); print $3}')
+    local pages_wired=$(echo "$vm_info" | awk '/Pages wired down:/ {gsub(/\./, "", $4); print $4}')
+    local pages_compressed=$(echo "$vm_info" | awk '/Pages occupied by compressor:/ {gsub(/\./, "", $5); print $5}')
+    local used_mem=$(( (${pages_active:-0} + ${pages_wired:-0} + ${pages_compressed:-0}) * page_size ))
+    if [ "$total_mem" -gt 0 ]; then
+      echo "$used_mem $total_mem" | awk '{printf "%.0f", $1/$2 * 100}'
+    else
+      echo "0"
+    fi
+  else
+    free | awk '/^Mem:/ {printf "%.0f", $3/$2 * 100}'
+  fi
 }
 
 # Get CPU usage percentage
 get_cpu_usage() {
-  top -bn2 -d 0.5 | grep "Cpu(s)" | tail -1 | awk '{print 100 - $8}' | cut -d. -f1
+  if [ "$IS_MACOS" = true ]; then
+    # Sum per-process CPU usage and normalize by core count
+    local ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
+    ps -A -o %cpu 2>/dev/null | awk -v n="$ncpu" 'NR>1{s+=$1} END {v=s/n; if(v>100) v=100; printf "%.0f", v}'
+  else
+    top -bn2 -d 0.5 | grep "Cpu(s)" | tail -1 | awk '{print 100 - $8}' | cut -d. -f1
+  fi
 }

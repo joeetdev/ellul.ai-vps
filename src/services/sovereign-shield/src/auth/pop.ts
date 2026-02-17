@@ -24,6 +24,7 @@ export interface PopVerificationResult {
 export interface Session {
   id: string;
   pop_public_key?: string | null;
+  pop_sw_active?: number | null;
 }
 
 // Prepared statements for nonce operations
@@ -181,6 +182,143 @@ export function cleanupExpiredNonces(): void {
 }
 
 /**
+ * Service Worker for universal PoP coverage.
+ * Intercepts ALL same-origin requests (including navigations and static assets)
+ * and adds PoP signature headers before they reach the network.
+ */
+export const SESSION_POP_SW_JS = `// PoP Service Worker v1
+const DB_NAME = 'sovereign-shield';
+const STORE_NAME = 'session-keys';
+const KEY_ID = 'current';
+const SKIP_PATHS = ['/_auth/pop/bind', '/_auth/pop/status', '/_auth/pop/sw-confirm'];
+
+// Precomputed empty body hash (SHA-256 of empty string, base64url)
+let EMPTY_BODY_HASH = null;
+
+self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', (event) => { event.waitUntil(clients.claim()); });
+
+async function getEmptyBodyHash() {
+  if (EMPTY_BODY_HASH) return EMPTY_BODY_HASH;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(''));
+  EMPTY_BODY_HASH = btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+  return EMPTY_BODY_HASH;
+}
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => resolve(req.result);
+    req.onupgradeneeded = (e) => {
+      e.target.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
+    };
+  });
+}
+
+async function getKeyPair() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get(KEY_ID);
+    req.onsuccess = () => resolve(req.result?.keyPair || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function sortKeys(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(v => sortKeys(v));
+  return Object.keys(obj).sort().reduce((s, k) => { s[k] = sortKeys(obj[k]); return s; }, {});
+}
+
+async function hashBody(body) {
+  let canonical = '';
+  if (body !== undefined && body !== null && body !== '') {
+    if (typeof body === 'string') {
+      try { canonical = JSON.stringify(sortKeys(JSON.parse(body))); }
+      catch { canonical = body; }
+    } else {
+      canonical = JSON.stringify(sortKeys(body));
+    }
+  }
+  const data = new TextEncoder().encode(canonical);
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+}
+
+async function signAndFetch(request) {
+  try {
+    const keyPair = await getKeyPair();
+    if (!keyPair) return fetch(request);
+
+    const url = new URL(request.url);
+    const method = request.method;
+
+    // Compute body hash
+    let bodyStr = null;
+    let bodyHash;
+    if (method !== 'GET' && method !== 'HEAD') {
+      bodyStr = await request.clone().text();
+      bodyHash = await hashBody(bodyStr);
+    } else {
+      bodyHash = await getEmptyBodyHash();
+    }
+
+    const timestamp = Date.now().toString();
+    const nonce = crypto.randomUUID();
+    const payload = timestamp + '|' + method + '|' + url.pathname + '|' + bodyHash + '|' + nonce;
+
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      keyPair.privateKey,
+      new TextEncoder().encode(payload)
+    );
+    const sig64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+
+    const newHeaders = new Headers(request.headers);
+    newHeaders.set('X-PoP-Timestamp', timestamp);
+    newHeaders.set('X-PoP-Nonce', nonce);
+    newHeaders.set('X-PoP-Signature', sig64);
+
+    const init = {
+      method: method,
+      headers: newHeaders,
+      mode: request.mode,
+      credentials: request.credentials,
+      redirect: request.redirect,
+      referrer: request.referrer,
+      referrerPolicy: request.referrerPolicy,
+    };
+    if (method !== 'GET' && method !== 'HEAD' && bodyStr !== null) {
+      init.body = bodyStr;
+    }
+
+    return fetch(new Request(request.url, init));
+  } catch (e) {
+    return fetch(request);
+  }
+}
+
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+
+  // Only sign same-origin requests
+  if (url.origin !== self.location.origin) return;
+
+  // Skip PoP management endpoints (avoid chicken-and-egg)
+  if (SKIP_PATHS.some(p => url.pathname.startsWith(p))) return;
+
+  // Skip the SW script itself
+  if (url.pathname === '/_auth/static/pop-sw.js') return;
+
+  event.respondWith(signAndFetch(event.request));
+});
+`;
+
+/**
  * Client-side PoP JavaScript
  * This script is served to browsers and handles key generation, storage, and signing.
  */
@@ -317,7 +455,32 @@ const SESSION_POP = {
     return true;
   },
 
+  async registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return false;
+    try {
+      const reg = await navigator.serviceWorker.register('/_auth/static/pop-sw.js', { scope: '/' });
+      const sw = reg.installing || reg.waiting || reg.active;
+      if (sw && sw.state !== 'activated') {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => resolve(), 3000);
+          sw.addEventListener('statechange', () => {
+            if (sw.state === 'activated') { clearTimeout(timeout); resolve(); }
+            if (sw.state === 'redundant') { clearTimeout(timeout); reject(new Error('SW redundant')); }
+          });
+        });
+      }
+      // Confirm SW active to server
+      await fetch('/_auth/pop/sw-confirm', { method: 'POST', credentials: 'include' });
+      return true;
+    } catch (e) {
+      console.warn('[PoP] Service Worker registration failed:', e);
+      return false;
+    }
+  },
+
   wrapFetch() {
+    // If Service Worker is active and controlling this page, it handles signing
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) return;
     const originalFetch = window.fetch;
     const self = this;
     window.fetch = async function(url, options = {}) {
@@ -361,7 +524,10 @@ const SESSION_POP = {
 // Auto-initialize PoP (cookie is HttpOnly so we can't check it, but if this script
 // is loaded, we passed forward_auth so we have a valid session)
 SESSION_POP.initialize()
-  .then(() => { if (!window.__popFetchWrapped) { SESSION_POP.wrapFetch(); window.__popFetchWrapped = true; } })
+  .then(() => {
+    if (!window.__popFetchWrapped) { SESSION_POP.wrapFetch(); window.__popFetchWrapped = true; }
+    SESSION_POP.registerServiceWorker();
+  })
   .catch(() => {});
 `;
 

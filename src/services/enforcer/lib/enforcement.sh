@@ -45,9 +45,9 @@ enforce_settings() {
 
   # Enforce SSH state
   if [ "$SSH_ENABLED" = "false" ]; then
-    ufw status | grep -q "22/tcp.*ALLOW" && ufw delete allow 22/tcp 2>/dev/null || true
+    fw_is_allowed 22 && fw_deny 22
   elif [ "$SSH_ENABLED" = "true" ]; then
-    ufw status | grep -q "22/tcp.*ALLOW" || ufw allow 22/tcp comment 'SSH' 2>/dev/null || true
+    fw_is_allowed 22 || fw_allow 22 'SSH'
   fi
 
   local TERMINAL_DISABLED_MARKER="/etc/ellulai/.terminal-disabled"

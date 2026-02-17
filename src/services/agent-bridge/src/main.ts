@@ -32,8 +32,11 @@
  */
 
 import * as http from 'http';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   PORT,
+  PROJECTS_DIR,
   DEFAULT_SESSION,
   VALID_SESSIONS,
   CONTEXT_CACHE_MS,
@@ -56,7 +59,7 @@ import {
   getActiveProject,
 } from './services/context.service';
 import { sendToOpenClaw, type OpenClawChunk } from './services/openclaw-client.service';
-import { ensureProjectAgent } from './services/openclaw-agent.service';
+import { ensureProjectAgent, refreshProjectContext } from './services/openclaw-agent.service';
 import {
   getProviders,
   setApiKey,
@@ -112,6 +115,7 @@ import {
   renameThread,
   updateThreadSession,
   updateThreadModel,
+  clearThreadOpencodeSession,
   addMessage,
   getActiveThreadId,
   setActiveThreadId,
@@ -313,6 +317,16 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
         if (newProject !== oldProject) {
           console.log('[Bridge] Project changed from', oldProject, 'to', newProject);
+
+          // Ensure CLI context files exist for the project (CLAUDE.md, AGENTS.md, GEMINI.md).
+          // These are read by OpenCode, Claude, Gemini etc. for platform context.
+          if (newProject) {
+            const projectDir = path.join(PROJECTS_DIR, newProject);
+            const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+            if (!fs.existsSync(claudeMdPath)) {
+              refreshProjectContext(projectDir);
+            }
+          }
         }
         ws.send(
           JSON.stringify({
@@ -372,9 +386,12 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
       if (msgType === 'set_model' && msg.model) {
         try {
           const success = await setModel(msg.model as string);
-          // Update thread's last model if there's an active thread
+          // Update thread's last model and clear its OpenCode session.
+          // OpenCode locks model per-session, so we must force a new session
+          // for the thread to pick up the new model.
           if (state.currentThreadId && success) {
             updateThreadModel(state.currentThreadId, msg.model as string);
+            clearThreadOpencodeSession(state.currentThreadId);
           }
           ws.send(
             JSON.stringify({

@@ -227,7 +227,7 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   const frameworkEnv = [
     `export PATH=${pathEnv}`,
     'export DANGEROUSLY_DISABLE_HOST_CHECK=true', // CRA
-    'export HOST=0.0.0.0',                        // General
+    'export HOST=127.0.0.1',                      // Bind to localhost only (Caddy reverse proxies)
   ].join(' && ');
 
   // Ensure Vite projects have allowedHosts configured.

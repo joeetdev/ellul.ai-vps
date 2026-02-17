@@ -105,6 +105,17 @@ function resolveContextPath(fileName: string): string {
 }
 
 /**
+ * Validate that a resolved path is within allowed directories.
+ * Prevents path traversal attacks via absolute paths or symlinks.
+ */
+function isAllowedPath(filePath: string): boolean {
+  const resolved = path.resolve(filePath);
+  return resolved.startsWith(CONTEXT_DIR) ||
+    resolved.startsWith(ROOT_DIR) ||
+    resolved === GLOBAL_CLAUDE;
+}
+
+/**
  * Get a context file's content.
  */
 export function getContextFile(fileName: string): {
@@ -115,12 +126,22 @@ export function getContextFile(fileName: string): {
 } | null {
   const filePath = resolveContextPath(decodeURIComponent(fileName));
 
+  if (!isAllowedPath(filePath)) {
+    return null;
+  }
+
   if (!fs.existsSync(filePath)) {
     return null;
   }
 
-  const content = fs.readFileSync(filePath, 'utf8');
-  const stat = fs.statSync(filePath);
+  // Resolve symlinks to prevent symlink-based traversal
+  const realPath = fs.realpathSync(filePath);
+  if (!isAllowedPath(realPath)) {
+    return null;
+  }
+
+  const content = fs.readFileSync(realPath, 'utf8');
+  const stat = fs.statSync(realPath);
 
   return {
     content,
@@ -136,8 +157,12 @@ export function getContextFile(fileName: string): {
 export function saveContextFile(
   fileName: string,
   content: string
-): { success: boolean; path: string } {
+): { success: boolean; path: string; error?: string } {
   const filePath = resolveContextPath(fileName);
+
+  if (!isAllowedPath(filePath)) {
+    return { success: false, path: filePath, error: 'Path not allowed' };
+  }
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content);

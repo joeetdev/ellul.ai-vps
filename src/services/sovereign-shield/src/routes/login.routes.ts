@@ -18,6 +18,7 @@ import { createSession, clearSessionCookie, setSessionCookie, createSessionExcha
 import { checkRateLimit, recordAuthAttempt } from '../services/rate-limiter';
 import { logAuditEvent } from '../services/audit.service';
 import { parseCookies } from '../utils/cookie';
+import { generateCspNonce, getCspHeader } from '../utils/csp';
 import {
   generateAuthenticationOptions,
   verifyAuthenticationResponse,
@@ -44,13 +45,15 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
    * Login UI page
    */
   app.get('/_auth/login', async (c) => {
+    const nonce = generateCspNonce();
+    c.header('Content-Security-Policy', getCspHeader(nonce));
     return c.html(`<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sovereign Shield</title>
-  <script src="/_auth/static/session-pop.js"></script>
+  <script nonce="${nonce}" src="/_auth/static/session-pop.js"></script>
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 20px auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
@@ -71,11 +74,11 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
     Authenticate
   </button>
   <p class="error" id="error-msg"></p>
-  <script type="module">
+  <script nonce="${nonce}" type="module">
     import { startAuthentication } from '/_auth/static/simplewebauthn-browser.js';
     window.startAuthentication = startAuthentication;
   </script>
-  <script>
+  <script nonce="${nonce}">
     // Deduplicate auth across multiple login pages (terminal, code, context all redirect here)
     const AUTH_LOCK_KEY = 'shield_auth_lock';
     const AUTH_LOCK_TTL = 30000; // 30 seconds
@@ -142,6 +145,23 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
         const result = await verRes.json();
         const params = new URLSearchParams(window.location.search);
         let redirectUrl = params.get('redirect') || '/';
+        // SECURITY: Validate redirect URL to prevent open redirect attacks.
+        // Only allow relative paths or URLs on *.ellul.ai / *.ellul.app domains.
+        try {
+          if (redirectUrl.startsWith('/') && !redirectUrl.startsWith('//')) {
+            // Relative path — safe
+          } else {
+            const rUrl = new URL(redirectUrl);
+            if (!rUrl.hostname.endsWith('.ellul.ai') && !rUrl.hostname.endsWith('.ellul.app') && rUrl.hostname !== 'ellul.ai') {
+              redirectUrl = '/';
+            }
+            if (rUrl.protocol !== 'https:') {
+              redirectUrl = '/';
+            }
+          }
+        } catch {
+          redirectUrl = '/';
+        }
         // Handle cross-domain redirect for preview (*.ellul.app) vs same-domain (*.ellul.ai)
         // SECURITY: Use one-time exchange code instead of session ID in URL to prevent
         // session fixation via browser history, referer headers, or server logs.
@@ -194,6 +214,8 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
           await fetch('/_auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
           throw new Error('Session security failed: ' + (popErr.message || 'Unknown error') + '. Requires a modern browser with IndexedDB support.');
         }
+        // Register Service Worker for universal PoP (signs navigations + static assets)
+        await SESSION_POP.registerServiceWorker();
         // Auth succeeded - release lock and notify other tabs
         releaseAuthLock();
         try { localStorage.setItem('shield_auth_success', Date.now().toString()); } catch {}

@@ -56,8 +56,10 @@ async function bundleModular(): Promise<string> {
     external: [
       // Node built-ins
       'fs', 'path', 'crypto', 'http', 'https', 'url', 'events', 'stream', 'util', 'os',
-      // Runtime dependencies (installed on VPS)
-      'hono', '@hono/node-server', 'better-sqlite3', '@simplewebauthn/server',
+      'net', 'tls', 'dns', 'zlib', 'buffer', 'querystring', 'string_decoder',
+      'child_process', 'worker_threads', 'perf_hooks', 'async_hooks',
+      // Native addon — cannot be bundled (requires platform-specific .node binary)
+      'better-sqlite3',
     ],
     plugins: [{
       name: 'static-text',
@@ -121,7 +123,7 @@ ${bundledCode}
 /**
  * Generate the systemd service file for sovereign-shield.
  */
-export function getSovereignShieldService(): string {
+export function getSovereignShieldService(svcUser: string = "dev"): string {
   return `[Unit]
 Description=ellul.ai Sovereign Shield (Passkey Auth)
 After=network-online.target
@@ -129,12 +131,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=${svcUser}
+Group=${svcUser}
 WorkingDirectory=/opt/ellulai/auth
 ExecStart=/usr/bin/node /opt/ellulai/auth/server.js
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/etc/ellulai
+ProtectHome=tmpfs
 
 [Install]
 WantedBy=multi-user.target

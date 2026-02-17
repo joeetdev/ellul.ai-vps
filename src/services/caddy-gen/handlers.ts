@@ -109,6 +109,7 @@ function forwardAuthBlock(depth: number, extraHeaders?: string[]): Lines {
     `    header_up Sec-Ch-Ua-Mobile {http.request.header.Sec-Ch-Ua-Mobile}`,
     `    header_up Sec-Ch-Ua-Platform {http.request.header.Sec-Ch-Ua-Platform}`,
     `    header_up Sec-Fetch-Dest {http.request.header.Sec-Fetch-Dest}`,
+    `    header_up Sec-Fetch-Mode {http.request.header.Sec-Fetch-Mode}`,
     ...(extraHeaders ?? []).map(h => `    header_up ${h}`),
     `    header_up X-Forwarded-Uri {uri}`,
     `    header_up X-Forwarded-Host {host}`,

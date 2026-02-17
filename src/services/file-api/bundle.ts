@@ -125,6 +125,12 @@ ExecStart=${svcHome}/.node/bin/node /usr/local/bin/ellulai-file-api
 Restart=on-failure
 RestartSec=5
 
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=${svcHome} /etc/ellulai/vibe
+
 [Install]
 WantedBy=multi-user.target
 `;

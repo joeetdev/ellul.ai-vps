@@ -1363,10 +1363,15 @@ export async function setApiKey(provider: string, key: string): Promise<boolean>
 }
 
 export async function setModel(model: string): Promise<boolean> {
-  let configPatch: Record<string, unknown> = { model };
+  const configPath = path.join(process.env.HOME || '/root', '.config', 'opencode', 'config.json');
+
+  // Build the config object
+  let config: Record<string, unknown> = {
+    $schema: 'https://opencode.ai/config.json',
+    model,
+  };
 
   // If ellulai model, configure the provider with proxy URL and token
-  // (legacy path — kept for backwards compat, new flow uses opencode/* Zen models)
   if (model.startsWith('ellulai/')) {
     let domain = '';
     try {
@@ -1378,40 +1383,69 @@ export async function setModel(model: string): Promise<boolean> {
       for (const m of ELLULAI_MODELS) {
         models[m.id] = { name: m.name, maxTokens: 16384 };
       }
-      configPatch = {
-        model,
-        provider: {
-          ellulai: {
-            npm: '@ai-sdk/openai-compatible',
-            name: 'ellul.ai AI',
-            options: {
-              baseURL: 'https://code.' + domain + '/api/ai',
-              apiKey: token,
-            },
-            models,
+      config.provider = {
+        ellulai: {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'ellul.ai AI',
+          options: {
+            baseURL: 'https://code.' + domain + '/api/ai',
+            apiKey: token,
           },
+          models,
         },
       };
     }
   }
-  // opencode/* models use the built-in Zen provider — just set model, no provider config
 
-  const result = await httpRequest(
-    {
-      hostname: '127.0.0.1',
-      port: OPENCODE_API_PORT,
-      path: '/config',
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-    },
-    configPatch
-  );
+  try {
+    // Write config file and restart OpenCode so it picks up the new model.
+    // Sessions persist in OpenCode's SQLite DB across restarts.
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    console.log(`[OpenCode] Wrote config with model=${model}`);
 
-  if (result.status === 200) {
+    // Kill existing OpenCode process
+    try {
+      execSync('kill $(pgrep -x opencode) 2>/dev/null; true', { timeout: 3000 });
+    } catch {
+      // Process may not be running
+    }
+    opencodeReady = false;
     resetOpencodeSession();
-    return true;
+
+    // Wait for it to die
+    await new Promise((r) => setTimeout(r, 1000));
+
+    // Restart — reuse the same startup logic as ensureOpencodeServer
+    spawn('bash', ['-c', `cd ${PROJECTS_DIR} && ${OPENCODE_BIN} serve --port ${OPENCODE_API_PORT} &`], {
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
+
+    // Wait for server to come back up
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        const check = await httpRequest({
+          hostname: '127.0.0.1',
+          port: OPENCODE_API_PORT,
+          path: '/session',
+          method: 'GET',
+          timeout: 1000,
+        });
+        if (check.status === 200) {
+          console.log(`[OpenCode] Restarted with model=${model}`);
+          opencodeReady = true;
+          return true;
+        }
+      } catch {}
+    }
+    console.error('[OpenCode] Failed to restart after model change');
+    return false;
+  } catch (err) {
+    console.error('[OpenCode] setModel error:', (err as Error).message);
+    return false;
   }
-  return false;
 }
 
 export async function getCurrentModel(): Promise<string | null> {

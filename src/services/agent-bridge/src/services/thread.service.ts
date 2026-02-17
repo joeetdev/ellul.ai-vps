@@ -232,6 +232,17 @@ export function setThreadOpencodeSession(threadId: string, sessionId: string): b
 }
 
 /**
+ * Clear OpenCode session ID for a thread (forces new session on next request).
+ * Needed when switching models since OpenCode locks model per-session.
+ */
+export function clearThreadOpencodeSession(threadId: string): boolean {
+  const result = db.prepare(`
+    UPDATE threads SET opencode_session_id = NULL, updated_at = ? WHERE id = ?
+  `).run(Date.now(), threadId);
+  return result.changes > 0;
+}
+
+/**
  * Get OpenCode session ID for a thread
  */
 export function getThreadOpencodeSession(threadId: string): string | null {

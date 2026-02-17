@@ -32,6 +32,7 @@ import {
   storeChallenge,
   getChallenge,
 } from '../auth/webauthn';
+import { generateCspNonce, getCspHeader } from '../utils/csp';
 
 /**
  * Register setup routes on Hono app
@@ -56,6 +57,8 @@ export function registerSetupRoutes(app: Hono, hostname: string): void {
     }
 
     if (!validateSetupToken(c.req.query('token'))) {
+      const wn = generateCspNonce();
+      c.header('Content-Security-Policy', getCspHeader(wn));
       return c.html(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>body{font-family:-apple-system,system-ui,sans-serif;max-width:420px;margin:20px auto;padding:20px;background:#0a0a0a;color:#e0e0e0;text-align:center;}
@@ -64,18 +67,20 @@ export function registerSetupRoutes(app: Hono, hostname: string): void {
 </head><body>
 <div class="spinner"></div>
 <p>Waiting for activation...</p>
-<script>(function(){var a=parseInt(sessionStorage.getItem('shield-retry')||'0');if(a>15){sessionStorage.removeItem('shield-retry');document.body.innerHTML='<p>Setup token not found. Try again from the dashboard.</p>';return;}
+<script nonce="${wn}">(function(){var a=parseInt(sessionStorage.getItem('shield-retry')||'0');if(a>15){sessionStorage.removeItem('shield-retry');document.body.innerHTML='<p>Setup token not found. Try again from the dashboard.</p>';return;}
 sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.reload()},2000)})()</script>
 </body></html>`, 200);
     }
 
+    const nonce = generateCspNonce();
+    c.header('Content-Security-Policy', getCspHeader(nonce));
     return c.html(`<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sovereign Shield Setup</title>
-  <script src="/_auth/static/session-pop.js"></script>
+  <script nonce="${nonce}" src="/_auth/static/session-pop.js"></script>
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 20px auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
@@ -118,12 +123,12 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
     <div class="recovery-codes" id="recovery-codes"></div>
     <button class="copy-btn" onclick="copyRecoveryCodes()">Copy All Codes</button>
   </div>
-  <script>sessionStorage.removeItem('shield-retry');</script>
-  <script type="module">
+  <script nonce="${nonce}">sessionStorage.removeItem('shield-retry');</script>
+  <script nonce="${nonce}" type="module">
     import { startRegistration } from '/_auth/static/simplewebauthn-browser.js';
     window.startRegistration = startRegistration;
   </script>
-  <script>
+  <script nonce="${nonce}">
     let recoveryCodes = [];
 
     function getParentOrigin() {

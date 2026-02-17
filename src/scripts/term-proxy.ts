@@ -508,11 +508,17 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=${svcUser}
+Group=${svcUser}
 Environment=NODE_PATH=/opt/ellulai/auth/node_modules:${svcHome}/.node/lib/node_modules
 ExecStart=${svcHome}/.node/bin/node /usr/local/bin/ellulai-term-proxy
 Restart=always
 RestartSec=3
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target`;

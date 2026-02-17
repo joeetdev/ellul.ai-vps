@@ -4,7 +4,7 @@
 
 # Get all listening TCP ports (for ghost port detection)
 get_active_ports() {
-  ss -tlnH 2>/dev/null | awk '{print $4}' | awk -F: '{print $NF}' | sort -n | uniq | tr '\n' ',' | sed 's/,$//'
+  get_listening_ports
 }
 
 # Get auth token
@@ -37,11 +37,11 @@ compute_heartbeat_signature() {
   [ -z "$HB_SERVER_ID" ] && return
 
   local SIGN_DATA="${HB_TIMESTAMP}:${HB_SERVER_ID}"
-  HB_SIGNATURE=$(printf '%s' "$SIGN_DATA" | openssl pkeyutl -sign -inkey "$HEARTBEAT_KEY_FILE" 2>/dev/null | base64 -w0 2>/dev/null || echo "")
+  HB_SIGNATURE=$(printf '%s' "$SIGN_DATA" | openssl pkeyutl -sign -inkey "$HEARTBEAT_KEY_FILE" 2>/dev/null | b64_encode 2>/dev/null || echo "")
 
   # Read public key for first-write-wins registration (base64-encoded for HTTP header safety)
   if [ -f "$HEARTBEAT_PUB_FILE" ]; then
-    HB_PUBKEY=$(base64 -w0 "$HEARTBEAT_PUB_FILE" 2>/dev/null || echo "")
+    HB_PUBKEY=$(b64_encode_file "$HEARTBEAT_PUB_FILE" 2>/dev/null || echo "")
   fi
 }
 

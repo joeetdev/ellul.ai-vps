@@ -5,7 +5,8 @@
 # Detect security tier based on system state
 detect_security_tier() {
   local TERMINAL_DISABLED_MARKER="/etc/ellulai/.terminal-disabled"
-  local SHIELD_ACTIVE=$(systemctl is-active ellulai-sovereign-shield 2>/dev/null || echo "inactive")
+  local SHIELD_ACTIVE="inactive"
+  svc_is_active ellulai-sovereign-shield && SHIELD_ACTIVE="active"
   local HAS_SSH_KEY=false
   local HAS_PASSKEY=false
 

@@ -5,13 +5,13 @@
 # Stop and disable all terminals (for lockdown - prevents systemd Restart=always from undoing)
 stop_all_terminals() {
   for svc in $ALL_TERMINALS; do
-    systemctl disable "$svc" 2>/dev/null || true
-    systemctl stop "$svc" 2>/dev/null || true
+    svc_disable "$svc"
+    svc_stop "$svc"
   done
   # Clear 'failed' state so stopped services show as 'inactive (dead)'
   # rather than 'failed'. RestartPreventExitStatus=SIGTERM causes services
   # killed by stop (SIGTERM) to enter failed state instead of inactive.
-  systemctl reset-failed $ALL_TERMINALS 2>/dev/null || true
+  svc_reset_failed $ALL_TERMINALS
   log "All terminal services stopped and disabled"
 }
 
@@ -24,8 +24,8 @@ start_all_terminals() {
 
   # Dynamic terminal sessions are handled by agent-bridge and term-proxy
   # These services create sessions on-demand with proper project scoping
-  systemctl start ellulai-agent-bridge 2>/dev/null || true
-  systemctl start ellulai-term-proxy 2>/dev/null || true
+  svc_start ellulai-agent-bridge
+  svc_start ellulai-term-proxy
 }
 
 # Get active terminal sessions (queries agent-bridge for dynamic sessions)

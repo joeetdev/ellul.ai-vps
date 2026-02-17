@@ -35,6 +35,7 @@ export interface Session {
   absolute_expiry: number;
   pop_public_key?: string | null;
   pop_bound_at?: number | null;
+  pop_sw_active?: number | null;
 }
 
 export interface SessionValidationResult {

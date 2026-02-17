@@ -34,9 +34,11 @@ import {
   verifyRequestPoP,
   verifyPopSignature,
   SESSION_POP_JS,
+  SESSION_POP_SW_JS,
   TERMINAL_WRAPPER_HTML,
 } from '../auth/pop';
 import { parseCookies } from '../utils/cookie';
+import { generateCspNonce, getCspHeader } from '../utils/csp';
 import { validatePreviewCredentials } from './preview.routes';
 
 /**
@@ -247,7 +249,7 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
         // If token invalid, fall through to check code_session
       }
 
-      let codeSessionId = cookies.code_session;
+      let codeSessionId = cookies['__Host-code_session'] || cookies.code_session;
       let codeSessionFromUrl = false;
 
       // Check URL param for initial code session setup
@@ -276,7 +278,7 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
             // Code session is valid - set cookie if from URL
             if (codeSessionFromUrl) {
               // Set cookie for code subdomain
-              c.header('Set-Cookie', `code_session=${codeSessionId}; Path=/; Domain=${forwardedHost}; HttpOnly; Secure; SameSite=Lax; Max-Age=1800`);
+              c.header('Set-Cookie', `__Host-code_session=${codeSessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=1800`);
 
               // For API requests, don't redirect - just allow the request through
               // The cookie is now set for future requests
@@ -411,8 +413,10 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
     }
 
     // PoP verification - MANDATORY if session has PoP key bound (no downgrade attacks)
-    // Skip for navigation requests, static assets, ttyd token, WebSocket upgrades,
-    // and dev domain requests (iframe preview can't access main domain's PoP keys in IndexedDB)
+    // WebSocket upgrades and dev domain requests are always skipped (browser limitations).
+    // If the Service Worker is active (pop_sw_active), PoP is required on ALL other requests
+    // including navigations and static assets — the SW signs everything.
+    // Without SW, navigations and static assets are skipped (backwards compatibility).
     const isNav = isNavigationRequest(c);
     const fetchDest = c.req.header('sec-fetch-dest') || '';
     const isStaticAsset = ['style', 'script', 'image', 'font', 'manifest'].includes(fetchDest) ||
@@ -420,7 +424,8 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
     const isTtydToken = /\/term\/[^/]+\/token$/.test(path);
     const isWebSocketUpgrade = c.req.header('upgrade')?.toLowerCase() === 'websocket';
     const isDevDomain = forwardedHost !== hostname && forwardedHost.endsWith('.ellul.app');
-    const skipPoP = isNav || isStaticAsset || isTtydToken || isWebSocketUpgrade || isDevDomain;
+    const hasSw = !!result.session!.pop_sw_active;
+    const skipPoP = isWebSocketUpgrade || isDevDomain || (!hasSw && (isNav || isStaticAsset || isTtydToken));
 
     if (result.session!.pop_public_key && !skipPoP) {
       const popResult = await verifyRequestPoP(c, result.session!);
@@ -632,6 +637,12 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       return c.json({ error: 'Missing required fields' }, 400);
     }
 
+    // Validate timestamp freshness (defense-in-depth)
+    const reqTime = parseInt(timestamp, 10);
+    if (isNaN(reqTime) || Math.abs(Date.now() - reqTime) > 30_000) {
+      return c.json({ error: 'Timestamp expired' }, 400);
+    }
+
     // If already bound, verify the request is from same key
     if (session.pop_public_key) {
       const payload = 'bind|' + timestamp;
@@ -681,6 +692,33 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
   });
 
   /**
+   * Confirm Service Worker is active — sets pop_sw_active flag on session.
+   * Called by SESSION_POP.registerServiceWorker() after SW activation.
+   */
+  app.post('/_auth/pop/sw-confirm', async (c) => {
+    const cookies = parseCookies(c.req.header('cookie'));
+    const sessionId = cookies.shield_session;
+    if (!sessionId) return c.json({ error: 'No session' }, 401);
+
+    const session = db.prepare('SELECT id, pop_public_key, pop_sw_active FROM sessions WHERE id = ?')
+      .get(sessionId) as { id: string; pop_public_key: string | null; pop_sw_active: number | null } | undefined;
+    if (!session) return c.json({ error: 'Invalid session' }, 401);
+    if (!session.pop_public_key) return c.json({ error: 'PoP not bound' }, 400);
+
+    db.prepare('UPDATE sessions SET pop_sw_active = 1 WHERE id = ?').run(sessionId);
+
+    const ip = getClientIp(c);
+    logAuditEvent({
+      type: 'pop_sw_confirmed',
+      ip,
+      sessionId,
+      details: { message: 'Service Worker active — PoP enforced on all requests' }
+    });
+
+    return c.json({ confirmed: true });
+  });
+
+  /**
    * Serve session-pop.js - Client-side PoP library
    */
   app.get('/_auth/static/session-pop.js', (c) => {
@@ -690,12 +728,30 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
   });
 
   /**
+   * Serve pop-sw.js - Service Worker for universal PoP coverage
+   */
+  app.get('/_auth/static/pop-sw.js', (c) => {
+    c.header('Content-Type', 'application/javascript');
+    c.header('Cache-Control', 'public, max-age=3600');
+    c.header('Service-Worker-Allowed', '/');
+    return c.body(SESSION_POP_SW_JS);
+  });
+
+  /**
    * Serve terminal wrapper HTML
    */
   app.get('/_auth/terminal/wrapper', (c) => {
+    const twNonce = generateCspNonce();
     c.header('Content-Type', 'text/html; charset=utf-8');
     c.header('Cache-Control', 'no-store');
-    return c.body(TERMINAL_WRAPPER_HTML);
+    // frame-src needed because terminal wrapper loads ttyd in an iframe
+    c.header('Content-Security-Policy',
+      getCspHeader(twNonce).replace("frame-ancestors", "frame-src 'self'; frame-ancestors"));
+    // Inject nonce into script tags
+    const html = TERMINAL_WRAPPER_HTML
+      .replace(/<script src="/g, `<script nonce="${twNonce}" src="`)
+      .replace(/<script>/g, `<script nonce="${twNonce}">`);
+    return c.body(html);
   });
 
   /**

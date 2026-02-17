@@ -205,6 +205,9 @@ function migratePopColumns(): void {
     if (!cols.includes('pop_bound_at')) {
       db.exec("ALTER TABLE sessions ADD COLUMN pop_bound_at INTEGER");
     }
+    if (!cols.includes('pop_sw_active')) {
+      db.exec("ALTER TABLE sessions ADD COLUMN pop_sw_active INTEGER DEFAULT 0");
+    }
   } catch (e) {
     console.error('[shield] PoP migration error (non-fatal):', (e as Error).message);
   }

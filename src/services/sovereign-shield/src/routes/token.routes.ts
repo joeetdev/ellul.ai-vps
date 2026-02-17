@@ -24,6 +24,7 @@ import { getClientIp } from '../auth/fingerprint';
 import { verifyRequestPoP } from '../auth/pop';
 import { checkApiRateLimit } from '../services/rate-limiter';
 import { parseCookies } from '../utils/cookie';
+import { generateCspNonce, getCspHeader } from '../utils/csp';
 import type { Session } from '../auth/session';
 
 interface TokenData {
@@ -658,6 +659,8 @@ export function registerTokenRoutes(app: Hono): void {
    */
   app.get('/_auth/code/redirect', async (c) => {
     const target = c.req.query('target') || '/';
+    const nonce = generateCspNonce();
+    c.header('Content-Security-Policy', getCspHeader(nonce));
 
     return c.html(`<!DOCTYPE html>
 <html>
@@ -719,8 +722,8 @@ export function registerTokenRoutes(app: Hono): void {
   </div>
 
   <!-- Load PoP script -->
-  <script src="/_auth/static/session-pop.js"></script>
-  <script type="module">
+  <script nonce="${nonce}" src="/_auth/static/session-pop.js"></script>
+  <script nonce="${nonce}" type="module">
     import { startAuthentication } from '/_auth/static/simplewebauthn-browser.js';
 
     const TARGET_URL = ${JSON.stringify(target)};
