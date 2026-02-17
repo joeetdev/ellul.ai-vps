@@ -709,7 +709,8 @@ export function registerTokenRoutes(app: Hono): void {
     }
     button:hover { background: #6d28d9; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .fingerprint { font-size: 1.2rem; margin-right: 0.5rem; }
+    .btn-icon { display: flex; align-items: center; }
+    .btn-icon svg { width: 18px; height: 18px; }
   </style>
 </head>
 <body>
@@ -718,7 +719,7 @@ export function registerTokenRoutes(app: Hono): void {
     <h1 id="status">Sovereign Shield</h1>
     <p id="message">Authenticate with your passkey to continue</p>
     <p class="error" id="error"></p>
-    <button id="authBtn" onclick="startAuth()"><span class="fingerprint">&#9757;</span>Authenticate</button>
+    <button id="authBtn" onclick="startAuth()"><span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>Authenticate</button>
   </div>
 
   <!-- Load PoP script -->
@@ -828,7 +829,7 @@ export function registerTokenRoutes(app: Hono): void {
         document.getElementById('error').textContent = err.name === 'NotAllowedError' ? '' : (err.message || 'Unknown error');
         document.getElementById('error').style.display = err.name === 'NotAllowedError' ? 'none' : 'block';
         document.getElementById('authBtn').disabled = false;
-        document.getElementById('authBtn').innerHTML = '<span class="fingerprint">&#9757;</span>Authenticate';
+        document.getElementById('authBtn').innerHTML = '<span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>Authenticate';
       }
     };
   </script>

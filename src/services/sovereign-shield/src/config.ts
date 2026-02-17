@@ -20,16 +20,18 @@ export const SVC_USER = getServiceUser();
 export const SVC_HOME = `/home/${SVC_USER}`;
 
 // File paths
-export const DB_PATH = '/etc/ellulai/local-auth.db';
-export const SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
-export const AUTH_SECRET_FILE = '/etc/ellulai/.sovereign-auth-secret';
-export const AUTH_SECRETS_FILE = '/etc/ellulai/auth-secrets.json';
-export const PENDING_SSH_BLOCK_FILE = '/etc/ellulai/.pending-ssh-block';
-export const SOVEREIGN_KEYS_FILE = '/etc/ellulai/.sovereign-keys';
+// Mutable data lives in shield-data/ (owned by $SVC_USER, isolated from root config)
+export const SHIELD_DATA_DIR = '/etc/ellulai/shield-data';
+export const DB_PATH = `${SHIELD_DATA_DIR}/local-auth.db`;
+export const SETUP_TOKEN_FILE = `${SHIELD_DATA_DIR}/.sovereign-setup-token`;
+export const AUTH_SECRET_FILE = `${SHIELD_DATA_DIR}/.sovereign-auth-secret`;
+export const AUTH_SECRETS_FILE = `${SHIELD_DATA_DIR}/auth-secrets.json`;
+export const PENDING_SSH_BLOCK_FILE = `${SHIELD_DATA_DIR}/.pending-ssh-block`;
+export const SOVEREIGN_KEYS_FILE = `${SHIELD_DATA_DIR}/.sovereign-keys`;
 export const DOMAIN_FILE = '/etc/ellulai/domain';
-export const SSH_TRANSITION_MARKER = '/etc/ellulai/.ssh-only-to-web-locked';
-export const SETUP_EXPIRY_FILE = '/etc/ellulai/.sovereign-setup-expiry';
-export const TERMINAL_DISABLED_FILE = '/etc/ellulai/.terminal-disabled';
+export const SSH_TRANSITION_MARKER = `${SHIELD_DATA_DIR}/.ssh-only-to-web-locked`;
+export const SETUP_EXPIRY_FILE = `${SHIELD_DATA_DIR}/.sovereign-setup-expiry`;
+export const TERMINAL_DISABLED_FILE = '/etc/ellulai/.terminal-disabled'; // Read by enforcer (root), stays in root dir
 export const TIER_FILE = '/etc/ellulai/security-tier';
 export const SHIELD_MARKER = '/etc/ellulai/.sovereign-shield-active';
 export const ATTESTATION_POLICY_FILE = '/etc/ellulai/attestation-policy.json';

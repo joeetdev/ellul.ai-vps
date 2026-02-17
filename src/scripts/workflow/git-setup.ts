@@ -80,8 +80,8 @@ if [ -f "$HOME/.ellulai-env" ]; then
 fi
 
 # Resolve per-app secrets: __GIT_TOKEN__MY_APP → __GIT_TOKEN
-if [ -f /etc/ellulai/.active-git-app ]; then
-  _ACTIVE=$(cat /etc/ellulai/.active-git-app 2>/dev/null)
+if [ -f /etc/ellulai/shield-data/.active-git-app ]; then
+  _ACTIVE=$(cat /etc/ellulai/shield-data/.active-git-app 2>/dev/null)
   if [ -n "$_ACTIVE" ]; then
     _SUFFIX="__$(echo "$_ACTIVE" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
     _T_VAR="__GIT_TOKEN\${_SUFFIX}"

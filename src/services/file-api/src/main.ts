@@ -1397,13 +1397,13 @@ const server = http.createServer(async (req, res) => {
         try {
           const BACKUP_DIR = path.join(HOME, '.ellulai-identity');
           fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
-          if (fs.existsSync('/etc/ellulai/local-auth.db')) {
-            fs.copyFileSync('/etc/ellulai/local-auth.db', path.join(BACKUP_DIR, 'local-auth.db'));
-            if (fs.existsSync('/etc/ellulai/local-auth.db-wal')) {
-              fs.copyFileSync('/etc/ellulai/local-auth.db-wal', path.join(BACKUP_DIR, 'local-auth.db-wal'));
+          if (fs.existsSync('/etc/ellulai/shield-data/local-auth.db')) {
+            fs.copyFileSync('/etc/ellulai/shield-data/local-auth.db', path.join(BACKUP_DIR, 'local-auth.db'));
+            if (fs.existsSync('/etc/ellulai/shield-data/local-auth.db-wal')) {
+              fs.copyFileSync('/etc/ellulai/shield-data/local-auth.db-wal', path.join(BACKUP_DIR, 'local-auth.db-wal'));
             }
-            if (fs.existsSync('/etc/ellulai/local-auth.db-shm')) {
-              fs.copyFileSync('/etc/ellulai/local-auth.db-shm', path.join(BACKUP_DIR, 'local-auth.db-shm'));
+            if (fs.existsSync('/etc/ellulai/shield-data/local-auth.db-shm')) {
+              fs.copyFileSync('/etc/ellulai/shield-data/local-auth.db-shm', path.join(BACKUP_DIR, 'local-auth.db-shm'));
             }
           }
         } catch { /* non-fatal */ }
@@ -1960,7 +1960,7 @@ const server = http.createServer(async (req, res) => {
         const BACKUP_DIR = path.join(HOME, '.ellulai-identity');
         fs.mkdirSync(BACKUP_DIR, { recursive: true, mode: 0o700 });
 
-        const AUTH_DB = '/etc/ellulai/local-auth.db';
+        const AUTH_DB = '/etc/ellulai/shield-data/local-auth.db';
         let backedUp = false;
 
         if (fs.existsSync(AUTH_DB)) {

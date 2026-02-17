@@ -22,10 +22,10 @@ import type { SecurityTier } from '../config';
 // SECURITY: Marker file that indicates web_locked was intentionally activated
 // This file can ONLY be removed via explicit downgrade (SSH or authenticated request)
 // Prevents accidental downgrade if DB is corrupted/cleared
-const WEB_LOCKED_MARKER = '/etc/ellulai/.web_locked_activated';
+const WEB_LOCKED_MARKER = '/etc/ellulai/shield-data/.web_locked_activated';
 
 // Transition lock file — prevents concurrent tier switches and aids crash recovery
-const TIER_TRANSITION_LOCK = '/etc/ellulai/.tier-transition';
+const TIER_TRANSITION_LOCK = '/etc/ellulai/shield-data/.tier-transition';
 
 // Database will be injected to avoid circular dependencies
 let db: Database;
@@ -102,7 +102,6 @@ function computeTierFromGroundTruth(): SecurityTier {
       // Tier file says web_locked — restore missing marker (crash recovery)
       try {
         fs.writeFileSync(WEB_LOCKED_MARKER, Date.now().toString());
-        fs.chmodSync(WEB_LOCKED_MARKER, 0o400);
         console.log('[shield] SECURITY: Tier file says web_locked, restored missing marker (crash recovery)');
       } catch (e) {
         console.error('[shield] SECURITY: Could not restore marker, but tier file is authoritative:', (e as Error).message);
@@ -132,7 +131,6 @@ function computeTierFromGroundTruth(): SecurityTier {
     // Passkey exists but no marker - create marker now (first-time setup)
     try {
       fs.writeFileSync(WEB_LOCKED_MARKER, Date.now().toString());
-      fs.chmodSync(WEB_LOCKED_MARKER, 0o400);
       console.log('[shield] SECURITY: Passkey found, created web_locked marker');
     } catch {}
     return 'web_locked';
@@ -436,30 +434,22 @@ export async function executeTierSwitch(
     } catch { return false; }
   };
 
-  // Helper to write tier file with immutability protection
+  // Helper to write tier file (service runs as $SVC_USER, no chattr available)
   const writeTierFile = (tier: string): void => {
-    // Remove immutable flag before writing
-    try { execSync(`chattr -i ${TIER_FILE} 2>/dev/null || true`, { stdio: 'pipe' }); } catch {}
     fs.writeFileSync(TIER_FILE, tier);
     if (fs.readFileSync(TIER_FILE, 'utf8').trim() !== tier) {
       throw new Error(`Failed to update tier file to ${tier}`);
     }
-    // Re-apply immutable flag to prevent tampering via SSH
-    try { execSync(`chattr +i ${TIER_FILE} 2>/dev/null || true`, { stdio: 'pipe' }); } catch {}
-    console.log(`[shield] Tier file updated to ${tier} (verified + immutable)`);
+    console.log(`[shield] Tier file updated to ${tier} (verified)`);
   };
 
-  // Helper to write marker file with immutability
-  const writeImmutableMarker = (path: string, content: string): void => {
-    try { execSync(`chattr -i ${path} 2>/dev/null || true`, { stdio: 'pipe' }); } catch {}
+  // Helper to write marker file
+  const writeMarker = (path: string, content: string): void => {
     fs.writeFileSync(path, content);
-    fs.chmodSync(path, 0o400);
-    try { execSync(`chattr +i ${path} 2>/dev/null || true`, { stdio: 'pipe' }); } catch {}
   };
 
-  // Helper to remove immutable marker file
-  const removeImmutableMarker = (path: string): void => {
-    try { execSync(`chattr -i ${path} 2>/dev/null || true`, { stdio: 'pipe' }); } catch {}
+  // Helper to remove marker file
+  const removeMarker = (path: string): void => {
     try { fs.unlinkSync(path); } catch {}
   };
 
@@ -487,7 +477,7 @@ export async function executeTierSwitch(
       // computeTierFromGroundTruth() recreates the marker and tier snaps back.
       // SAFETY: Only clear credentials AFTER confirming marker is gone.
       // If marker removal fails, keep credentials so user can still authenticate.
-      removeImmutableMarker(WEB_LOCKED_MARKER);
+      removeMarker(WEB_LOCKED_MARKER);
       if (fs.existsSync(WEB_LOCKED_MARKER)) {
         console.error('[shield] CRITICAL: web_locked marker could not be removed — aborting downgrade');
         throw new Error('Failed to remove web_locked marker — downgrade aborted, passkeys preserved');
@@ -505,7 +495,7 @@ export async function executeTierSwitch(
       } catch (e) {
         db.exec('ROLLBACK');
         // Restore marker — credentials still exist, user can still auth
-        writeImmutableMarker(WEB_LOCKED_MARKER, Date.now().toString());
+        writeMarker(WEB_LOCKED_MARKER, Date.now().toString());
         console.error('[shield] Failed to clear credentials, restored web_locked marker:', (e as Error).message);
         throw new Error('Failed to clear credentials — web_locked state restored');
       }
@@ -532,7 +522,7 @@ export async function executeTierSwitch(
       console.log('[shield] Sovereign Shield is active (self-verified)');
 
       // STEP 2: Create web_locked activation marker (SECURITY: prevents accidental downgrade)
-      writeImmutableMarker(WEB_LOCKED_MARKER, Date.now().toString());
+      writeMarker(WEB_LOCKED_MARKER, Date.now().toString());
       console.log('[shield] SECURITY: web_locked marker created (fail-secure + immutable)');
 
       // STEP 3: Update tier file

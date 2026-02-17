@@ -15,7 +15,7 @@ detect_security_tier() {
   fi
 
   # Check for passkey in local SQLite
-  local CRED_COUNT=$(node -e "try{const d=require('/opt/ellulai/auth/node_modules/better-sqlite3')('/etc/ellulai/local-auth.db');console.log(d.prepare('SELECT COUNT(*) as c FROM credential').get().c)}catch(e){console.log(0)}" 2>/dev/null || echo "0")
+  local CRED_COUNT=$(node -e "try{const d=require('/opt/ellulai/auth/node_modules/better-sqlite3')('/etc/ellulai/shield-data/local-auth.db');console.log(d.prepare('SELECT COUNT(*) as c FROM credential').get().c)}catch(e){console.log(0)}" 2>/dev/null || echo "0")
   if [ "$CRED_COUNT" -gt 0 ]; then
     HAS_PASSKEY=true
   fi

@@ -15,8 +15,8 @@ import { execSync } from 'child_process';
 import { getCurrentTier } from './tier.service';
 import { SSH_AUTH_KEYS_PATH } from '../config';
 
-const SETTINGS_FILE = '/etc/ellulai/settings.json';
-const SETTINGS_TMP = '/etc/ellulai/settings.json.tmp';
+const SETTINGS_FILE = '/etc/ellulai/shield-data/settings.json';
+const SETTINGS_TMP = '/etc/ellulai/shield-data/settings.json.tmp';
 
 export interface LocalSettings {
   terminalEnabled: boolean;

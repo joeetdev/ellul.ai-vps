@@ -17,7 +17,7 @@ import { SVC_HOME, SVC_USER } from '../config';
 export type GitAction = 'push' | 'pull' | 'force-push' | 'setup' | 'teardown';
 
 const ENV_FILE = `${SVC_HOME}/.ellulai-env`;
-const ACTIVE_GIT_APP_FILE = '/etc/ellulai/.active-git-app';
+const ACTIVE_GIT_APP_FILE = '/etc/ellulai/shield-data/.active-git-app';
 const PROJECTS_DIR = `${SVC_HOME}/projects`;
 
 const GIT_SECRET_VARS = [

@@ -63,14 +63,15 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
     button:hover { background: #6d28d9; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .error { color: #ef4444; margin-top: 12px; display: none; font-size: 0.85rem; text-align: center; }
-    .fingerprint { font-size: 1.5rem; }
+    .btn-icon { display: flex; align-items: center; }
+    .btn-icon svg { width: 18px; height: 18px; }
   </style>
 </head>
 <body>
   <h1>Sovereign Shield</h1>
   <p class="subtitle">Authenticate with your passkey to access this server.</p>
   <button id="auth-btn" onclick="doAuth()">
-    <span class="fingerprint">&#9757;</span>
+    <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
     Authenticate
   </button>
   <p class="error" id="error-msg"></p>
@@ -225,7 +226,7 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
         err.textContent = e.name === 'NotAllowedError' ? 'Authentication cancelled.' : (e.message || 'Authentication failed.');
         err.style.display = 'block';
         btn.disabled = false;
-        btn.innerHTML = '<span class="fingerprint">&#9757;</span> Authenticate';
+        btn.innerHTML = '<span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span> Authenticate';
       }
     }
     window.doAuth = doAuth;

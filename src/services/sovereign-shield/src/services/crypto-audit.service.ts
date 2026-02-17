@@ -14,7 +14,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 
 const AUDIT_LOG = '/var/log/ellulai/audit.jsonl';
-const CHAIN_HEAD_FILE = '/etc/ellulai/audit-chain-head';
+const CHAIN_HEAD_FILE = '/etc/ellulai/shield-data/audit-chain-head';
 const SIGNING_KEY = '/etc/ellulai/heartbeat.key'; // Reuse Ed25519 key
 
 interface AuditEntry {

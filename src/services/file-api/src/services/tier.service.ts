@@ -26,7 +26,7 @@ export function getCurrentTier(): 'standard' | 'web_locked' {
     // Tier file missing or unreadable — fall through to marker checks
   }
   // Fallback: check web_locked marker (crash recovery / tier file corruption)
-  if (fs.existsSync('/etc/ellulai/.web_locked_activated')) return 'web_locked';
+  if (fs.existsSync('/etc/ellulai/shield-data/.web_locked_activated')) return 'web_locked';
   // Legacy fallback: sovereign-shield active marker
   if (fs.existsSync('/etc/ellulai/.sovereign-shield-active')) return 'web_locked';
   return 'standard';

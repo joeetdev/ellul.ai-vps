@@ -143,8 +143,7 @@ Environment=NODE_ENV=production
 NoNewPrivileges=true
 ProtectSystem=strict
 PrivateTmp=true
-ReadWritePaths=/etc/ellulai
-ProtectHome=tmpfs
+ReadWritePaths=/etc/ellulai /etc/caddy /home
 
 [Install]
 WantedBy=multi-user.target
@@ -256,8 +255,8 @@ set -e
 
 TIER_FILE="/etc/ellulai/security-tier"
 DOMAIN_FILE="/etc/ellulai/domain"
-SETUP_TOKEN_FILE="/etc/ellulai/.sovereign-setup-token"
-SETUP_EXPIRY_FILE="/etc/ellulai/.sovereign-setup-expiry"
+SETUP_TOKEN_FILE="/etc/ellulai/shield-data/.sovereign-setup-token"
+SETUP_EXPIRY_FILE="/etc/ellulai/shield-data/.sovereign-setup-expiry"
 LOG_FILE="/var/log/ellulai-enforcer.log"
 [ -f /etc/default/ellulai ] && source /etc/default/ellulai
 SVC_USER="\${PS_USER:-dev}"
@@ -357,7 +356,7 @@ export function getResetAuthScript(): string {
   return `#!/bin/bash
 set -e
 
-AUTH_DB="/etc/ellulai/local-auth.db"
+AUTH_DB="/etc/ellulai/shield-data/local-auth.db"
 TIER_FILE="/etc/ellulai/security-tier"
 LOG_FILE="/var/log/ellulai-enforcer.log"
 [ -f /etc/default/ellulai ] && source /etc/default/ellulai
@@ -451,7 +450,7 @@ DELETE FROM pop_nonces;
 EOF
 
 # Remove web_locked marker since passkeys are cleared
-rm -f /etc/ellulai/.web_locked_activated
+rm -f /etc/ellulai/shield-data/.web_locked_activated
 
 # If in web_locked, downgrade to standard (no passkeys = can't stay web_locked)
 if [ "$CURRENT_TIER" = "web_locked" ]; then

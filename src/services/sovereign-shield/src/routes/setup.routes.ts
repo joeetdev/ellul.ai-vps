@@ -93,7 +93,8 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .success { color: #22c55e; margin-top: 16px; display: none; text-align: center; }
     .error { color: #ef4444; margin-top: 12px; display: none; font-size: 0.85rem; text-align: center; }
-    .fingerprint { font-size: 1.5rem; }
+    .btn-icon { display: flex; align-items: center; }
+    .btn-icon svg { width: 18px; height: 18px; }
     .recovery-section { display: none; margin-top: 24px; }
     .recovery-warning { background: #7f1d1d; border: 1px solid #ef4444; padding: 12px; border-radius: 8px; margin-bottom: 16px; font-size: 0.85rem; color: #fca5a5; }
     .recovery-codes { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 1rem; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
@@ -109,13 +110,13 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
     <strong>How it works:</strong> Your device's biometric (fingerprint or Face ID) becomes the key to your server. The credential is stored only on this machine &mdash; never sent to any cloud.
   </div>
   <button id="register-btn" onclick="doRegister()">
-    <span class="fingerprint">&#9757;</span>
+    <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
     Register Passkey
   </button>
   <p class="success" id="success-msg">Passkey registered! Sovereign Shield is active.</p>
   <p class="error" id="error-msg"></p>
   <div class="recovery-section" id="recovery-section">
-    <h2 style="font-size:1.1rem;color:#ef4444;margin-bottom:8px;">&#9888; Recovery Codes</h2>
+    <h2 style="font-size:1.1rem;color:#ef4444;margin-bottom:8px;">Recovery Codes</h2>
     <div class="recovery-warning">
       <strong>SAVE THESE CODES NOW!</strong><br>
       They will NOT be shown again. Use them to recover access if you lose your passkey device.
@@ -222,7 +223,7 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
         err.textContent = e.message || 'Registration failed.';
         err.style.display = 'block';
         btn.disabled = false;
-        btn.innerHTML = '<span class="fingerprint">&#9757;</span> Register Passkey';
+        btn.innerHTML = '<span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span> Register Passkey';
       }
     }
     window.doRegister = doRegister;

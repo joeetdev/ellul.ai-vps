@@ -86,11 +86,11 @@ heartbeat() {
   local OPEN_PORTS=$(get_active_ports)
   local CURRENT_TAG=$(cat "$AGENT_VERSION_FILE" 2>/dev/null | tr -d '\n')
   # Read local settings (VPS source of truth)
-  local SETTINGS_FILE="/etc/ellulai/settings.json"
+  local SETTINGS_FILE="/etc/ellulai/shield-data/settings.json"
   local LOCAL_TERMINAL=$(jq -r '.terminalEnabled // true' "$SETTINGS_FILE" 2>/dev/null || echo "true")
   local LOCAL_SSH=$(jq -r '.sshEnabled // false' "$SETTINGS_FILE" 2>/dev/null || echo "false")
   # Cryptographic audit chain head (Phase 4, Step 16: tamper-evident audit trail)
-  local CHAIN_HEAD=$(cat /etc/ellulai/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
+  local CHAIN_HEAD=$(cat /etc/ellulai/shield-data/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
   # Agent telemetry
   local AGENT_STATUS=$(get_agent_status)
   local PAYLOAD=$(jq -n \
@@ -141,11 +141,11 @@ heartbeat_raw() {
   local OPEN_PORTS=$(get_active_ports)
   local CURRENT_TAG=$(cat "$AGENT_VERSION_FILE" 2>/dev/null | tr -d '\n')
   # Read local settings (VPS source of truth)
-  local SETTINGS_FILE="/etc/ellulai/settings.json"
+  local SETTINGS_FILE="/etc/ellulai/shield-data/settings.json"
   local LOCAL_TERMINAL=$(jq -r '.terminalEnabled // true' "$SETTINGS_FILE" 2>/dev/null || echo "true")
   local LOCAL_SSH=$(jq -r '.sshEnabled // false' "$SETTINGS_FILE" 2>/dev/null || echo "false")
   # Cryptographic audit chain head (Phase 4, Step 16: tamper-evident audit trail)
-  local CHAIN_HEAD=$(cat /etc/ellulai/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
+  local CHAIN_HEAD=$(cat /etc/ellulai/shield-data/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
   # Agent telemetry
   local AGENT_STATUS=$(get_agent_status)
   local PAYLOAD=$(jq -n \

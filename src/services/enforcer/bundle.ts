@@ -150,7 +150,7 @@ run_daemon() {
   # STARTUP ENFORCEMENT: Run enforcement immediately on daemon start.
   # This ensures SSH is enabled (if keys exist) before the first heartbeat,
   # preventing lockout during the initial 30-second window.
-  local SETTINGS_FILE="/etc/ellulai/settings.json"
+  local SETTINGS_FILE="/etc/ellulai/shield-data/settings.json"
   local BOOT_TERMINAL=\$(jq -r '.terminalEnabled // "true"' "\$SETTINGS_FILE" 2>/dev/null || echo "true")
   local BOOT_SSH=\$(jq -r '.sshEnabled // "false"' "\$SETTINGS_FILE" 2>/dev/null || echo "false")
   log "Running startup enforcement (terminal=\$BOOT_TERMINAL, ssh=\$BOOT_SSH)..."

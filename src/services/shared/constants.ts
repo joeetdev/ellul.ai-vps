@@ -25,14 +25,17 @@ export const API_URL_FILE = '/etc/ellulai/api-url';
 export const DOMAIN_FILE = '/etc/ellulai/domain';
 export const OWNER_LOCK_FILE = '/etc/ellulai/owner.lock';
 export const JWT_SECRET_FILE = '/etc/ellulai/jwt-secret';
-export const AUTH_SECRET_FILE = '/etc/ellulai/.sovereign-auth-secret';
-export const AUTH_SECRETS_FILE = '/etc/ellulai/auth-secrets.json';
-export const SETUP_TOKEN_FILE = '/etc/ellulai/.sovereign-setup-token';
-export const SETUP_EXPIRY_FILE = '/etc/ellulai/.sovereign-setup-expiry';
 export const SHIELD_MARKER = '/etc/ellulai/.sovereign-shield-active';
 export const TERMINAL_DISABLED_FILE = '/etc/ellulai/.terminal-disabled';
 export const SSH_AUTH_KEYS_PATH = `${SVC_HOME}/.ssh/authorized_keys`;
-export const DB_PATH = '/etc/ellulai/local-auth.db';
+
+// Mutable data lives in shield-data/ (owned by $SVC_USER, isolated from root config)
+export const SHIELD_DATA_DIR = '/etc/ellulai/shield-data';
+export const DB_PATH = `${SHIELD_DATA_DIR}/local-auth.db`;
+export const AUTH_SECRET_FILE = `${SHIELD_DATA_DIR}/.sovereign-auth-secret`;
+export const AUTH_SECRETS_FILE = `${SHIELD_DATA_DIR}/auth-secrets.json`;
+export const SETUP_TOKEN_FILE = `${SHIELD_DATA_DIR}/.sovereign-setup-token`;
+export const SETUP_EXPIRY_FILE = `${SHIELD_DATA_DIR}/.sovereign-setup-expiry`;
 
 // Security tiers
 export const TIERS = {

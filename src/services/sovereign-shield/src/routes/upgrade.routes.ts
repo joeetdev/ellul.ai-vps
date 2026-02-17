@@ -274,18 +274,19 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
   .recovery { background: rgba(245,158,11,0.1); border: 1px solid #f59e0b; border-radius: 8px; padding: 0.75rem; margin-top: 1rem; }
   .recovery h3 { color: #f59e0b; margin: 0 0 0.5rem 0; font-size: 0.85rem; }
   .recovery code { display: block; background: #0a0a0a; padding: 0.4rem; border-radius: 4px; font-size: 0.75rem; color: #fcd34d; margin: 0.2rem 0; }
-  .fingerprint { font-size: 1.5rem; }
+  .btn-icon { display: flex; align-items: center; }
+  .btn-icon svg { width: 18px; height: 18px; }
 </style>
 </head>
 <body>
 <button id="registerBtn" onclick="startRegistration()">
-  <span class="fingerprint">&#9757;</span>
+  <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
   <span id="btnText">Register Passkey</span>
 </button>
 <div class="error" id="error"></div>
 <div class="success" id="success"></div>
 <div class="recovery" id="recovery" style="display:none;">
-  <h3>Save Your Recovery Codes</h3>
+  <h3>Save your recovery codes</h3>
   <div id="recoveryCodes"></div>
 </div>
 
@@ -392,7 +393,8 @@ window.startRegistration = async function() {
   .recovery { background: #1a1a1a; border: 1px solid #f59e0b; border-radius: 8px; padding: 1rem; margin-top: 1rem; }
   .recovery h3 { color: #f59e0b; margin: 0 0 0.5rem 0; font-size: 0.9rem; }
   .recovery code { display: block; background: #0a0a0a; padding: 0.5rem; border-radius: 4px; font-size: 0.8rem; color: #fcd34d; margin: 0.25rem 0; }
-  .fingerprint { font-size: 1.5rem; }
+  .btn-icon { display: flex; align-items: center; }
+  .btn-icon svg { width: 18px; height: 18px; }
 </style>
 </head>
 <body>
@@ -407,14 +409,14 @@ window.startRegistration = async function() {
     </div>
 
     <button id="registerBtn" onclick="startRegistration()">
-      <span class="fingerprint">&#9757;</span>
+      <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
       <span id="btnText">Register Passkey</span>
     </button>
 
     <div class="error" id="error"></div>
     <div class="success" id="success"></div>
     <div class="recovery" id="recovery" style="display:none;">
-      <h3>⚠️ Save Your Recovery Codes</h3>
+      <h3>Save Your Recovery Codes</h3>
       <p style="color:#888;font-size:0.8rem;margin:0 0 0.5rem 0;">These codes can be used if you lose your passkey. Save them now!</p>
       <div id="recoveryCodes"></div>
     </div>

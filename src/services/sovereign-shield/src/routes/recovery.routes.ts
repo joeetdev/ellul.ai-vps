@@ -107,7 +107,7 @@ export function registerRecoveryRoutes(app: Hono, hostname: string): void {
   </style>
 </head>
 <body>
-  <h1>&#9888; Emergency Recovery</h1>
+  <h1>Emergency Recovery</h1>
   <div class="warning">
     <strong>Lost access to your passkey?</strong><br><br>
     Enter one of your recovery codes below. Each code can only be used once.
@@ -311,18 +311,19 @@ export function registerRecoveryRoutes(app: Hono, hostname: string): void {
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .error { color: #ef4444; margin-top: 12px; display: none; font-size: 0.85rem; text-align: center; }
     .success { color: #22c55e; margin-top: 12px; display: none; font-size: 0.85rem; text-align: center; }
-    .fingerprint { font-size: 1.5rem; }
+    .btn-icon { display: flex; align-items: center; }
+    .btn-icon svg { width: 18px; height: 18px; }
     .timer { color: #888; font-size: 0.85rem; text-align: center; margin-top: 16px; }
   </style>
 </head>
 <body>
-  <h1>&#10004; Recovery Code Accepted</h1>
+  <h1>Recovery Code Accepted</h1>
   <div class="info">
     Register a new passkey to regain access to your server.
     This session expires in 15 minutes.
   </div>
   <button id="register-btn" onclick="doRegister()">
-    <span class="fingerprint">&#9757;</span>
+    <span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
     Register New Passkey
   </button>
   <p class="error" id="error-msg"></p>
@@ -357,7 +358,7 @@ export function registerRecoveryRoutes(app: Hono, hostname: string): void {
       const success = document.getElementById('success-msg');
 
       btn.disabled = true;
-      btn.innerHTML = '<span style="margin-right:8px;">&#9203;</span> Waiting for device...';
+      btn.innerHTML = 'Waiting for device...';
       err.style.display = 'none';
 
       try {
@@ -397,7 +398,7 @@ export function registerRecoveryRoutes(app: Hono, hostname: string): void {
         err.textContent = e.message;
         err.style.display = 'block';
         btn.disabled = false;
-        btn.innerHTML = '<span class="fingerprint">&#9757;</span> Register New Passkey';
+        btn.innerHTML = '<span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span> Register New Passkey';
       }
     }
     window.doRegister = doRegister;

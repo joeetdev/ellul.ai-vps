@@ -132,7 +132,7 @@ NEVER configure git credentials manually (no git config, no SSH keys, no tokens)
 The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
 
 **NEVER modify these files:**
-- /etc/ellulai/.web_locked_activated - Security tier marker (tampering = permanent lockout or security breach)
+- /etc/ellulai/shield-data/.web_locked_activated - Security tier marker (tampering = permanent lockout or security breach)
 - /etc/ellulai/security-tier - Security tier state
 - /etc/ellulai/.terminal_disabled - Terminal access control
 - /etc/ellulai/domain - Server domain configuration

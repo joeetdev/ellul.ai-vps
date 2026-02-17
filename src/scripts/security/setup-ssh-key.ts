@@ -11,7 +11,7 @@ set -e
 SVC_USER="\${PS_USER:-dev}"
 SVC_HOME="/home/\${SVC_USER}"
 
-LOCK_FILE="/etc/ellulai/.sovereign-keys"
+LOCK_FILE="/etc/ellulai/shield-data/.sovereign-keys"
 SSH_KEY="$1"
 
 # Check if already locked

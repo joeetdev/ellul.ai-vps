@@ -399,8 +399,8 @@ fi`;
  * Runs as root via sudo — restores passkey DB from volume backup after wake.
  * Called by file-api's /api/restore-identity daemon endpoint.
  *
- * Copies $HOME/.ellulai-identity/local-auth.db → /etc/ellulai/local-auth.db
- * Sets permissions 640 root:$SVC_USER so sovereign-shield can read it.
+ * Copies $HOME/.ellulai-identity/local-auth.db → /etc/ellulai/shield-data/local-auth.db
+ * Sets permissions so sovereign-shield ($SVC_USER) can read/write it.
  * Restores .web_locked_activated marker if it was set at backup time.
  * Restarts sovereign-shield to pick up restored passkey DB.
  */
@@ -416,7 +416,7 @@ SVC_USER="\${PS_USER:-dev}"
 SVC_HOME="/home/\${SVC_USER}"
 
 BACKUP_DIR="\${SVC_HOME}/.ellulai-identity"
-TARGET_DIR="/etc/ellulai"
+TARGET_DIR="/etc/ellulai/shield-data"
 RESTORED=false
 
 if [ ! -d "\$BACKUP_DIR" ]; then
@@ -434,21 +434,19 @@ cp -f "\${BACKUP_DIR}/local-auth.db" "\${TARGET_DIR}/local-auth.db"
 [ -f "\${BACKUP_DIR}/local-auth.db-wal" ] && cp -f "\${BACKUP_DIR}/local-auth.db-wal" "\${TARGET_DIR}/local-auth.db-wal"
 [ -f "\${BACKUP_DIR}/local-auth.db-shm" ] && cp -f "\${BACKUP_DIR}/local-auth.db-shm" "\${TARGET_DIR}/local-auth.db-shm"
 
-# Set permissions: root-owned, group-readable by service user
-chown root:\${SVC_USER} "\${TARGET_DIR}/local-auth.db"
-chmod 640 "\${TARGET_DIR}/local-auth.db"
-[ -f "\${TARGET_DIR}/local-auth.db-wal" ] && chown root:\${SVC_USER} "\${TARGET_DIR}/local-auth.db-wal" && chmod 640 "\${TARGET_DIR}/local-auth.db-wal"
-[ -f "\${TARGET_DIR}/local-auth.db-shm" ] && chown root:\${SVC_USER} "\${TARGET_DIR}/local-auth.db-shm" && chmod 640 "\${TARGET_DIR}/local-auth.db-shm"
+# Set permissions: owned by service user (shield-data dir is $SVC_USER-owned)
+chown \${SVC_USER}:\${SVC_USER} "\${TARGET_DIR}/local-auth.db"
+chmod 600 "\${TARGET_DIR}/local-auth.db"
+[ -f "\${TARGET_DIR}/local-auth.db-wal" ] && chown \${SVC_USER}:\${SVC_USER} "\${TARGET_DIR}/local-auth.db-wal" && chmod 600 "\${TARGET_DIR}/local-auth.db-wal"
+[ -f "\${TARGET_DIR}/local-auth.db-shm" ] && chown \${SVC_USER}:\${SVC_USER} "\${TARGET_DIR}/local-auth.db-shm" && chmod 600 "\${TARGET_DIR}/local-auth.db-shm"
 
 RESTORED=true
 
 # Restore security tier marker if it was web_locked at backup time
 if [ -f "\${BACKUP_DIR}/.web_locked_activated" ]; then
-  # Set security tier to web_locked (remove immutable flag first)
-  chattr -i "\${TARGET_DIR}/security-tier" 2>/dev/null || true
-  echo "web_locked" > "\${TARGET_DIR}/security-tier"
-  chmod 644 "\${TARGET_DIR}/security-tier"
-  chattr +i "\${TARGET_DIR}/security-tier" 2>/dev/null || true
+  echo "web_locked" > /etc/ellulai/security-tier
+  chmod 644 /etc/ellulai/security-tier
+  chown \${SVC_USER}:\${SVC_USER} /etc/ellulai/security-tier
 fi
 
 # Restart sovereign-shield to pick up restored passkey DB
