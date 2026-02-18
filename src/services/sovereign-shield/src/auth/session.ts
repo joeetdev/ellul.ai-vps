@@ -184,29 +184,13 @@ export function validateSession(
       session.fingerprint_components = JSON.stringify(fingerprintData.components);
       session.country_code = fingerprintData.countryCode;
     } else {
-      // Non-navigation request while fingerprint pending
-      const tier = getCurrentTier();
-      const hasPoP = !!session.pop_public_key;
-      const isPopBindingPath = path === '/_auth/pop/bind' || path === '/_auth/pop/status' ||
-                               path === '/_auth/static/session-pop.js';
-
-      if (tier === 'web_locked' && !hasPoP && !isPopBindingPath) {
-        // In web_locked mode, require PoP binding before allowing API access
-        logAuditEvent({
-          type: 'session_not_ready',
-          ip,
-          fingerprint: fingerprintData.hash,
-          sessionId,
-          details: {
-            reason: 'web_locked_requires_pop_binding',
-            path,
-            tier,
-          }
-        });
-        return { valid: false, reason: 'session_not_ready', hint: 'PoP binding required' };
-      }
-
-      // Allow it but don't bind (will bind on first navigation)
+      // Non-navigation request while fingerprint pending.
+      // Allow through — the session IS passkey-authenticated, PoP is a secondary
+      // layer that will bind within seconds from the concurrent navigation request.
+      // Blocking API requests here creates a race condition: navigation loads the page
+      // but concurrent XHR/fetch calls get 401, causing the dashboard to show errors
+      // until the user manually reloads.
+      // PoP will be enforced on subsequent requests once binding completes.
       db.prepare('UPDATE sessions SET last_activity = ? WHERE id = ?').run(now, sessionId);
       return { valid: true, session };
     }
@@ -350,18 +334,25 @@ export function validateSession(
 }
 
 /**
- * Refresh session (update expiry and optionally rotate ID)
+ * Refresh session (update expiry and optionally rotate ID).
+ *
+ * @param canRotate - Only rotate the session ID when the caller can update the
+ *   browser cookie (e.g., via a redirect). Caddy's forward_auth does NOT pass
+ *   Set-Cookie on 200 responses, so rotating the ID during normal forward_auth
+ *   creates a stale cookie → next request fails with "not_found" → 401.
+ *   Rotation only happens when the caller will redirect (sessionFromUrl = true).
  */
 export function refreshSession(
   session: Session,
   ip: string,
-  fingerprintData: FingerprintData
+  fingerprintData: FingerprintData,
+  canRotate: boolean = false
 ): SessionRefreshResult {
   const now = Date.now();
   let newSessionId = session.id;
   let rotated = false;
 
-  if (now - session.last_rotation > ROTATION_INTERVAL_MS) {
+  if (canRotate && now - session.last_rotation > ROTATION_INTERVAL_MS) {
     newSessionId = crypto.randomUUID();
     rotated = true;
     logAuditEvent({

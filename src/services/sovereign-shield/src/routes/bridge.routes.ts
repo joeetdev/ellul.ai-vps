@@ -837,4 +837,34 @@ export function registerBridgeRoutes(app: Hono, hostname: string): void {
 
     return c.json({ valid: true });
   });
+
+  /**
+   * POST /_internal/git-setup
+   * Localhost-only — called by file-api to trigger git credential sync + setup.
+   * Used as a fallback when the bridge WebSocket setup didn't run.
+   * SECURITY: Blocked on web_locked tier — git setup must go through passkey bridge.
+   */
+  app.post('/_internal/git-setup', async (c) => {
+    const ip = getClientIp(c);
+    if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
+
+    const tier = getCurrentTier();
+    if (tier === 'web_locked') {
+      return c.json({ error: 'Web locked tier requires passkey authentication for git setup' }, 403);
+    }
+
+    const body = await c.req.json().catch(() => ({})) as { appName?: string };
+    if (!body.appName) {
+      return c.json({ error: 'Missing appName' }, 400);
+    }
+
+    try {
+      const result = executeGitAction('setup', body.appName);
+      return c.json({ success: true, output: result.output });
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
 }

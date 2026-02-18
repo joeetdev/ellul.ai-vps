@@ -366,6 +366,8 @@ export function registerWorkflowRoutes(app: Hono): void {
       // Custom domain — standalone site block, user handles TLS
       configDir = SITES_DIR;
       caddyConfig = `${appDomain} {
+    header ?Access-Control-Allow-Origin "https://console.ellul.ai"
+    header ?Access-Control-Allow-Credentials "true"
     reverse_proxy localhost:${port}
     log {
         output file /var/log/caddy/${name}.log
@@ -374,7 +376,8 @@ export function registerWorkflowRoutes(app: Hono): void {
 }
 `;
     } else if (proxied) {
-      // Gateway/Cloudflare mode — handler-only block imported inside main .app site block
+      // Gateway/Cloudflare mode — handler-only block imported inside main .app site block.
+      // CORS headers are inherited from the .app site block level — no need to add here.
       configDir = APP_ROUTES_DIR;
       const authBlock = isFree
         ? `
@@ -392,6 +395,8 @@ handle @app-${name} {${authBlock}
       // Direct connect — standalone site block with Let's Encrypt
       configDir = SITES_DIR;
       caddyConfig = `${appDomain} {
+    header ?Access-Control-Allow-Origin "https://console.ellul.ai"
+    header ?Access-Control-Allow-Credentials "true"
     reverse_proxy localhost:${port}
     log {
         output file /var/log/caddy/${name}.log

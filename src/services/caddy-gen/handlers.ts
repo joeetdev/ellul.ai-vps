@@ -176,6 +176,18 @@ function authedRoute(route: AuthedRoute): Lines {
 export function generateCaddyHandlers(scope: "ai" | "app" | "all"): string {
   const lines: Lines = [];
 
+  // Base CORS safety net — applies to ALL responses in this site block.
+  // Uses "?" (conditional set) so it only adds headers when not already present:
+  //   - 502/503 from downed backends → Caddy adds console origin → console can read error
+  //   - User's deployed app sets its own CORS → already present → Caddy skips → app CORS preserved
+  //   - Internal handlers set explicit CORS → already present → Caddy skips → no duplicates
+  // Without this, bare error responses (502, 404) lack CORS and browsers block them.
+  lines.push(...indent([
+    `# Base CORS for dashboard — ensure allow-origin on all responses`,
+    `header ?Access-Control-Allow-Origin "${CONSOLE_ORIGIN}"`,
+    `header ?Access-Control-Allow-Credentials "true"`,
+  ], 1));
+
   // Gateway Worker uses resolveOverride which changes the TLS SNI (and Host header)
   // to the origin hostname (o-{ipTag}.{zone}). Caddy's strict SNI-Host enforcement
   // (auto-enabled by mTLS) accepts the connection because the origin hostname is in
@@ -219,9 +231,6 @@ function codeHandler(): Lines {
     "",
     `    @code host CODE_DOMAIN_PLACEHOLDER`,
     `    handle @code {`,
-    `        # Base CORS for dashboard — ensure allow-origin on all responses`,
-    `        header Access-Control-Allow-Origin "${CONSOLE_ORIGIN}"`,
-    `        header Access-Control-Allow-Credentials "true"`,
     ...indent([`header Content-Security-Policy "frame-ancestors 'self' ${CONSOLE_ORIGIN}"`], 2),
     "",
     `        # Handle OPTIONS preflight BEFORE auth (no cookies on preflight)`,
@@ -283,9 +292,6 @@ function mainHandler(): Lines {
     "",
     `    @main host MAIN_DOMAIN`,
     `    handle @main {`,
-    `        # Base CORS for dashboard — ensure allow-origin on all responses`,
-    `        header Access-Control-Allow-Origin "${CONSOLE_ORIGIN}"`,
-    `        header Access-Control-Allow-Credentials "true"`,
     ...indent([`@notAuth not path /_auth/*`], 2),
     ...indent([`header @notAuth Content-Security-Policy "frame-ancestors 'self' ${CONSOLE_ORIGIN}"`], 2),
     "",

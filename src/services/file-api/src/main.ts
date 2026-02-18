@@ -1062,23 +1062,42 @@ const server = http.createServer(async (req, res) => {
       // Read per-app git credentials from daemon-synced env file
       // Secrets are stored as __GIT_TOKEN__MY_APP (suffix = uppercase, alnum + underscore)
       const envPath = `${HOME}/.ellulai-env`;
-      const envVars: Record<string, string> = {};
-      try {
-        if (fs.existsSync(envPath)) {
-          const envContent = fs.readFileSync(envPath, 'utf8');
-          for (const line of envContent.split('\n')) {
-            const match = line.match(/^export\s+(\w+)="(.*)"/);
-            if (match?.[1]) envVars[match[1]] = match[2] ?? '';
-          }
-        }
-      } catch {}
-
-      // Resolve per-app suffix: "my-app" → "__MY_APP"
       const appSuffix = '__' + dirName.toUpperCase().replace(/[^A-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/, '');
-      const token = envVars[`__GIT_TOKEN${appSuffix}`] || envVars['__GIT_TOKEN'] || '';
-      const provider = envVars[`__GIT_PROVIDER${appSuffix}`] || envVars['__GIT_PROVIDER'] || '';
-      const repoUrl = envVars[`__GIT_REPO_URL${appSuffix}`] || envVars['__GIT_REPO_URL'] || '';
-      const defaultBranch = envVars[`__GIT_DEFAULT_BRANCH${appSuffix}`] || envVars['__GIT_DEFAULT_BRANCH'] || 'main';
+
+      const readGitEnv = () => {
+        const vars: Record<string, string> = {};
+        try {
+          if (fs.existsSync(envPath)) {
+            const content = fs.readFileSync(envPath, 'utf8');
+            for (const line of content.split('\n')) {
+              const m = line.match(/^export\s+(\w+)="(.*)"/);
+              if (m?.[1]) vars[m[1]] = m[2] ?? '';
+            }
+          }
+        } catch {}
+        return {
+          token: vars[`__GIT_TOKEN${appSuffix}`] || vars['__GIT_TOKEN'] || '',
+          provider: vars[`__GIT_PROVIDER${appSuffix}`] || vars['__GIT_PROVIDER'] || '',
+          repoUrl: vars[`__GIT_REPO_URL${appSuffix}`] || vars['__GIT_REPO_URL'] || '',
+          defaultBranch: vars[`__GIT_DEFAULT_BRANCH${appSuffix}`] || vars['__GIT_DEFAULT_BRANCH'] || 'main',
+        };
+      };
+
+      let { token, provider, repoUrl, defaultBranch } = readGitEnv();
+
+      // Fallback: if secrets aren't on disk, ask sovereign-shield to sync from API
+      if (!token || !repoUrl) {
+        try {
+          const setupRes = await fetch('http://127.0.0.1:3005/_internal/git-setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ appName: dirName }),
+          });
+          if (setupRes.ok) {
+            ({ token, provider, repoUrl, defaultBranch } = readGitEnv());
+          }
+        } catch {}
+      }
 
       if (!token || !repoUrl) {
         res.writeHead(409);
@@ -1127,8 +1146,17 @@ const server = http.createServer(async (req, res) => {
         const hasGit = fs.existsSync(path.join(appPath, '.git'));
 
         if (!hasGit) {
-          // Fresh directory — init, add remote, fetch, and checkout
-          await runCmd('git init');
+          // Check if directory has existing files to protect
+          const existingFiles = fs.readdirSync(appPath).filter(f => !f.startsWith('.'));
+          if (existingFiles.length > 0) {
+            // Snapshot existing work so it's recoverable
+            await runCmd('git init');
+            await runCmd('git add -A');
+            await runCmd('git commit -m "pre-import backup" --allow-empty');
+            await runCmd('git branch pre-import-backup');
+          } else {
+            await runCmd('git init');
+          }
           await runCmd(`git remote add origin "${cloneUrl}"`);
           const fetchResult = await runCmd(`git fetch origin ${defaultBranch}`);
           if (!fetchResult.success) {
@@ -1145,27 +1173,41 @@ const server = http.createServer(async (req, res) => {
           } else {
             await runCmd(`git remote add origin "${cloneUrl}"`);
           }
+
+          // Stash uncommitted changes before pulling
+          const statusResult = await runCmd('git status --porcelain');
+          const hasChanges = statusResult.success && statusResult.output.length > 0;
+          if (hasChanges) {
+            await runCmd('git stash --include-untracked');
+          }
+
           const pullResult = await runCmd(`git pull origin ${defaultBranch} --no-edit`);
           if (!pullResult.success) {
-            // Try fetch + checkout if pull fails (e.g. unrelated histories)
+            // Save current work on a backup branch before destructive checkout
+            await runCmd('git branch -f pre-import-backup HEAD');
             await runCmd(`git fetch origin ${defaultBranch}`);
             await runCmd(`git checkout -B ${defaultBranch} origin/${defaultBranch}`);
+          }
+
+          // Restore stashed changes
+          if (hasChanges) {
+            await runCmd('git stash pop');
           }
         }
 
         // Detect app framework after pull
         const detected = detectApps().find(a => a.directory === dirName);
 
-        // Run npm install in background if package.json exists
+        // Install dependencies before responding — preview starts immediately
+        // after the console receives this response, so node_modules must be ready.
         const packageJsonPath = path.join(appPath, 'package.json');
-        if (fs.existsSync(packageJsonPath)) {
-          const { spawn } = await import('child_process');
-          const npmInstall = spawn('npm', ['install'], {
-            cwd: appPath,
-            detached: true,
-            stdio: 'ignore',
-          });
-          npmInstall.unref();
+        if (fs.existsSync(packageJsonPath) && !fs.existsSync(path.join(appPath, 'node_modules'))) {
+          const lockFile = fs.existsSync(path.join(appPath, 'pnpm-lock.yaml'))
+            ? 'pnpm' : fs.existsSync(path.join(appPath, 'yarn.lock'))
+            ? 'yarn' : 'npm';
+          try {
+            await runCmd(`${lockFile} install`);
+          } catch {}
         }
 
         res.writeHead(200);

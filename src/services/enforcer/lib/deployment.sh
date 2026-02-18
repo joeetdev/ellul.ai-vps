@@ -58,6 +58,7 @@ ensure_gateway_origin() {
 
   if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then
     mv "$TMPFILE" "$CADDYFILE"
+    chmod 644 "$CADDYFILE"
     caddy reload --config "$CADDYFILE" --adapter caddyfile 2>/dev/null || true
     log "GATEWAY: Origin hostname added and Caddy reloaded"
   else
@@ -102,6 +103,7 @@ ensure_gateway_host_rewrite() {
 
   if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then
     mv "$TMPFILE" "$CADDYFILE"
+    chmod 644 "$CADDYFILE"
     caddy reload --config "$CADDYFILE" --adapter caddyfile 2>/dev/null || true
     log "GATEWAY: Host rewrite added and Caddy reloaded"
   else
@@ -110,50 +112,58 @@ ensure_gateway_host_rewrite() {
   fi
 }
 
-# Ensure base CORS headers exist at the top of @code and @main handle blocks.
-# Servers provisioned before the CORS fix (afd1d87) are missing these headers,
-# causing browsers to block responses that don't go through a specific sub-handler
-# (e.g., auth failures, 502s, catch-all routes).
+# Ensure base CORS headers exist at the SITE BLOCK level of every site block.
+# Site-block-level CORS covers ALL responses — including 502s from downed backends,
+# unmatched hosts, deployed app handlers, and any future routes.
+# Old servers may have CORS only inside handle @code / handle @main (8-space indent);
+# this function adds site-level CORS (4-space indent) which supersedes those.
 # Runs on every heartbeat — idempotent, skips instantly if already patched.
 ensure_cors_headers() {
   local CADDYFILE="/etc/caddy/Caddyfile"
   [ ! -f "$CADDYFILE" ] && return
 
-  # Already patched? Skip.
-  grep -q '# Base CORS for dashboard' "$CADDYFILE" 2>/dev/null && return
+  # Already has site-block-level CORS? Check for 4-space-indented marker.
+  # (Old handle-block CORS uses 8-space indent — won't match this check.)
+  grep -q '^    # Base CORS for dashboard' "$CADDYFILE" 2>/dev/null && return
 
-  # Only patch if the Caddyfile has handle blocks (skip bare/minimal configs)
-  grep -q 'handle @code {' "$CADDYFILE" 2>/dev/null || grep -q 'handle @main {' "$CADDYFILE" 2>/dev/null || return
+  # Only patch if the Caddyfile has recognizable structure
+  grep -q 'ellul\.\(ai\|app\)' "$CADDYFILE" 2>/dev/null || return
 
-  log "CORS: Patching base CORS headers into Caddyfile..."
+  log "CORS: Patching site-block-level CORS headers into Caddyfile..."
 
   local TMPFILE
   TMPFILE=$(mktemp)
+
+  # Insert CORS headers at the top of each site block, before the first
+  # functional directive (@has_xfh, @code, @main, @dev, or app-routes import).
+  # Uses block tracking to patch each site block exactly once.
   awk '
-    /handle @code \{/ {
-      print
-      print "        # Base CORS for dashboard — ensure allow-origin on all responses"
-      print "        header Access-Control-Allow-Origin \"https://console.ellul.ai\""
-      print "        header Access-Control-Allow-Credentials \"true\""
-      next
+    /^[^ {].*\{$/ { in_block = 1; block_patched = 0 }
+    /^\}/ { in_block = 0 }
+
+    in_block && !block_patched && /^    @(has_xfh|code|main|dev) / {
+      print "    # Base CORS for dashboard — ensure allow-origin on all responses"
+      print "    header ?Access-Control-Allow-Origin \"https://console.ellul.ai\""
+      print "    header ?Access-Control-Allow-Credentials \"true\""
+      block_patched = 1
     }
-    /handle @main \{/ {
-      print
-      print "        # Base CORS for dashboard — ensure allow-origin on all responses"
-      print "        header Access-Control-Allow-Origin \"https://console.ellul.ai\""
-      print "        header Access-Control-Allow-Credentials \"true\""
-      next
+    in_block && !block_patched && /^    import \/etc\/caddy\/app-routes/ {
+      print "    # Base CORS for dashboard — ensure allow-origin on all responses"
+      print "    header ?Access-Control-Allow-Origin \"https://console.ellul.ai\""
+      print "    header ?Access-Control-Allow-Credentials \"true\""
+      block_patched = 1
     }
     { print }
   ' "$CADDYFILE" > "$TMPFILE"
 
   if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then
     mv "$TMPFILE" "$CADDYFILE"
+    chmod 644 "$CADDYFILE"
     caddy reload --config "$CADDYFILE" --adapter caddyfile 2>/dev/null || true
-    log "CORS: Base headers patched and Caddy reloaded"
+    log "CORS: Site-block-level CORS patched and Caddy reloaded"
   else
     rm -f "$TMPFILE"
-    log "CORS: WARNING — Caddy validation failed after patch, reverted"
+    log "CORS: WARNING — Caddy validation failed after CORS patch, reverted"
   fi
 }
 

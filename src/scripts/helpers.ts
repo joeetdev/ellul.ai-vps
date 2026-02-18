@@ -333,6 +333,7 @@ if [ -n "\$DOMAIN" ]; then
     # Validate BEFORE moving — never overwrite with a broken config
     if caddy validate --config /etc/caddy/Caddyfile.tmp --adapter caddyfile >/dev/null 2>&1; then
       mv /etc/caddy/Caddyfile.tmp /etc/caddy/Caddyfile
+      chmod 644 /etc/caddy/Caddyfile
       CADDY_REGEN=true
       log "Caddyfile regenerated and validated (model=\$MODEL)"
     else

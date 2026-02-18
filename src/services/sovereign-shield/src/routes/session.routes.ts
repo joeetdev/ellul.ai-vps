@@ -50,6 +50,10 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
    * TIER-AWARE: Handles standard and web_locked differently
    */
   app.get('/api/auth/session', async (c) => {
+    // Prevent browser/CDN caching of auth responses — stale 401s cause
+    // repeated failures on page reload until the user force-refreshes.
+    c.header('Cache-Control', 'no-store');
+
     const tier = getCurrentTier();
     const forwardedUri = c.req.header('x-forwarded-uri') || '/';
 
@@ -447,8 +451,12 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       }
     }
 
-    // Refresh session (extend expiry, maybe rotate ID)
-    const refresh = refreshSession(result.session!, ip, fingerprintData);
+    // Refresh session (extend expiry, maybe rotate ID).
+    // Only allow ID rotation when a redirect follows (sessionFromUrl + navigation),
+    // because Caddy's forward_auth doesn't pass Set-Cookie on 200 responses —
+    // rotating the ID without updating the cookie makes it stale → next request 401.
+    const canRotate = sessionFromUrl && !isApiRequest;
+    const refresh = refreshSession(result.session!, ip, fingerprintData, canRotate);
 
     // If session came from URL param and this is a navigation request (not API),
     // redirect to set the cookie. Caddy's forward_auth only passes Set-Cookie

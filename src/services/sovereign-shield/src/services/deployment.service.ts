@@ -138,6 +138,8 @@ export function switchDeployment(opts: DeploymentSwitchOpts): { success: boolean
         `node /usr/local/bin/ellulai-caddy-gen --model ${opts.model} --main-domain ${opts.domain} --code-domain ${newSubs.code} --dev-domain ${newSubs.dev} > ${CADDYFILE}`,
         { timeout: 10_000 }
       );
+      // Ensure Caddyfile is readable by caddy user (runs as caddy:caddy via systemd)
+      fs.chmodSync(CADDYFILE, 0o644);
     } catch (e) {
       return { success: false, error: `Caddyfile generation failed: ${(e as Error).message}` };
     }
