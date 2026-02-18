@@ -1,8 +1,8 @@
 /**
  * Workflow Routes
  *
- * Privileged server-side handlers for workflow commands that require
- * root access (writing Caddy configs, reloading services, etc.).
+ * Server-side handlers for workflow commands (writing Caddy configs,
+ * managing PM2 processes, reloading services). Runs as $SVC_USER.
  *
  * The client (e.g. ellulai-expose) is a dumb thin client that
  * POSTs to these endpoints. All security logic runs server-side.
@@ -82,7 +82,6 @@ function ensureAppProcess(
   name: string,
   requestedPort: number,
   projectPath: string,
-  systemUser: string,
   appsDir: string,
 ): { port: number } {
   // A. Get pm2 process list
@@ -91,7 +90,7 @@ function ensureAppProcess(
     pm2_env?: { cwd?: string; PORT?: string; status?: string };
   }> = [];
   try {
-    const raw = execSync(`runuser -l ${systemUser} -c 'pm2 jlist 2>/dev/null'`, {
+    const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
       stdio: 'pipe',
       timeout: 10000,
     }).toString();
@@ -124,7 +123,7 @@ function ensureAppProcess(
     }
     // Stale or wrong cwd — remove it
     try {
-      execSync(`runuser -l ${systemUser} -c 'pm2 delete ${JSON.stringify(existing.name)} 2>/dev/null'`, {
+      execSync(`bash -lc 'pm2 delete ${JSON.stringify(existing.name)} 2>/dev/null'`, {
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -180,7 +179,7 @@ function ensureAppProcess(
 
   // D. Start the process
   try {
-    execSync(`runuser -l ${systemUser} -c 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
+    execSync(`bash -lc 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -202,13 +201,13 @@ function ensureAppProcess(
     startCmd = `pm2 start "npx serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
   }
 
-  execSync(`runuser -l ${systemUser} -c '${startCmd}'`, {
+  execSync(`bash -lc '${startCmd}'`, {
     stdio: 'pipe',
     timeout: 30000,
   });
 
   try {
-    execSync(`runuser -l ${systemUser} -c 'pm2 save --force 2>/dev/null'`, {
+    execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -236,7 +235,7 @@ function ensureAppProcess(
   if (!healthy) {
     // Clean up
     try {
-      execSync(`runuser -l ${systemUser} -c 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
+      execSync(`bash -lc 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
         stdio: 'pipe',
         timeout: 5000,
       });
@@ -298,7 +297,7 @@ export function registerWorkflowRoutes(app: Hono): void {
     // ── Read billing tier + resolve user paths ──────────────────────
     const billingTier = getBillingTier();
     const isFree = billingTier === 'free';
-    const { user: systemUser, appsDir } = getUserInfo();
+    const { appsDir } = getUserInfo();
 
     // ── Free tier enforcements ───────────────────────────────────────
     if (isFree && customDomain) {
@@ -342,7 +341,7 @@ export function registerWorkflowRoutes(app: Hono): void {
     // ── Ensure app process is running (port ownership + lifecycle) ──
     if (projectPath) {
       try {
-        const result = ensureAppProcess(name, port, projectPath, systemUser, appsDir);
+        const result = ensureAppProcess(name!, port, projectPath, appsDir);
         port = result.port;
       } catch (e) {
         return c.json({ error: (e as Error).message }, 500);
@@ -429,8 +428,6 @@ handle @app-${name} {${authBlock}
     const metaFile = `${appsDir}/${name}.json`;
     try {
       fs.writeFileSync(metaFile, JSON.stringify(appMeta, null, 2));
-      // chown to coder so the user can read it
-      execSync(`chown ${systemUser}:${systemUser} ${metaFile}`, { stdio: 'pipe' });
     } catch (e) {
       // Clean up Caddy config on metadata write failure
       try { fs.unlinkSync(configFile); } catch {}
@@ -473,7 +470,7 @@ handle @app-${name} {${authBlock}
             `"${psjsonPath}" > "${psjsonPath}.tmp" && mv "${psjsonPath}.tmp" "${psjsonPath}"`,
             { stdio: 'pipe', timeout: 5000 }
           );
-          execSync(`chown ${systemUser}:${systemUser} "${psjsonPath}" 2>/dev/null || true`, { stdio: 'pipe' });
+          // File already owned by current user (service runs as $SVC_USER)
         }
       } catch {}
     }
@@ -534,7 +531,6 @@ handle @app-${name} {${authBlock}
       const billingTier = getBillingTier();
 
       const targetDir = billingTier === 'free' ? '/home/coder' : '/home/dev';
-      const targetUser = billingTier === 'free' ? 'coder' : 'dev';
 
       console.log(`${LOG} Starting hydration for server ${serverId.slice(0, 8)}... → ${targetDir}`);
 
@@ -584,11 +580,6 @@ handle @app-${name} {${authBlock}
         timeout: 120000,
       });
 
-      execSync(`chown -R ${targetUser}:${targetUser} ${targetDir}`, {
-        stdio: 'pipe',
-        timeout: 30000,
-      });
-
       console.log(`${LOG} Workspace extracted to ${targetDir}`);
 
       // ── Post-hydration setup ─────────────────────────────────────────
@@ -597,7 +588,7 @@ handle @app-${name} {${authBlock}
         console.log(`${LOG} Found package.json — running npm install...`);
         try {
           execSync(
-            `runuser -l ${targetUser} -c "cd ${targetDir} && npm install --prefer-offline 2>&1"`,
+            `bash -lc "cd ${targetDir} && npm install --prefer-offline 2>&1"`,
             { stdio: 'pipe', timeout: 120000 }
           );
           console.log(`${LOG} npm install complete`);

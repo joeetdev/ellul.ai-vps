@@ -1091,7 +1091,7 @@ async function sendToCodexOneShot(
 
     const args = ['exec'];
     // Note: codex exec does NOT support --last; thread isolation is handled via getIsolatedCliEnv
-    args.push('--json', '--skip-git-repo-check', '--full-auto', message);
+    args.push('--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', message);
 
     // Use project-specific directory if provided
     const workingDir = project ? path.join(PROJECTS_DIR, project) : PROJECTS_DIR;

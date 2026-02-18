@@ -1023,8 +1023,9 @@ export function startCliAuthInChat(
       clearTimeout(timeoutHandle);
       removeAuthSession(ws);
       ws.send(JSON.stringify({
-        type: 'output',
-        content: `${session} is now authenticated and ready to use!`,
+        type: 'auth_complete',
+        success: true,
+        session,
         threadId,
         timestamp: Date.now(),
       }));
@@ -1118,8 +1119,9 @@ export function startCliAuthInChat(
     if (!checkCliNeedsSetup(session)) {
       syncAuthToRealHome(session, threadId);
       ws.send(JSON.stringify({
-        type: 'output',
-        content: `${session} is now authenticated and ready to use!`,
+        type: 'auth_complete',
+        success: true,
+        session,
         threadId,
         timestamp: Date.now(),
       }));
@@ -1220,8 +1222,9 @@ export function respondToCliAuthInChat(
     const saved = saveGeminiApiKey(message.trim(), state.threadId);
     if (saved && !checkCliNeedsSetup('gemini')) {
       ws.send(JSON.stringify({
-        type: 'output',
-        content: 'Gemini is now authenticated and ready to use!',
+        type: 'auth_complete',
+        success: true,
+        session: 'gemini',
         threadId: state.threadId,
         timestamp: Date.now(),
       }));
@@ -1324,8 +1327,9 @@ export function respondToCliAuthInChat(
         clearTimeout(currentState.timeout);
         removeAuthSession(ws);
         ws.send(JSON.stringify({
-          type: 'output',
-          content: `${pollSession} is now authenticated and ready to use!`,
+          type: 'auth_complete',
+          success: true,
+          session: pollSession,
           threadId: pollThreadId,
           timestamp: Date.now(),
         }));
