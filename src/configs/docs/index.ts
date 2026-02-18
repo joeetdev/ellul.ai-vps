@@ -93,9 +93,13 @@ Run: ship
 This will build and deploy with auto-SSL.
 
 ## Manual Deploy
-1. npm run build
-2. pm2 start npm --name <app-name> -- start -- -p 3000
-3. sudo ellulai-expose <app-name> 3000
+1. npm install (ALWAYS run first — framework CLIs sometimes skip deps)
+2. npm run build
+3. pm2 delete <app-name> 2>/dev/null
+4. pm2 start npm --name <app-name> -- start -- -p 3000
+5. sleep 3
+6. Verify before sharing URL: \`pm2 list\` → online AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` → 200 AND \`curl -s localhost:3000 | head -5\` → actual HTML
+7. sudo ellulai-expose <app-name> 3000
 
 ## Key Commands
 - ship - Auto-deploy current project
@@ -150,8 +154,14 @@ Vite: server: { host: true, port: 3000, allowedHosts: true }
 Next.js: "dev": "next dev -H 0.0.0.0 -p 3000"
 
 ## After changes: verify preview
-npm install → pm2 start npm --name preview -- run dev → curl localhost:3000 → 200
-Preview is then live at: https://${devDomain}
+ALWAYS npm install before starting any server — framework CLIs sometimes skip deps.
+pm2 delete preview 2>/dev/null → npm install → pm2 start npm --name preview -- run dev → sleep 3
+Then verify ALL 4 steps:
+1. \`ls node_modules/.bin/ | head -5\` → must show binaries
+2. \`pm2 list\` → app must be "online"
+3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+4. \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+ALL 4 must pass before telling user "it's live" at: https://${devDomain}
 
 ## Sandbox Boundaries
 - Preview only (port 3000) — no external deployment
@@ -172,7 +182,7 @@ pm2 start|logs|restart|delete NAME`;
 This is a cloud VPS at ${domain}
 
 Preview: https://${devDomain} (port 3000)
-Apps: https://<app-name>-${shortId}.ellul.app | Custom domains: ellulai-expose NAME PORT mydomain.com
+Apps: https://${shortId}-<app-name>.ellul.app | Custom domains: ellulai-expose NAME PORT mydomain.com
 
 ## Available Tools
 AI: opencode (ready) | claude, codex, gemini, aider (install on first use)
@@ -191,8 +201,14 @@ Vite: server: { host: true, port: 3000, allowedHosts: true }
 Next.js: "dev": "next dev -H 0.0.0.0 -p 3000"
 
 ## After changes: verify preview
-npm install → pm2 start npm --name preview -- run dev → curl localhost:3000 → 200
-Preview is then live at: https://${devDomain}
+ALWAYS npm install before starting any server — framework CLIs sometimes skip deps.
+pm2 delete preview 2>/dev/null → npm install → pm2 start npm --name preview -- run dev → sleep 3
+Then verify ALL 4 steps:
+1. \`ls node_modules/.bin/ | head -5\` → must show binaries
+2. \`pm2 list\` → app must be "online"
+3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+4. \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+ALL 4 must pass before telling user "it's live" at: https://${devDomain}
 
 ## Deploy
 Run: ship (auto-build + deploy with SSL)
@@ -239,19 +255,26 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
 1. Create/edit project files
 2. **REQUIRED**: Create \`ellulai.json\` in project root with name, type, summary
    If it already exists: NEVER change the "name" field
-3. **IF Node.js**: Run \`npm install\` to install dependencies
-4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000 (or use \`npx serve -l 3000\` for static HTML)
-5. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview -- run dev\` or \`pm2 start "npx serve -l 3000" --name preview\`)
-6. **REQUIRED**: Verify with \`curl localhost:3000\` - MUST return 200
-7. Tell the user: preview is live at https://${devDomain}
+3. **MANDATORY FIRST**: ALWAYS run \`npm install\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip deps.
+   - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
+   - For static HTML without a framework: use \`npx -y serve -l 3000\`
+4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000
+5. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
+6. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview -- run dev\`)
+7. Wait for startup: \`sleep 3\`
+8. Run the FULL verification protocol below — ALL 4 steps must pass
+9. Tell the user: preview is live at https://${devDomain}
 
 ## Dev Server Config (CRITICAL)
 Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`
 Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
 
-## Verification Required
-- \`pm2 list\` → shows your app as "online"
-- \`curl localhost:3000\` → returns 200 status
+## MANDATORY: Pre-Completion Verification Protocol
+STEP 1 — \`ls node_modules/.bin/ | head -5\` → must show binaries. If empty: \`npm install\` and retry
+STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview --nostream --lines 20\` → fix → restart
+STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+STEP 4 — \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+ALL 4 must pass. Do NOT tell user "it's live" until they do.
 
 ## Sandbox Boundaries
 - Preview only (port 3000) — no external deployment
@@ -284,19 +307,26 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
 1. Create/edit project files
 2. **REQUIRED**: Create \`ellulai.json\` in project root with name, type, summary
    If it already exists: NEVER change the "name" field
-3. **IF Node.js**: Run \`npm install\` to install dependencies
-4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000 (or use \`npx serve -l 3000\` for static HTML)
-5. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\` or \`pm2 start "npx serve -l 3000" --name NAME\`)
-6. **REQUIRED**: Verify with \`curl localhost:3000\` - MUST return 200
-7. Tell the user: preview is live at https://${devDomain}
+3. **MANDATORY FIRST**: ALWAYS run \`npm install\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip deps.
+   - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
+   - For static HTML without a framework: use \`npx -y serve -l 3000\`
+4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000
+5. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
+6. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\`)
+7. Wait for startup: \`sleep 3\`
+8. Run the FULL verification protocol below — ALL 4 steps must pass
+9. Tell the user: preview is live at https://${devDomain}
 
 ## Dev Server Config (CRITICAL)
 Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`
 Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
 
-## Verification Required
-- \`pm2 list\` → shows your app as "online"
-- \`curl localhost:3000\` → returns 200 status
+## MANDATORY: Pre-Completion Verification Protocol
+STEP 1 — \`ls node_modules/.bin/ | head -5\` → must show binaries. If empty: \`npm install\` and retry
+STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview --nostream --lines 20\` → fix → restart
+STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+STEP 4 — \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+ALL 4 must pass. Do NOT tell user "it's live" until they do.
 
 ## Commands
 ship | ellulai-apps | pm2 logs|restart NAME`;

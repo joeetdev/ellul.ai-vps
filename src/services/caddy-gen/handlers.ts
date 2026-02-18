@@ -195,6 +195,9 @@ export function generateCaddyHandlers(scope: "ai" | "app" | "all"): string {
   }
 
   if (scope === "app" || scope === "all") {
+    // Per-app routes (host-matched handlers written by ellulai-expose)
+    // Imported before @dev so app-specific hosts are matched first.
+    lines.push(...indent([`import /etc/caddy/app-routes.d/*.caddy`], 1));
     lines.push(...devHandler());
   }
 

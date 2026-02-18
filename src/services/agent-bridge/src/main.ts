@@ -81,6 +81,8 @@ import {
   hasCliAuthInChat,
   respondToCliAuthInChat,
   cancelCliAuthInChat,
+  detachCliAuth,
+  reattachCliAuth,
 } from './services/interactive.service';
 
 // Display labels for session model names (used in welcome messages and get_current_model)
@@ -306,6 +308,26 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             timestamp: Date.now(),
           })
         );
+
+        // Auto-start auth if the new session needs it (same logic as set_thread)
+        // But skip if auth for this same session is already running (e.g. set_thread just started it)
+        if (state.currentThreadId) {
+          const sessionNeedsAuth = state.currentSession !== 'opencode' && state.currentSession !== 'main' && state.currentSession !== 'claw';
+          if (sessionNeedsAuth && checkCliNeedsSetup(state.currentSession)) {
+            if (hasCliAuthInChat(ws)) {
+              console.log(`[Bridge] Auth already in progress for ${state.currentSession}, skipping duplicate from switch_session`);
+            } else {
+              console.log(`[Bridge] Auto-starting ${state.currentSession} auth on session switch`);
+              cancelCliAuthInChat(ws);
+              startCliAuthInChat(state.currentSession, ws, state.currentThreadId);
+            }
+          } else {
+            // Session doesn't need auth or is already authed — cancel any stale auth from prev session
+            cancelCliAuthInChat(ws);
+          }
+        } else {
+          cancelCliAuthInChat(ws);
+        }
         return;
       }
 
@@ -458,12 +480,20 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
       }
 
       if (msgType === 'cli_response' && msg.value !== undefined) {
+        // If there's an active in-chat auth session, route there instead
+        // (handles case where frontend sent cli_response instead of cli_auth_response)
+        if (hasCliAuthInChat(ws)) {
+          console.log(`[Bridge] cli_response redirected to cli_auth_response (active auth session exists)`);
+          respondToCliAuthInChat(ws, msg.value as string, (msg.selectionType as 'number' | 'arrow' | 'text') || 'text');
+          return;
+        }
         respondToInteractiveCli(ws, msg.value as string, (msg.selectionType as 'number' | 'arrow') || 'number');
         return;
       }
 
       // In-chat CLI auth option selection (from cli_prompt sent during chat auth flow)
       if (msgType === 'cli_auth_response' && msg.value !== undefined) {
+        console.log(`[Bridge] cli_auth_response received: value=${msg.value}, selectionType=${msg.selectionType}`);
         respondToCliAuthInChat(
           ws,
           msg.value as string,
@@ -476,19 +506,26 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
       if (msgType === 'command' && msg.content) {
         const userMessage = (msg.content as string).trim();
 
-        // If auth is in progress and user types in the main chat input,
-        // auto-cancel auth and process the message normally.
-        // Auth codes should be submitted through the dedicated input field (cli_auth_response).
+        // If auth is in progress, try to route the user's input to the auth session.
+        // Users often paste auth codes into the main chat input instead of the dedicated field.
         if (hasCliAuthInChat(ws)) {
-          console.log(`[Bridge] User typed during auth, auto-cancelling auth setup`);
-          cancelCliAuthInChat(ws);
+          // If it looks like an auth code (short, no spaces or very few words), route to auth
+          const isLikelyAuthCode = userMessage.length < 200 && userMessage.split(/\s+/).length <= 3;
+          if (isLikelyAuthCode) {
+            console.log(`[Bridge] Routing command to auth session (looks like auth code): ${userMessage.substring(0, 30)}`);
+            respondToCliAuthInChat(ws, userMessage, 'text');
+            ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: state.currentSession, project: state.currentProject, threadId: state.currentThreadId, timestamp: Date.now() }));
+            return;
+          }
+          console.log(`[Bridge] User typed during auth, blocking command until auth completes`);
           ws.send(JSON.stringify({
             type: 'output',
-            content: 'Authentication setup cancelled. You can set it up again from a new thread.',
+            content: `Please complete ${state.currentSession} authentication first using the prompt above, then try again.`,
             threadId: state.currentThreadId,
             timestamp: Date.now(),
           }));
-          // Fall through to process the message normally
+          ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: state.currentSession, project: state.currentProject, threadId: state.currentThreadId, timestamp: Date.now() }));
+          return;
         }
 
         // Capture thread context at start - prevents race condition when user switches threads during processing
@@ -590,6 +627,13 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               console.log(`[Bridge] ${commandSession} needs auth setup, starting in-chat auth`);
               startCliAuthInChat(commandSession, ws, commandThreadId);
             }
+            // Tell the user their message can't be processed yet
+            ws.send(JSON.stringify({
+              type: 'output',
+              content: `${commandSession} needs to be authenticated before it can process messages. Please complete the authentication above.`,
+              threadId: commandThreadId,
+              timestamp: Date.now(),
+            }));
             ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
             return;
           }
@@ -688,12 +732,8 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
           ws.send(JSON.stringify({ type: 'thread_created', thread, timestamp: Date.now() }));
 
-          // Auto-start auth setup if this CLI session needs it (don't wait for first message)
-          const needsAuth = session !== 'opencode' && session !== 'main' && session !== 'claw';
-          if (needsAuth && checkCliNeedsSetup(session)) {
-            console.log(`[Bridge] Auto-starting ${session} auth on thread creation`);
-            startCliAuthInChat(session, ws, thread.id);
-          }
+          // Auth is NOT started here — set_thread (which always follows create_thread)
+          // handles auth. Starting it here would be wasted since set_thread cancels + restarts it.
         } catch (err) {
           ws.send(JSON.stringify({ type: 'error', message: 'Failed to create thread: ' + (err as Error).message, timestamp: Date.now() }));
         }
@@ -771,7 +811,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           unsubscribeProcessing(state.currentThreadId, ws);
         }
 
-        // Cancel any in-progress auth from the previous thread
+        // Cancel any in-progress auth from a DIFFERENT thread
         cancelCliAuthInChat(ws);
 
         if (threadId) {
@@ -789,9 +829,12 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             console.log(`[Bridge] Thread set to ${threadId.substring(0, 8)}..., session=${state.currentSession}`);
             ws.send(JSON.stringify({ type: 'thread_set', threadId, session: state.currentSession, timestamp: Date.now() }));
 
+            // Try to reattach an auth session from a dropped ws (reconnect scenario)
+            const reattached = reattachCliAuth(ws, threadId);
+
             // Auto-start auth setup if this CLI session needs it (don't wait for first message)
             const sessionNeedsAuth = state.currentSession !== 'opencode' && state.currentSession !== 'main' && state.currentSession !== 'claw';
-            if (sessionNeedsAuth && checkCliNeedsSetup(state.currentSession)) {
+            if (!reattached && sessionNeedsAuth && checkCliNeedsSetup(state.currentSession)) {
               console.log(`[Bridge] Auto-starting ${state.currentSession} auth on thread select`);
               startCliAuthInChat(state.currentSession, ws, threadId);
             }
@@ -841,7 +884,8 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
   ws.on('close', () => {
     clearInterval(heartbeatInterval);
     killInteractiveSession(ws);
-    cancelCliAuthInChat(ws);
+    // Don't cancel auth — detach so it survives reconnection
+    detachCliAuth(ws);
     unsubscribeAllProcessing(ws);
     console.log('[Bridge] Connection closed');
   });

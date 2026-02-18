@@ -1090,9 +1090,8 @@ async function sendToCodexOneShot(
     try { requireCliBinary('codex'); } catch (e) { return reject(e); }
 
     const args = ['exec'];
-    // Always use --last for per-thread isolation since each thread has its own state dir
-    if (useLast || threadId) args.push('--last');
-    args.push('--json', '--approval-mode', 'auto-edit', message);
+    // Note: codex exec does NOT support --last; thread isolation is handled via getIsolatedCliEnv
+    args.push('--json', '--skip-git-repo-check', '--full-auto', message);
 
     // Use project-specific directory if provided
     const workingDir = project ? path.join(PROJECTS_DIR, project) : PROJECTS_DIR;
@@ -1118,48 +1117,59 @@ async function sendToCodexOneShot(
         try {
           const event = JSON.parse(line);
           const item = event.item;
-          const details = item?.details;
 
-          if (!details) continue;
-          const detailType = details.type;
+          // Codex exec --json format: { type: "item.completed", item: { type: "agent_message", text: "..." } }
+          const itemType = item?.type || item?.details?.type;
+          const itemText = item?.text || item?.details?.text;
 
-          if (detailType === 'reasoning' && details.text) {
-            if (event.type === 'item_completed' || event.type === 'item_started') {
-              response.reasoning.push(details.text);
-              sendThinkingStep(ws, details.text, threadId);
+          if (!itemType) continue;
+
+          if (itemType === 'reasoning' && itemText) {
+            if (event.type === 'item.completed' || event.type === 'item_completed' || event.type === 'item.started' || event.type === 'item_started') {
+              response.reasoning.push(itemText);
+              sendThinkingStep(ws, itemText, threadId);
             }
-          } else if (detailType === 'agent_message' && details.text) {
-            if (event.type === 'item_completed') {
-              response.text.push(details.text);
+          } else if (itemType === 'agent_message' && itemText) {
+            if (event.type === 'item.completed' || event.type === 'item_completed') {
+              // Send previous agent_messages as thinking steps, only keep latest for final output
+              if (response.text.length > 0) {
+                sendThinkingStep(ws, response.text[response.text.length - 1]!, threadId);
+              }
+              // Replace — only the last agent_message becomes the final response
+              response.text = [itemText];
             }
-          } else if (detailType === 'command_execution') {
+          } else if (itemType === 'command_execution') {
+            const details = item?.details || item;
             const cmd = details.command || 'command';
             if (!response.tools.includes(cmd)) response.tools.push(cmd);
-            if (event.type === 'item_started' || details.status === 'in_progress') {
+            if (event.type === 'item.started' || event.type === 'item_started' || details.status === 'in_progress') {
               sendThinkingStep(ws, 'Running: ' + cmd, threadId);
-            } else if (event.type === 'item_completed') {
+            } else if (event.type === 'item.completed' || event.type === 'item_completed') {
               sendThinkingStep(ws, cmd + ' done (exit ' + (details.exit_code || 0) + ')', threadId);
             }
-          } else if (detailType === 'file_change') {
+          } else if (itemType === 'file_change') {
+            const details = item?.details || item;
             const changes = details.changes || [];
             for (const c of changes) {
               const label = (c.kind || 'edit') + ' ' + (c.path || 'file');
               if (!response.tools.includes(label)) response.tools.push(label);
-              if (event.type === 'item_started') {
+              if (event.type === 'item.started' || event.type === 'item_started') {
                 sendThinkingStep(ws, label + '...', threadId);
               }
             }
-          } else if (detailType === 'mcp_tool_call') {
+          } else if (itemType === 'mcp_tool_call') {
+            const details = item?.details || item;
             const toolName = details.tool || 'mcp_tool';
             if (!response.tools.includes(toolName)) response.tools.push(toolName);
-            if (event.type === 'item_started') {
+            if (event.type === 'item.started' || event.type === 'item_started') {
               sendThinkingStep(ws, 'Using ' + toolName + '...', threadId);
-            } else if (event.type === 'item_completed') {
+            } else if (event.type === 'item.completed' || event.type === 'item_completed') {
               sendThinkingStep(ws, toolName + ' done', threadId);
             }
-          } else if (detailType === 'web_search' && details.query) {
-            response.tools.push('search: ' + details.query);
-            sendThinkingStep(ws, 'Searching: ' + details.query, threadId);
+          } else if (itemType === 'web_search' && (item?.query || item?.details?.query)) {
+            const query = item?.query || item?.details?.query;
+            response.tools.push('search: ' + query);
+            sendThinkingStep(ws, 'Searching: ' + query, threadId);
           }
         } catch {
           // Non-JSON line
@@ -1175,8 +1185,11 @@ async function sendToCodexOneShot(
       if (buffer.trim()) {
         try {
           const event = JSON.parse(buffer);
-          if (event.item?.details?.type === 'agent_message' && event.item.details.text) {
-            response.text.push(event.item.details.text);
+          const item = event.item;
+          const itemType = item?.type || item?.details?.type;
+          const itemText = item?.text || item?.details?.text;
+          if (itemType === 'agent_message' && itemText) {
+            response.text.push(itemText);
           }
         } catch {}
       }

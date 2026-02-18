@@ -55,6 +55,9 @@ success "Git identity: $USER_NAME <$USER_EMAIL>"
 
 HELPER_PATH="/usr/local/bin/git-credential-ellulai"
 
+# Skip writing if helper already exists (installed during provisioning).
+# ProtectSystem=strict makes /usr/local/bin read-only for services.
+if [ ! -f "$HELPER_PATH" ]; then
 cat > "$HELPER_PATH" << 'HELPER_EOF'
 #!/bin/bash
 # ellul.ai Sovereign Credential Helper
@@ -106,13 +109,14 @@ if [ -n "\${__GIT_TOKEN:-}" ]; then
 fi
 HELPER_EOF
 chmod 755 "$HELPER_PATH"
+fi
 
 git config --global credential.helper "$HELPER_PATH"
 
 # Remove any legacy plaintext credential file from older setups
 rm -f ~/.git-credentials 2>/dev/null
 
-success "Sovereign credential helper installed (no tokens on disk)"
+success "Sovereign credential helper configured (no tokens on disk)"
 
 # Find project directory (ELLULAI_PROJECT_DIR set by enforcement for per-app git)
 PROJECT_DIR="\${ELLULAI_PROJECT_DIR:-}"

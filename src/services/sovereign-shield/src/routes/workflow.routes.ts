@@ -18,12 +18,14 @@ import type { Hono } from 'hono';
 
 const BILLING_TIER_FILE = '/etc/ellulai/billing-tier';
 const DOMAIN_FILE = '/etc/ellulai/domain';
+const CADDYFILE = '/etc/caddy/Caddyfile';
 const SITES_DIR = '/etc/caddy/sites-enabled';
+const APP_ROUTES_DIR = '/etc/caddy/app-routes.d';
 const CF_CA_FILE = '/etc/caddy/cf-origin-pull-ca.pem';
 
 // Ports reserved for ellul.ai internal services
 const RESERVED_PORTS = new Set([
-  22, 2019, 3002, 3005,
+  22, 2019, 3000, 3002, 3005,
   7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689,
   7690, 7691, 7692, 7693, 7694, 7695, 7696, 7697, 7698, 7699, 7700, 7701,
 ]);
@@ -51,6 +53,15 @@ function getServerDomain(): string {
   }
 }
 
+function isProxiedMode(): boolean {
+  try {
+    const caddyfile = fs.readFileSync(CADDYFILE, 'utf8');
+    return caddyfile.includes('auto_https off');
+  } catch {
+    return false;
+  }
+}
+
 function getCfCaBase64(): string {
   try {
     const pem = fs.readFileSync(CF_CA_FILE, 'utf8');
@@ -61,6 +72,179 @@ function getCfCaBase64(): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Ensure the app process is running on the correct port via pm2.
+ * Handles port conflict resolution, process lifecycle, and health checks.
+ */
+function ensureAppProcess(
+  name: string,
+  requestedPort: number,
+  projectPath: string,
+  systemUser: string,
+  appsDir: string,
+): { port: number } {
+  // A. Get pm2 process list
+  let pm2List: Array<{
+    name: string;
+    pm2_env?: { cwd?: string; PORT?: string; status?: string };
+  }> = [];
+  try {
+    const raw = execSync(`runuser -l ${systemUser} -c 'pm2 jlist 2>/dev/null'`, {
+      stdio: 'pipe',
+      timeout: 10000,
+    }).toString();
+    pm2List = JSON.parse(raw);
+  } catch {}
+
+  // B. Check if this app already has a running pm2 process
+  const existing = pm2List.find(
+    (p) => p.pm2_env?.cwd === projectPath || p.name === name,
+  );
+
+  if (existing) {
+    if (
+      existing.pm2_env?.cwd === projectPath &&
+      existing.pm2_env?.status === 'online'
+    ) {
+      const existingPort = parseInt(existing.pm2_env?.PORT || '0', 10);
+      if (existingPort > 0) {
+        // Verify port is actually listening
+        try {
+          execSync(`ss -tlnp 2>/dev/null | grep -q ':${existingPort} '`, {
+            stdio: 'pipe',
+            timeout: 3000,
+          });
+          return { port: existingPort };
+        } catch {
+          // Port not listening despite pm2 saying online — fall through to restart
+        }
+      }
+    }
+    // Stale or wrong cwd — remove it
+    try {
+      execSync(`runuser -l ${systemUser} -c 'pm2 delete ${JSON.stringify(existing.name)} 2>/dev/null'`, {
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+    } catch {}
+  }
+
+  // C. Resolve port — guarantee no conflict
+  let port = requestedPort;
+
+  function isPortOccupied(p: number): boolean {
+    try {
+      execSync(`ss -tlnp 2>/dev/null | grep -q ':${p} '`, {
+        stdio: 'pipe',
+        timeout: 3000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  if (isPortOccupied(port)) {
+    // Check if occupied by the same project
+    let occupiedBySame = false;
+    try {
+      const files = fs.readdirSync(appsDir).filter((f) => f.endsWith('.json'));
+      for (const file of files) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(`${appsDir}/${file}`, 'utf8'));
+          if (meta.port === port && meta.projectPath === projectPath) {
+            occupiedBySame = true;
+            break;
+          }
+        } catch {}
+      }
+    } catch {}
+
+    if (!occupiedBySame) {
+      // Find next free port
+      let candidate = port + 1;
+      while (candidate <= 65535) {
+        if (!RESERVED_PORTS.has(candidate) && !isPortOccupied(candidate)) {
+          port = candidate;
+          break;
+        }
+        candidate++;
+      }
+      if (candidate > 65535) {
+        throw new Error('No free ports available');
+      }
+    }
+  }
+
+  // D. Start the process
+  try {
+    execSync(`runuser -l ${systemUser} -c 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
+  } catch {}
+
+  // Detect start method
+  let hasStartScript = false;
+  let hasPackageJson = false;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(`${projectPath}/package.json`, 'utf8'));
+    hasPackageJson = true;
+    hasStartScript = !!(pkg.scripts && pkg.scripts.start);
+  } catch {}
+
+  let startCmd: string;
+  if (hasStartScript) {
+    startCmd = `PORT=${port} pm2 start npm --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)} -- start`;
+  } else {
+    startCmd = `pm2 start "npx serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
+  }
+
+  execSync(`runuser -l ${systemUser} -c '${startCmd}'`, {
+    stdio: 'pipe',
+    timeout: 30000,
+  });
+
+  try {
+    execSync(`runuser -l ${systemUser} -c 'pm2 save --force 2>/dev/null'`, {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
+  } catch {}
+
+  // E. Health check — wait up to 8 seconds
+  const maxWait = 8000;
+  const interval = 500;
+  let waited = 0;
+  let healthy = false;
+
+  while (waited < maxWait) {
+    try {
+      execSync(`curl -sf -o /dev/null http://localhost:${port}`, {
+        stdio: 'pipe',
+        timeout: 2000,
+      });
+      healthy = true;
+      break;
+    } catch {}
+    execSync(`sleep 0.5`, { stdio: 'pipe' });
+    waited += interval;
+  }
+
+  if (!healthy) {
+    // Clean up
+    try {
+      execSync(`runuser -l ${systemUser} -c 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
+        stdio: 'pipe',
+        timeout: 5000,
+      });
+    } catch {}
+    throw new Error(`App failed to start on port ${port} (health check timed out after ${maxWait / 1000}s)`);
+  }
+
+  return { port };
 }
 
 /**
@@ -90,11 +274,11 @@ export function registerWorkflowRoutes(app: Hono): void {
 
     const { customDomain, projectPath, stack } = body;
     let name = body.name;
-    const port = body.port;
+    let port = body.port || 3001;
 
     // ── Validate inputs ──────────────────────────────────────────────
-    if (!name || !port) {
-      return c.json({ error: 'name and port are required' }, 400);
+    if (!name) {
+      return c.json({ error: 'name is required' }, 400);
     }
 
     // Sanitize name
@@ -127,6 +311,7 @@ export function registerWorkflowRoutes(app: Hono): void {
     // ── Ensure directories exist ─────────────────────────────────────
     try {
       fs.mkdirSync(SITES_DIR, { recursive: true });
+      fs.mkdirSync(APP_ROUTES_DIR, { recursive: true });
       fs.mkdirSync(appsDir, { recursive: true });
     } catch {}
 
@@ -145,6 +330,7 @@ export function registerWorkflowRoutes(app: Hono): void {
             // Clean up old deployment
             const oldName = meta.name;
             try { fs.unlinkSync(`${SITES_DIR}/${oldName}.caddy`); } catch {}
+            try { fs.unlinkSync(`${APP_ROUTES_DIR}/${oldName}.caddy`); } catch {}
             try { fs.unlinkSync(`${appsDir}/${oldName}.json`); } catch {}
             name = oldName; // Reuse old name
             break;
@@ -153,17 +339,33 @@ export function registerWorkflowRoutes(app: Hono): void {
       }
     }
 
+    // ── Ensure app process is running (port ownership + lifecycle) ──
+    if (projectPath) {
+      try {
+        const result = ensureAppProcess(name, port, projectPath, systemUser, appsDir);
+        port = result.port;
+      } catch (e) {
+        return c.json({ error: (e as Error).message }, 500);
+      }
+    }
+
     // ── Build domain ─────────────────────────────────────────────────
     const serverDomain = getServerDomain();
     const shortId = (serverDomain.match(/^([a-f0-9]{8})-/) || [])[1] || serverDomain.split('.')[0];
-    const appDomain = customDomain || `${name}-${shortId}.ellul.app`;
+    const appDomain = customDomain || `${shortId}-${name}.ellul.app`;
     const isCustom = !!customDomain;
 
     // ── Generate Caddy config ────────────────────────────────────────
+    // Proxied mode (gateway/cloudflare): write handler-only route inside the
+    // main .app site block via app-routes.d/ — TLS is shared with the main block.
+    // Direct mode / custom domain: write standalone site block in sites-enabled/.
+    const proxied = !isCustom && isProxiedMode();
     let caddyConfig: string;
+    let configDir: string;
 
     if (isCustom) {
-      // Custom domain — user handles TLS
+      // Custom domain — standalone site block, user handles TLS
+      configDir = SITES_DIR;
       caddyConfig = `${appDomain} {
     reverse_proxy localhost:${port}
     log {
@@ -172,28 +374,25 @@ export function registerWorkflowRoutes(app: Hono): void {
     }
 }
 `;
-    } else {
-      // ellul.ai domain — origin cert + Cloudflare Edge
-      const cfCaBase64 = getCfCaBase64();
-      if (!cfCaBase64) {
-        return c.json({
-          error: 'Cloudflare Origin Pull CA not found. Run ellulai-update to fix.',
-        }, 500);
-      }
-
-      if (isFree) {
-        // Free tier: add forward_auth for owner-only preview
-        caddyConfig = `${appDomain}:443 {
-    tls /etc/caddy/origin-app.crt /etc/caddy/origin-app.key {
-        client_auth {
-            mode require_and_verify
-            trusted_ca_cert ${cfCaBase64}
-        }
-    }
+    } else if (proxied) {
+      // Gateway/Cloudflare mode — handler-only block imported inside main .app site block
+      configDir = APP_ROUTES_DIR;
+      const authBlock = isFree
+        ? `
     forward_auth localhost:3005 {
         uri /api/auth/check
         header_up Cookie {http.request.header.Cookie}
-    }
+    }`
+        : '';
+      caddyConfig = `@app-${name} host ${appDomain}
+handle @app-${name} {${authBlock}
+    reverse_proxy localhost:${port}
+}
+`;
+    } else {
+      // Direct connect — standalone site block with Let's Encrypt
+      configDir = SITES_DIR;
+      caddyConfig = `${appDomain} {
     reverse_proxy localhost:${port}
     log {
         output file /var/log/caddy/${name}.log
@@ -201,27 +400,10 @@ export function registerWorkflowRoutes(app: Hono): void {
     }
 }
 `;
-      } else {
-        // Paid tier: public access, no forward_auth
-        caddyConfig = `${appDomain}:443 {
-    tls /etc/caddy/origin-app.crt /etc/caddy/origin-app.key {
-        client_auth {
-            mode require_and_verify
-            trusted_ca_cert ${cfCaBase64}
-        }
-    }
-    reverse_proxy localhost:${port}
-    log {
-        output file /var/log/caddy/${name}.log
-        format json
-    }
-}
-`;
-      }
     }
 
     // ── Write Caddy config ───────────────────────────────────────────
-    const configFile = `${SITES_DIR}/${name}.caddy`;
+    const configFile = `${configDir}/${name}.caddy`;
     try {
       fs.writeFileSync(configFile, caddyConfig);
     } catch (e) {
@@ -269,7 +451,9 @@ export function registerWorkflowRoutes(app: Hono): void {
     }
 
     try {
-      execSync('systemctl reload caddy 2>/dev/null || systemctl restart caddy', {
+      // Use caddy reload (admin API) — works without root since shield runs as $SVC_USER.
+      // systemctl reload requires root and fails silently when run as non-root.
+      execSync('caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1', {
         stdio: 'pipe',
         timeout: 10000,
       });

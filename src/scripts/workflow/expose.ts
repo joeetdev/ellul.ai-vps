@@ -24,18 +24,24 @@ NC='\\033[0m'
 error() { echo -e "\${RED}x\${NC} $1" >&2; exit 1; }
 
 # ── Usage ─────────────────────────────────────────────────────────
-if [ -z "$NAME" ] || [ -z "$PORT" ]; then
+if [ -z "$NAME" ]; then
   echo ""
   echo -e "\${CYAN}ellul.ai Expose\${NC}"
   echo ""
-  echo "Usage: ellulai-expose <app_name> <port> [custom_domain]"
+  echo "Usage: ellulai-expose <app_name> [port] [custom_domain]"
   echo ""
   echo "Examples:"
-  echo "  ellulai-expose blog 3000"
+  echo "  ellulai-expose blog"
+  echo "  ellulai-expose blog 3001"
   echo "  ellulai-expose api 4000"
-  echo "  ellulai-expose shop 3000 shop.example.com"
+  echo "  ellulai-expose shop 3001 shop.example.com"
   echo ""
   exit 1
+fi
+
+# Default port if not provided
+if [ -z "$PORT" ]; then
+  PORT=3001
 fi
 
 # ── Local-only validation (runs in user space) ────────────────────
@@ -43,11 +49,6 @@ NAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]//g')
 
 if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1024 ] || [ "$PORT" -gt 65535 ]; then
   error "Invalid port: $PORT (must be 1024-65535)"
-fi
-
-# Verify the port is actually listening
-if ! ss -tlnp 2>/dev/null | grep -q ":$PORT "; then
-  error "Port $PORT is not listening. Start your app first, then expose it."
 fi
 
 # ── Detect stack (harmless, runs in user space) ───────────────────

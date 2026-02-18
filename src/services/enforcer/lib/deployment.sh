@@ -49,13 +49,11 @@ ensure_gateway_origin() {
   local TMPFILE
   TMPFILE=$(mktemp)
 
-  # Add origin hostname to both site block address lines:
+  # Add origin hostname to .ai site block address line:
   # Before: srv.ellul.ai:443, code.ellul.ai:443 {
   # After:  srv.ellul.ai:443, code.ellul.ai:443, o-tag.ellul.ai:443 {
-  # Before: dev.ellul.app:443 {
-  # After:  dev.ellul.app:443, o-tag.ellul.app:443 {
+  # The .app block uses *.ellul.app:443 wildcard — no patching needed.
   sed "s/\(\.ellul\.ai:443\) {$/\1, ${ORIGIN_AI}:443 {/" "$CADDYFILE" \
-    | sed "s/\(\.ellul\.app:443\) {$/\1, ${ORIGIN_APP}:443 {/" \
     > "$TMPFILE"
 
   if caddy validate --config "$TMPFILE" --adapter caddyfile 2>/dev/null; then

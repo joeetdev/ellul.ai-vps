@@ -181,7 +181,7 @@ process action:poll sessionId:SESSION_ID
 process action:log sessionId:SESSION_ID
 Repeat poll/log until the CLI finishes. If you see meaningful progress in the logs, briefly summarize in 1 sentence.
 
-STEP 4: Tell the user the result in 1-2 sentences.
+STEP 4: Tell the user the result. If the CLI created or modified a web app, verify it's working before sharing the preview URL: check \`pm2 list\` shows "online" AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200 AND \`curl -s localhost:3000 | head -5\` shows actual HTML. If not, check \`pm2 logs preview --nostream --lines 20\` and fix before reporting success.
 
 ## Model Selection (opencode only)
 The CLI uses free models from OpenCode Zen. You can pick the model with the \`-m\` flag:
@@ -232,7 +232,7 @@ If the user asks to change models, use \`opencode models\` to show them what's a
 Your dev preview URL: **https://${DEV_DOMAIN}**
 Apps listening on port 3000 are served at this URL via reverse proxy.
 When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
-After starting a dev server, verify with \`curl localhost:3000\` then share the preview URL.`);
+Before telling the user the preview is live, verify: \`pm2 list\` shows "online" AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200 AND \`curl -s localhost:3000 | head -5\` shows actual HTML (<!DOCTYPE or <html>). If not, check \`pm2 logs preview --nostream --lines 20\` and fix before sharing the URL.`);
   }
 
   // CLI auth status — accurate for ALL tools including active session
@@ -296,7 +296,8 @@ export function buildClawSystemPrompt(
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
 Apps listening on port 3000 are served at this URL via reverse proxy.
-When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.`);
+When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
+Before telling the user the preview is live, verify: \`pm2 list\` shows "online" AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200 AND \`curl -s localhost:3000 | head -5\` shows actual HTML (<!DOCTYPE or <html>). If not, check \`pm2 logs preview --nostream --lines 20\` and fix before sharing the URL.`);
   }
 
   if (globalContext) parts.push(globalContext);

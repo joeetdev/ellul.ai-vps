@@ -109,8 +109,11 @@ export function generateCaddyfileContent(opts: CaddyfileOptions): string {
       tls: aiTls,
       handlers: replace(generateCaddyHandlers("ai")),
     });
+    // Wildcard covers ALL *.ellul.app subdomains: dev preview, deployed apps, origin hostname.
+    // The origin cert covers *.ellul.app so TLS works for any subdomain.
+    // Host matchers inside (@dev, @app-* from app-routes.d/) handle per-host routing.
     sites.push({
-      addresses: [`${devDomain}:443`],
+      addresses: [`*.ellul.app:443`],
       tls: appTls,
       handlers: replace(generateCaddyHandlers("app")),
     });

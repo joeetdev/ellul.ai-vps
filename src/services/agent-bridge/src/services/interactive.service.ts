@@ -177,11 +177,24 @@ function stripAnsi(text: string): string {
   const reassembled: string[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
+    // Skip blank lines entirely during reassembly — PTY outputs \r\r\n which
+    // becomes blank lines after stripping, breaking URL fragment joining
+    if (line.trim() === '') {
+      reassembled.push(line);
+      continue;
+    }
     if (reassembled.length > 0 && line.match(/^[a-zA-Z0-9%&=_.~:/?#[\]@!$'()+,;-]+$/) && !line.match(/^\s/)) {
-      const prev = reassembled[reassembled.length - 1] ?? '';
-      if (prev.match(/https?:\/\//) && !prev.match(/\s$/)) {
-        reassembled[reassembled.length - 1] = prev + line;
-        continue;
+      // Look back past blank lines to find the last non-blank entry
+      let prevIdx = reassembled.length - 1;
+      while (prevIdx >= 0 && reassembled[prevIdx]!.trim() === '') {
+        prevIdx--;
+      }
+      if (prevIdx >= 0) {
+        const prev = reassembled[prevIdx] ?? '';
+        if (prev.match(/https?:\/\//) && !prev.match(/\s$/)) {
+          reassembled[prevIdx] = prev + line;
+          continue;
+        }
       }
     }
     reassembled.push(line);
@@ -388,7 +401,9 @@ export function startInteractiveCli(
       rawUrl = rawUrl.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
       rawUrl = rawUrl.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
       rawUrl = rawUrl.replace(/\x1b[()][AB012]/g, '');
-      rawUrl = rawUrl.replace(/[\x00-\x1f\x7f]/g, '');
+      // Replace control chars with SPACE (not remove) to preserve word boundaries
+      // Otherwise \r\n between URL and "Paste code here" gets removed, corrupting the URL
+      rawUrl = rawUrl.replace(/[\x00-\x1f\x7f]/g, ' ');
       const urlMatch = rawUrl.match(/^(https:\/\/[^\s"'<>]+)/);
       if (urlMatch && urlMatch[1]) {
         rawUrls.push(urlMatch[1].replace(/[.,;:)]+$/, ''));
@@ -396,12 +411,9 @@ export function startInteractiveCli(
     }
 
     const parsed = parseCliOutput(buffer);
-    const firstRawUrl = rawUrls[0];
-    const firstParsedUrl = parsed.urls[0];
-    if (firstRawUrl && firstParsedUrl) {
-      const longest = firstRawUrl.length >= firstParsedUrl.length ? firstRawUrl : firstParsedUrl;
-      parsed.urls = [longest];
-    } else if (rawUrls.length > 0) {
+    // Prefer parsed URL (parseCliOutput has proper multi-line URL reassembly)
+    // Only fall back to raw extraction if parseCliOutput found nothing
+    if (parsed.urls.length === 0 && rawUrls.length > 0) {
       parsed.urls = rawUrls;
     }
     buffer = '';
@@ -696,6 +708,50 @@ export function hasInteractiveSession(ws: WsClient): boolean {
 // in the chat. User pastes the code back, bridge routes it to PTY.
 
 const chatAuthSessions = new Map<WsClient, InteractiveState & { threadId?: string | null }>();
+// Secondary index: threadId → auth state + mutable ws ref, for reconnecting after ws drop
+const chatAuthByThread = new Map<string, { state: InteractiveState & { threadId?: string | null }; wsRef: { ws: WsClient } }>();
+
+/** Remove auth session from both maps */
+function removeAuthSession(ws: WsClient) {
+  const state = chatAuthSessions.get(ws);
+  chatAuthSessions.delete(ws);
+  if (state?.threadId) chatAuthByThread.delete(state.threadId);
+}
+
+/**
+ * Re-associate an auth session from a previous ws to a new ws on reconnect.
+ * Returns true if an existing auth session was migrated.
+ */
+export function reattachCliAuth(newWs: WsClient, threadId: string): boolean {
+  const entry = chatAuthByThread.get(threadId);
+  if (!entry || !entry.state.proc || entry.state.proc.killed) {
+    // No active auth for this thread
+    chatAuthByThread.delete(threadId);
+    return false;
+  }
+  const oldWs = entry.wsRef.ws;
+  // Remove from old ws
+  chatAuthSessions.delete(oldWs);
+  // Register under new ws
+  chatAuthSessions.set(newWs, entry.state);
+  // Update the mutable ws ref — this propagates to all closures in startCliAuthInChat
+  entry.wsRef.ws = newWs;
+  console.log(`[ChatAuth] Reattached ${entry.state.session} auth (pid=${entry.state.proc.pid}) to new ws for thread ${threadId.substring(0, 8)}`);
+  return true;
+}
+
+/**
+ * Detach auth session on ws close — don't kill the PTY, just remove the ws mapping.
+ * The auth continues running and can be reattached on reconnect.
+ */
+export function detachCliAuth(ws: WsClient): void {
+  const state = chatAuthSessions.get(ws);
+  if (state) {
+    // Only remove ws→state mapping, NOT the threadId→state mapping (needed for reconnect)
+    chatAuthSessions.delete(ws);
+    console.log(`[ChatAuth] Detached ${state.session} auth from closed ws (PTY pid=${state.proc?.pid} still running)`);
+  }
+}
 
 /**
  * Start an interactive CLI auth flow within the chat conversation.
@@ -708,15 +764,15 @@ const chatAuthSessions = new Map<WsClient, InteractiveState & { threadId?: strin
  */
 export function startCliAuthInChat(
   session: string,
-  ws: WsClient,
+  initialWs: WsClient,
   threadId?: string | null,
 ): void {
   // Kill any existing in-chat auth for this ws
-  cancelCliAuthInChat(ws);
+  cancelCliAuthInChat(initialWs);
 
   // Gemini has no headless auth flow — prompt for API key directly
   if (session === 'gemini') {
-    startGeminiApiKeyAuth(ws, threadId);
+    startGeminiApiKeyAuth(initialWs, threadId);
     return;
   }
 
@@ -726,9 +782,21 @@ export function startCliAuthInChat(
   };
   const cmd = defaults[session];
   if (!cmd) {
-    ws.send(JSON.stringify({ type: 'output', content: `No setup available for ${session}.`, threadId, timestamp: Date.now() }));
+    initialWs.send(JSON.stringify({ type: 'output', content: `No setup available for ${session}.`, threadId, timestamp: Date.now() }));
     return;
   }
+
+  // Mutable ws ref — reattachCliAuth updates wsRef.ws when connection drops and reconnects.
+  // All closures below use wsRef.ws (not a captured local) so they get the latest ws.
+  // wsRef: mutable ws reference. reattachCliAuth updates wsRef.ws on reconnect.
+  // JS closures capture `ws` by reference (since `let`), so when wsRef.ws setter updates
+  // the local `ws`, all closures see the new value.
+  // eslint-disable-next-line prefer-const
+  let ws = initialWs;
+  const wsRef = {
+    get ws() { return ws; },
+    set ws(v: WsClient) { ws = v; },
+  };
 
   const cmdParts = cmd.split(' ');
   const proc = spawn('pty-wrap', cmdParts, {
@@ -750,13 +818,16 @@ export function startCliAuthInChat(
       }
       ws.send(JSON.stringify({ type: 'output', content: `${session} setup timed out. You can try again.`, threadId, timestamp: Date.now() }));
     }
-    chatAuthSessions.delete(ws);
+    removeAuthSession(ws);
   }, INTERACTIVE_TIMEOUT_MS);
 
   const sessionState: InteractiveState & { threadId?: string | null } = {
     proc, timeout: timeoutHandle, session, awaitingResponse: false, threadId,
   };
-  chatAuthSessions.set(ws, sessionState);
+  chatAuthSessions.set(wsRef.ws, sessionState);
+  if (threadId) {
+    chatAuthByThread.set(threadId, { state: sessionState, wsRef });
+  }
 
   ws.send(JSON.stringify({
     type: 'output',
@@ -778,7 +849,8 @@ export function startCliAuthInChat(
       rawUrl = rawUrl.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
       rawUrl = rawUrl.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
       rawUrl = rawUrl.replace(/\x1b[()][AB012]/g, '');
-      rawUrl = rawUrl.replace(/[\x00-\x1f\x7f]/g, '');
+      // Replace control chars with SPACE (not remove) to preserve word boundaries
+      rawUrl = rawUrl.replace(/[\x00-\x1f\x7f]/g, ' ');
       const urlMatch = rawUrl.match(/^(https:\/\/[^\s"'<>]+)/);
       if (urlMatch?.[1]) {
         rawUrls.push(urlMatch[1].replace(/[.,;:)]+$/, ''));
@@ -786,13 +858,22 @@ export function startCliAuthInChat(
     }
 
     const parsed = parseCliOutput(buffer);
-    // Merge raw URLs with parsed URLs (take longest)
-    if (rawUrls[0] && parsed.urls[0]) {
-      parsed.urls = [rawUrls[0].length >= parsed.urls[0].length ? rawUrls[0] : parsed.urls[0]];
-    } else if (rawUrls.length > 0) {
+    // Prefer parsed URL (parseCliOutput has proper multi-line URL reassembly)
+    // Only fall back to raw extraction if parseCliOutput found nothing
+    if (parsed.urls.length === 0 && rawUrls.length > 0) {
       parsed.urls = rawUrls;
     }
+    // Build full text BEFORE clearing buffer (needed for device code extraction)
+    const fullText = parsed.contextBefore.concat(parsed.contextAfter).join('\n');
+    const rawBufferSnapshot = buffer;
     buffer = '';
+
+    console.log(`[ChatAuth] flushBuffer: options=${parsed.options.length}, urls=${parsed.urls.length}, rawUrls=${rawUrls.length}, inputPrompt=${!!parsed.inputPrompt}, yesNo=${!!parsed.yesNoMatch}, authUrlSent=${authUrlSent}, fullTextLen=${fullText.length}`);
+    if (parsed.urls.length > 0) console.log(`[ChatAuth] Parsed URLs: ${JSON.stringify(parsed.urls)}`);
+    if (rawUrls.length > 0) console.log(`[ChatAuth] Raw URLs: ${JSON.stringify(rawUrls)}`);
+    // Log first 500 chars of buffer for debugging (sanitized)
+    const sanitizedPreview = stripAnsi(rawBufferSnapshot).replace(/\n/g, '\\n').substring(0, 500);
+    console.log(`[ChatAuth] Buffer preview: ${sanitizedPreview}`);
 
     // Auto-skip: theme picker (loose regex — Dragon #3)
     if (parsed.options.length >= 2) {
@@ -824,7 +905,10 @@ export function startCliAuthInChat(
         )
         .join('\n');
 
+      console.log(`[ChatAuth] Showing cli_prompt: ${parsed.options.length} options, selectionType=${parsed.selectionType}, activeIdx=${parsed.activeArrowIdx}`);
       sessionState.awaitingResponse = true;
+      // Track activeArrowIdx so respondToCliAuthInChat can navigate correctly
+      (sessionState as InteractiveState & { threadId?: string | null; lastActiveIdx?: number }).lastActiveIdx = parsed.activeArrowIdx;
       ws.send(JSON.stringify({
         type: 'cli_prompt',
         session,
@@ -868,8 +952,6 @@ export function startCliAuthInChat(
       return;
     }
 
-    const fullText = parsed.contextBefore.concat(parsed.contextAfter).join('\n');
-
     // Also catch press-enter in full text (loose regex)
     if (/press\s*enter|hit\s*enter|press\s*any\s*key/i.test(fullText) && !parsed.urls.length && !parsed.inputPrompt) {
       console.log('[ChatAuth] Auto-pressing Enter (fullText match)');
@@ -878,7 +960,41 @@ export function startCliAuthInChat(
       return;
     }
 
-    // Auth success detection
+    // Show progress during browser-open wait (Claude shows spinner for ~10s before fallback URL)
+    if (/opening\s*browser|waiting\s*for\s*browser|sign\s*in/i.test(fullText) && !parsed.urls.length && !parsed.inputPrompt && !authUrlSent) {
+      console.log('[ChatAuth] Browser opening detected, showing progress');
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: `Waiting for ${session} authentication URL...`,
+        threadId,
+        timestamp: Date.now(),
+      }));
+      lastFlush = now;
+      return;
+    }
+
+    // Codex device auth not enabled — user needs to enable it in ChatGPT settings
+    if (session === 'codex' && /enable\s*device\s*code\s*auth|security\s*settings/i.test(fullText)) {
+      console.log('[ChatAuth] Codex device auth not enabled, informing user');
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: `**Codex requires device code authorization to be enabled.**\n\nTo set this up:\n1. Go to [ChatGPT Security Settings](https://chatgpt.com/settings/security)\n2. Enable **"Device code authorization for Codex"**\n3. Then switch away from Codex and back to retry authentication.\n\n_Once enabled, the auth flow will work automatically._`,
+        threadId,
+        timestamp: Date.now(),
+      }));
+      // Kill the auth process — it can't proceed
+      if (!proc.killed) {
+        try { process.kill(-proc.pid!, 'SIGTERM'); } catch {
+          try { proc.kill('SIGTERM'); } catch {}
+        }
+      }
+      clearTimeout(timeoutHandle);
+      removeAuthSession(ws);
+      lastFlush = now;
+      return;
+    }
+
+    // Auth success detection — check both text indicators AND filesystem auth state
     const authSuccessIndicators = [
       /authenticat(ed|ion)\s*(success|complete|done)/i,
       /login\s*successful/i,
@@ -887,9 +1003,16 @@ export function startCliAuthInChat(
       /successfully\s*(authenticat|logged|signed|connect)/i,
       /what can i help/i,
       /how can i help/i,
+      /welcome\s*back/i,
+      /accessing\s*workspace/i,
+      /safety\s*check/i,
+      /trust\s*this\s*folder/i,
     ];
     const authDone = authSuccessIndicators.some(r => r.test(fullText));
-    if (authDone && !checkCliNeedsSetup(session)) {
+    // Also check filesystem: if auth code was already submitted (authUrlSent)
+    // and the CLI no longer needs setup, auth succeeded even without text match
+    const authFileReady = authUrlSent && !checkCliNeedsSetup(session);
+    if ((authDone || authFileReady) && !checkCliNeedsSetup(session)) {
       console.log(`[ChatAuth] ${session} auth complete`);
       syncAuthToRealHome(session, threadId);
       if (!proc.killed) {
@@ -898,7 +1021,7 @@ export function startCliAuthInChat(
         }
       }
       clearTimeout(timeoutHandle);
-      chatAuthSessions.delete(ws);
+      removeAuthSession(ws);
       ws.send(JSON.stringify({
         type: 'output',
         content: `${session} is now authenticated and ready to use!`,
@@ -913,13 +1036,17 @@ export function startCliAuthInChat(
       authUrlSent = true;
       const authUrl = parsed.urls[0];
       lastFlush = now;
+      console.log(`[ChatAuth] Auth URL detected: ${authUrl}`);
 
       // Codex device auth: extract the one-time code from the output
       // The code appears after the URL, pattern like "XXXX-XXXXX" (uppercase alphanumeric with dash)
       if (session === 'codex') {
-        const cleanText = stripAnsi(buffer);
-        const codeMatch = cleanText.match(/\b([A-Z0-9]{4,6}-[A-Z0-9]{4,6})\b/);
-        const deviceCode = codeMatch?.[1] || null;
+        // Extract device code from the FULL TEXT (not buffer, which is already cleared)
+        const codeFromFullText = fullText.match(/\b([A-Z0-9]{4,6}-[A-Z0-9]{4,6})\b/);
+        // Also try the raw buffer snapshot (before ANSI stripping may have lost it)
+        const codeFromRaw = stripAnsi(rawBufferSnapshot).match(/\b([A-Z0-9]{4,6}-[A-Z0-9]{4,6})\b/);
+        const deviceCode = codeFromFullText?.[1] || codeFromRaw?.[1] || null;
+        console.log(`[ChatAuth] Codex device code: ${deviceCode || 'not found'}`);
         // Codex device auth: user enters the code ON THE WEBSITE, not in terminal
         // CLI auto-detects completion — no input field needed
         ws.send(JSON.stringify({
@@ -946,14 +1073,18 @@ export function startCliAuthInChat(
       return;
     }
 
-    // Input prompt (auth code entry) — dedicated input UI
-    if (parsed.inputPrompt && !authUrlSent) {
+    // Input prompt (auth code entry) — show dedicated input UI
+    // This catches cases where the URL was shown in a previous buffer flush
+    // and now we just have the "paste code" prompt
+    if (parsed.inputPrompt) {
       lastFlush = now;
       sessionState.awaitingResponse = true;
+      console.log(`[ChatAuth] Input prompt detected: ${parsed.inputPrompt}`);
       ws.send(JSON.stringify({
         type: 'cli_input',
         session,
         prompt: parsed.inputPrompt || 'Paste authentication code',
+        url: parsed.urls[0] || undefined,
         inChatAuth: true,
         threadId,
         timestamp: Date.now(),
@@ -965,7 +1096,9 @@ export function startCliAuthInChat(
   }
 
   function onData(data: Buffer) {
-    buffer += data.toString();
+    const chunk = data.toString();
+    buffer += chunk;
+    console.log(`[ChatAuth] onData: +${chunk.length} bytes, bufferLen=${buffer.length}, chunk=${chunk.replace(/[\x00-\x1f\x7f]/g, '·').substring(0, 100)}`);
     if (buffer.length > MAX_BUFFER_SIZE) {
       buffer = buffer.slice(-MAX_BUFFER_SIZE);
     }
@@ -976,10 +1109,11 @@ export function startCliAuthInChat(
   proc.stdout?.on('data', onData);
   proc.stderr?.on('data', onData);
 
-  proc.on('close', () => {
+  proc.on('close', (code: number | null) => {
+    console.log(`[ChatAuth] PTY process closed with code ${code}, pid=${proc.pid}`);
     clearTimeout(timeoutHandle);
     if (debounceTimer) { clearTimeout(debounceTimer); flushBuffer(); }
-    chatAuthSessions.delete(ws);
+    removeAuthSession(ws);
 
     if (!checkCliNeedsSetup(session)) {
       syncAuthToRealHome(session, threadId);
@@ -994,7 +1128,7 @@ export function startCliAuthInChat(
 
   proc.on('error', (err) => {
     clearTimeout(timeoutHandle);
-    chatAuthSessions.delete(ws);
+    removeAuthSession(ws);
     if (err.message.includes('ENOENT')) {
       ws.send(JSON.stringify({ type: 'output', content: `${session} is still installing. Try again in a moment.`, threadId, timestamp: Date.now() }));
     } else {
@@ -1013,7 +1147,7 @@ function startGeminiApiKeyAuth(ws: WsClient, threadId?: string | null): void {
   const sessionState: InteractiveState & { threadId?: string | null } = {
     proc: null as unknown as ChildProcess,
     timeout: setTimeout(() => {
-      chatAuthSessions.delete(ws);
+      removeAuthSession(ws);
       ws.send(JSON.stringify({ type: 'output', content: 'Gemini setup timed out. You can try again.', threadId, timestamp: Date.now() }));
     }, INTERACTIVE_TIMEOUT_MS),
     session: 'gemini',
@@ -1082,7 +1216,7 @@ export function respondToCliAuthInChat(
   // Gemini API key flow — no PTY process, just save the key
   if (state.session === 'gemini') {
     clearTimeout(state.timeout);
-    chatAuthSessions.delete(ws);
+    removeAuthSession(ws);
     const saved = saveGeminiApiKey(message.trim(), state.threadId);
     if (saved && !checkCliNeedsSetup('gemini')) {
       ws.send(JSON.stringify({
@@ -1116,25 +1250,41 @@ export function respondToCliAuthInChat(
       }
       ws.send(JSON.stringify({ type: 'output', content: `${state.session} setup timed out.`, threadId: state.threadId, timestamp: Date.now() }));
     }
-    chatAuthSessions.delete(ws);
+    removeAuthSession(ws);
   }, INTERACTIVE_TIMEOUT_MS);
 
   state.awaitingResponse = false;
 
+  // Send progress message for option selection (not for code submission)
+  if (selectionType === 'arrow' || selectionType === 'number') {
+    ws.send(JSON.stringify({
+      type: 'output',
+      content: `Waiting for ${state.session} authentication URL...`,
+      threadId: state.threadId,
+      timestamp: Date.now(),
+    }));
+  }
+
   if (selectionType === 'arrow') {
-    // Arrow-key selection: navigate down to target index, then Enter
+    // Arrow-key selection: navigate from CURRENT cursor position to target, then Enter
     const targetIdx = parseInt(message, 10);
     if (isNaN(targetIdx) || targetIdx < 1) {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid selection.', threadId: state.threadId, timestamp: Date.now() }));
       return;
     }
-    // Arrow menus start at index 0 (first item highlighted) — move down (targetIdx - 1) times
-    const moves = targetIdx - 1;
-    for (let i = 0; i < moves; i++) {
-      state.proc.stdin?.write('\x1b[B');
+    // Account for current cursor position (tracked from the cli_prompt that was shown)
+    const currentIdx = (state as InteractiveState & { lastActiveIdx?: number }).lastActiveIdx || 0;
+    const targetZeroBased = targetIdx - 1;
+    const moves = targetZeroBased - currentIdx;
+    const arrow = moves > 0 ? '\x1b[B' : '\x1b[A';
+    console.log(`[ChatAuth] Arrow selection: from ${currentIdx} to ${targetZeroBased}, moves=${moves}, procAlive=${!state.proc.killed}, pid=${state.proc.pid}, stdinWritable=${!!state.proc.stdin?.writable}`);
+    for (let i = 0; i < Math.abs(moves); i++) {
+      state.proc.stdin?.write(arrow);
     }
-    setTimeout(() => state.proc.stdin?.write('\r'), 50);
-    console.log(`[ChatAuth] Arrow selection: moved ${moves} down, pressing Enter`);
+    setTimeout(() => {
+      console.log(`[ChatAuth] Sending Enter to PTY (pid=${state.proc.pid}, killed=${state.proc.killed})`);
+      state.proc.stdin?.write('\r');
+    }, 50);
   } else if (selectionType === 'number') {
     // Numbered selection: type the number and Enter
     const cleanResponse = message.trim();
@@ -1146,7 +1296,42 @@ export function respondToCliAuthInChat(
     const cleanMessage = message.trim();
     state.proc.stdin?.write(cleanMessage);
     setTimeout(() => state.proc.stdin?.write('\r'), 200);
+    console.log(`[ChatAuth] Text input submitted: ${cleanMessage.substring(0, 20)}...`);
   }
+
+  // After code submission, poll filesystem to detect auth success.
+  // The PTY may keep running (showing workspace prompts, effort picker, etc.)
+  // but we should kill it once auth files are written.
+  const pollSession = state.session;
+  const pollThreadId = state.threadId;
+  let pollCount = 0;
+  const pollInterval = setInterval(() => {
+    pollCount++;
+    if (pollCount > 30) { // 30s max
+      clearInterval(pollInterval);
+      return;
+    }
+    if (!checkCliNeedsSetup(pollSession)) {
+      clearInterval(pollInterval);
+      console.log(`[ChatAuth] Auth files detected after code submission (poll #${pollCount})`);
+      // Auth succeeded — kill the PTY and clean up
+      const currentState = chatAuthSessions.get(ws);
+      if (currentState && !currentState.proc.killed) {
+        syncAuthToRealHome(pollSession, pollThreadId);
+        try { process.kill(-currentState.proc.pid!, 'SIGTERM'); } catch {
+          try { currentState.proc.kill('SIGTERM'); } catch {}
+        }
+        clearTimeout(currentState.timeout);
+        removeAuthSession(ws);
+        ws.send(JSON.stringify({
+          type: 'output',
+          content: `${pollSession} is now authenticated and ready to use!`,
+          threadId: pollThreadId,
+          timestamp: Date.now(),
+        }));
+      }
+    }
+  }, 1000);
 }
 
 /**
@@ -1161,7 +1346,7 @@ export function cancelCliAuthInChat(ws: WsClient): void {
         try { state.proc.kill('SIGTERM'); } catch {}
       }
     }
-    chatAuthSessions.delete(ws);
+    removeAuthSession(ws);
     console.log(`[ChatAuth] Cancelled ${state.session} auth for ws`);
   }
 }

@@ -108,11 +108,9 @@ async function refreshGitToken(): Promise<void> {
       return; // No API URL configured — skip silently
     }
 
-    // Read ELLULAI_AI_TOKEN from .bashrc (same as enforcer)
+    // Read ELLULAI_AI_TOKEN from file (bashrc sources this via $(cat ...) which regex can't parse)
     try {
-      const bashrc = fs.readFileSync(`${SVC_HOME}/.bashrc`, 'utf8');
-      const match = bashrc.match(/ELLULAI_AI_TOKEN=["']?([^"'\s]+)/);
-      if (match) bearerToken = match[1]!;
+      bearerToken = fs.readFileSync('/etc/ellulai/ai-proxy-token', 'utf8').trim();
     } catch {}
 
     if (!bearerToken) return; // No token — skip

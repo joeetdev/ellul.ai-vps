@@ -45,39 +45,44 @@ function loadChainHead(): ChainHead {
 let chainHead = loadChainHead();
 
 export function cryptoAudit(action: string, actor: AuditEntry['actor'], details: Record<string, unknown>): void {
-  const entry: Partial<AuditEntry> = {
-    seq: chainHead.seq + 1,
-    timestamp: new Date().toISOString(),
-    action,
-    actor,
-    details,
-    prevHash: chainHead.hash,
-  };
-
-  // Hash: SHA-256(prevHash + seq + timestamp + action + details)
-  const hashInput = `${entry.prevHash}:${entry.seq}:${entry.timestamp}:${entry.action}:${JSON.stringify(entry.details)}`;
-  entry.hash = crypto.createHash('sha256').update(hashInput).digest('hex');
-
-  // Sign with Ed25519 private key (if available)
   try {
-    const privateKey = fs.readFileSync(SIGNING_KEY, 'utf8');
-    entry.signature = crypto.sign(null, Buffer.from(entry.hash), privateKey).toString('base64');
-  } catch {
-    entry.signature = ''; // Key not available yet (pre-provisioning)
+    const entry: Partial<AuditEntry> = {
+      seq: chainHead.seq + 1,
+      timestamp: new Date().toISOString(),
+      action,
+      actor,
+      details,
+      prevHash: chainHead.hash,
+    };
+
+    // Hash: SHA-256(prevHash + seq + timestamp + action + details)
+    const hashInput = `${entry.prevHash}:${entry.seq}:${entry.timestamp}:${entry.action}:${JSON.stringify(entry.details)}`;
+    entry.hash = crypto.createHash('sha256').update(hashInput).digest('hex');
+
+    // Sign with Ed25519 private key (if available)
+    try {
+      const privateKey = fs.readFileSync(SIGNING_KEY, 'utf8');
+      entry.signature = crypto.sign(null, Buffer.from(entry.hash), privateKey).toString('base64');
+    } catch {
+      entry.signature = ''; // Key not available yet (pre-provisioning)
+    }
+
+    // Ensure log directory exists
+    const logDir = '/var/log/ellulai';
+    if (!fs.existsSync(logDir)) {
+      try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
+    }
+
+    // Append to log
+    fs.appendFileSync(AUDIT_LOG, JSON.stringify(entry) + '\n');
+
+    // Update chain head
+    chainHead = { seq: entry.seq!, hash: entry.hash };
+    fs.writeFileSync(CHAIN_HEAD_FILE, JSON.stringify(chainHead));
+  } catch (err: any) {
+    // Audit logging must never crash the caller
+    console.warn('[shield] Audit log write failed:', err.message);
   }
-
-  // Ensure log directory exists
-  const logDir = '/var/log/ellulai';
-  if (!fs.existsSync(logDir)) {
-    try { fs.mkdirSync(logDir, { recursive: true }); } catch {}
-  }
-
-  // Append to log
-  fs.appendFileSync(AUDIT_LOG, JSON.stringify(entry) + '\n');
-
-  // Update chain head
-  chainHead = { seq: entry.seq!, hash: entry.hash };
-  fs.writeFileSync(CHAIN_HEAD_FILE, JSON.stringify(chainHead));
 }
 
 export function getChainHead(): ChainHead {

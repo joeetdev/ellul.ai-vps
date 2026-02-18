@@ -61,11 +61,14 @@ If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
 2. **REQUIRED**: Create \\\`ellulai.json\\\` in the project root (see Metadata below)
-3. **IF Node.js**: Install deps: \\\`npm install\\\`
-4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000, or use \\\`npx serve -l 3000\\\` for static HTML)
-5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
-6. **REQUIRED**: Verify: \\\`curl localhost:3000\\\` → MUST return 200
-7. STOP: Do not report success until step 6 passes!
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs (create-next-app, create-vite, etc.) sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+   - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
+4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
+5. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
+6. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
+7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
+8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
 ## Deployment (expose to production)
 To deploy to a public URL (separate from preview):
@@ -93,17 +96,26 @@ Next.js: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
 Other: bind to 0.0.0.0:3000
 Preview URL: https://$DEV_DOMAIN
 
-## STOP: Verification Required Before Completing
-You MUST run these commands and confirm they pass:
-- \\\`pm2 list\\\` → shows your app as "online"
-- \\\`curl localhost:3000\\\` → returns 200 status
+## MANDATORY: Pre-Completion Verification Protocol
+You MUST complete ALL of these checks before reporting ANY task as done.
+Skipping verification = broken app for the user.
 
-If verification fails, fix the issue:
-- Missing deps? Run \\\`npm install\\\`
-- Errors? Check \\\`pm2 logs preview --lines 10 --nostream\\\`
-- Port conflict? Run \\\`pm2 delete preview\\\` and retry
+STEP 1 — Dependency check:
+  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
+  If empty or node_modules missing: \\\`npm install\\\` and retry
 
-Do NOT report task complete until verification passes!
+STEP 2 — Process check:
+  \\\`pm2 list\\\` → your app must show status "online"
+  If "errored" or "stopped": \\\`pm2 logs preview --nostream --lines 20\\\` → fix the error → restart
+
+STEP 3 — HTTP check (with retry):
+  \\\`for i in 1 2 3 4 5; do STATUS=\\\$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "\\\$STATUS" = "200" ] && break; sleep 2; done\\\`
+  If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
+
+STEP 4 — Content check:
+  \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
+
+ALL 4 steps must pass. Do NOT tell the user "it's live" until they do.
 
 ## Ports
 - Dev/Preview: 3000 (→ https://$DEV_DOMAIN)
@@ -199,11 +211,14 @@ generate_global_free() {
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
 2. **REQUIRED**: Create \\\`ellulai.json\\\` in the project root (see Metadata below)
-3. **IF Node.js**: Install deps: \\\`npm install\\\`
-4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000, or use \\\`npx serve -l 3000\\\` for static HTML)
-5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
-6. **REQUIRED**: Verify: \\\`curl localhost:3000\\\` → MUST return 200
-7. STOP: Do not report success until step 6 passes!
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs (create-next-app, create-vite, etc.) sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+   - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
+4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
+5. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
+6. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
+7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
+8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -220,17 +235,26 @@ Next.js: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
 Other: bind to 0.0.0.0:3000
 Preview URL: https://$DEV_DOMAIN
 
-## STOP: Verification Required Before Completing
-You MUST run these commands and confirm they pass:
-- \\\`pm2 list\\\` → shows your app as "online"
-- \\\`curl localhost:3000\\\` → returns 200 status
+## MANDATORY: Pre-Completion Verification Protocol
+You MUST complete ALL of these checks before reporting ANY task as done.
+Skipping verification = broken app for the user.
 
-If verification fails, fix the issue:
-- Missing deps? Run \\\`npm install\\\`
-- Errors? Check \\\`pm2 logs preview --lines 10 --nostream\\\`
-- Port conflict? Run \\\`pm2 delete preview\\\` and retry
+STEP 1 — Dependency check:
+  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
+  If empty or node_modules missing: \\\`npm install\\\` and retry
 
-Do NOT report task complete until verification passes!
+STEP 2 — Process check:
+  \\\`pm2 list\\\` → your app must show status "online"
+  If "errored" or "stopped": \\\`pm2 logs preview --nostream --lines 20\\\` → fix the error → restart
+
+STEP 3 — HTTP check (with retry):
+  \\\`for i in 1 2 3 4 5; do STATUS=\\\$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "\\\$STATUS" = "200" ] && break; sleep 2; done\\\`
+  If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
+
+STEP 4 — Content check:
+  \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
+
+ALL 4 steps must pass. Do NOT tell the user "it's live" until they do.
 
 ## Ports
 - Dev/Preview: 3000 (→ https://$DEV_DOMAIN)
@@ -422,25 +446,39 @@ $APP_NAME_LINE
 1. Create/edit project files
 2. If ellulai.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
    **The \\"name\\" field is USER-DEFINED. If ellulai.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
-3. Node.js: \\\`npm install\\\`
-4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+   - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
+4. ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
-6. Verify: \\\`curl localhost:3000\\\` must return 200
+6. Wait for startup: \\\`sleep 3\\\`
+7. Run the FULL verification protocol below — do NOT skip any step
 
 ## Dev Server Config (CRITICAL — preview won't work without this)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
 Next.js: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
 Other: bind to 0.0.0.0:3000
 
-## STOP: Verification Required Before Completing
-You MUST run these commands and confirm they pass:
-- \\\`pm2 list\\\` → shows your app as \\"online\\"
-- \\\`curl localhost:3000\\\` → returns 200 status
-If verification fails:
-- Missing deps? \\\`npm install\\\`
-- Errors? \\\`pm2 logs preview --nostream\\\`
-- Port conflict? \\\`pm2 delete preview\\\` and retry
-Do NOT report task complete until verification passes!
+## MANDATORY: Pre-Completion Verification Protocol
+You MUST complete ALL of these checks before reporting ANY task as done.
+Skipping verification = broken app for the user.
+
+STEP 1 — Dependency check:
+  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
+  If empty or node_modules missing: \\\`npm install\\\` and retry
+
+STEP 2 — Process check:
+  \\\`pm2 list\\\` → your app must show status \\"online\\"
+  If \\"errored\\" or \\"stopped\\": \\\`pm2 logs preview --nostream --lines 20\\\` → fix the error → restart
+
+STEP 3 — HTTP check (with retry):
+  \\\`for i in 1 2 3 4 5; do STATUS=\\$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ \\"\\$STATUS\\" = \\"200\\" ] && break; sleep 2; done\\\`
+  If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
+
+STEP 4 — Content check:
+  \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
+
+ALL 4 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
@@ -491,11 +529,14 @@ $DEPLOYMENT_SECTION
 1. Create/edit project files
 2. If ellulai.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
    **The \\"name\\" field is USER-DEFINED. If ellulai.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
-3. Node.js: \\\`npm install\\\`
-4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+   - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
+4. ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
-6. Verify: \\\`curl localhost:3000\\\` must return 200
-7. Deploy to production (separate from preview):
+6. Wait for startup: \\\`sleep 3\\\`
+7. Run the FULL verification protocol below — do NOT skip any step
+8. Deploy to production (separate from preview):
    a. Pick a unique port (3001+, NOT 3000): \\\`PORT=3001\\\`
    b. Start prod server: \\\`pm2 start npm --name APP_NAME -- start -- -p \\\$PORT\\\` (or \\\`pm2 start \\"npx serve -s . -l \\\$PORT\\" --name APP_NAME\\\` for static)
    c. \\\`pm2 save\\\`
@@ -508,15 +549,26 @@ Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
 Next.js: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
 Other: bind to 0.0.0.0:3000
 
-## STOP: Verification Required Before Completing
-You MUST run these commands and confirm they pass:
-- \\\`pm2 list\\\` → shows your app as \\"online\\"
-- \\\`curl localhost:3000\\\` → returns 200 status
-If verification fails:
-- Missing deps? \\\`npm install\\\`
-- Errors? \\\`pm2 logs preview --nostream\\\`
-- Port conflict? \\\`pm2 delete preview\\\` and retry
-Do NOT report task complete until verification passes!
+## MANDATORY: Pre-Completion Verification Protocol
+You MUST complete ALL of these checks before reporting ANY task as done.
+Skipping verification = broken app for the user.
+
+STEP 1 — Dependency check:
+  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
+  If empty or node_modules missing: \\\`npm install\\\` and retry
+
+STEP 2 — Process check:
+  \\\`pm2 list\\\` → your app must show status \\"online\\"
+  If \\"errored\\" or \\"stopped\\": \\\`pm2 logs preview --nostream --lines 20\\\` → fix the error → restart
+
+STEP 3 — HTTP check (with retry):
+  \\\`for i in 1 2 3 4 5; do STATUS=\\$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ \\"\\$STATUS\\" = \\"200\\" ] && break; sleep 2; done\\\`
+  If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
+
+STEP 4 — Content check:
+  \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
+
+ALL 4 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env

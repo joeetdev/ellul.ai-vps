@@ -12,7 +12,8 @@
 
 import { execSync } from 'child_process';
 import fs from 'fs';
-import { SVC_HOME, SVC_USER } from '../config';
+import { SVC_HOME, SVC_USER, API_URL_FILE } from '../config';
+import { readEnvFile, writeEnvFile, setSecretsBulk, type EncryptedEnvelope } from './secrets.service';
 
 export type GitAction = 'push' | 'pull' | 'force-push' | 'setup' | 'teardown';
 
@@ -94,6 +95,56 @@ function buildGitEnvCmd(appName: string | undefined): string {
 }
 
 /**
+ * Pull all encrypted secrets from the API and decrypt them into ~/.ellulai-env.
+ * This ensures the env file exists before git-setup runs, even if the frontend
+ * only stored secrets in the API database (not directly on the VPS).
+ */
+function syncSecretsFromApi(): void {
+  let apiUrl: string;
+  let bearerToken: string;
+
+  try {
+    apiUrl = fs.readFileSync(API_URL_FILE, 'utf8').trim();
+  } catch {
+    return; // No API URL configured
+  }
+
+  try {
+    bearerToken = fs.readFileSync('/etc/ellulai/ai-proxy-token', 'utf8').trim();
+  } catch {
+    return; // No token
+  }
+
+  try {
+    const url = `${apiUrl}/api/servers/secrets/sync`;
+    const result = execSync(
+      `curl -s -f -m 15 -H 'Authorization: Bearer ${bearerToken}' '${url}'`,
+      { timeout: 20_000, encoding: 'utf8' },
+    );
+
+    const data = JSON.parse(result);
+    if (data.secrets && Array.isArray(data.secrets) && data.secrets.length > 0) {
+      const items = data.secrets
+        .filter((s: any) => s.encryptedKey && s.iv && s.encryptedData)
+        .map((s: any) => ({
+          name: s.name,
+          envelope: {
+            encryptedKey: s.encryptedKey,
+            iv: s.iv,
+            encryptedData: s.encryptedData,
+          } as EncryptedEnvelope,
+        }));
+      if (items.length > 0) {
+        setSecretsBulk(items);
+        console.log(`[shield] Synced ${items.length} secrets from API`);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[shield] Secrets sync from API failed:', err.message);
+  }
+}
+
+/**
  * Execute a git action on the VPS.
  * Runs as the service user via sudo -u $SVC_USER.
  */
@@ -119,13 +170,19 @@ export function executeGitAction(action: GitAction, appName?: string): { success
 
   const execOpts = { timeout: 120_000 };
 
+  // NOTE: sovereign-shield already runs as SVC_USER (systemd User=dev).
+  // Do NOT use sudo — the systemd unit has NoNewPrivileges=true which blocks it.
   switch (action) {
     case 'setup': {
       if (!fs.existsSync('/usr/local/bin/ellulai-git-setup')) {
         return { success: false, output: 'ellulai-git-setup not found' };
       }
+      // Sync secrets from API → ~/.ellulai-env (in case frontend only stored in DB)
+      syncSecretsFromApi();
+      // Re-resolve gitEnvCmd now that env file may have been populated
+      const freshGitEnvCmd = buildGitEnvCmd(activeApp);
       const output = execSync(
-        `sudo -u ${SVC_USER} bash -c "source ${ENV_FILE} && export ELLULAI_PROJECT_DIR='${projectDir}' && ${gitEnvCmd} /usr/local/bin/ellulai-git-setup"`,
+        `bash -c "[ -f ${ENV_FILE} ] && source ${ENV_FILE}; export ELLULAI_PROJECT_DIR='${projectDir}' && ${freshGitEnvCmd} /usr/local/bin/ellulai-git-setup"`,
         { ...execOpts, timeout: 60_000 }
       ).toString();
       return { success: true, output };
@@ -133,7 +190,7 @@ export function executeGitAction(action: GitAction, appName?: string): { success
 
     case 'push': {
       const output = execSync(
-        `sudo -u ${SVC_USER} bash -c "source ${ENV_FILE} && ${gitEnvCmd} cd '${projectDir}' && /usr/local/bin/ellulai-git-flow backup"`,
+        `bash -c "[ -f ${ENV_FILE} ] && source ${ENV_FILE}; ${gitEnvCmd} cd '${projectDir}' && /usr/local/bin/ellulai-git-flow backup"`,
         execOpts
       ).toString();
       return { success: true, output };
@@ -141,7 +198,7 @@ export function executeGitAction(action: GitAction, appName?: string): { success
 
     case 'force-push': {
       const output = execSync(
-        `sudo -u ${SVC_USER} bash -c "source ${ENV_FILE} && ${gitEnvCmd} cd '${projectDir}' && /usr/local/bin/ellulai-git-flow force-backup"`,
+        `bash -c "[ -f ${ENV_FILE} ] && source ${ENV_FILE}; ${gitEnvCmd} cd '${projectDir}' && /usr/local/bin/ellulai-git-flow force-backup"`,
         execOpts
       ).toString();
       return { success: true, output };
@@ -149,7 +206,7 @@ export function executeGitAction(action: GitAction, appName?: string): { success
 
     case 'pull': {
       const output = execSync(
-        `sudo -u ${SVC_USER} bash -c "source ${ENV_FILE} && ${gitEnvCmd} cd '${projectDir}' && /usr/local/bin/ellulai-git-flow pull"`,
+        `bash -c "[ -f ${ENV_FILE} ] && source ${ENV_FILE}; ${gitEnvCmd} cd '${projectDir}' && /usr/local/bin/ellulai-git-flow pull"`,
         execOpts
       ).toString();
       return { success: true, output };
@@ -158,11 +215,23 @@ export function executeGitAction(action: GitAction, appName?: string): { success
     case 'teardown': {
       try {
         execSync(
-          `sudo -u ${SVC_USER} bash -c "cd '${projectDir}' && git remote remove origin 2>/dev/null; git config --global --unset credential.helper 2>/dev/null" || true`,
+          `bash -c "cd '${projectDir}' && git remote remove origin 2>/dev/null; git config --global --unset credential.helper 2>/dev/null" || true`,
           { timeout: 10_000 }
         );
       } catch {}
       try { fs.unlinkSync(ACTIVE_GIT_APP_FILE); } catch {}
+      // Remove git secrets from env file
+      try {
+        const secrets = readEnvFile();
+        let changed = false;
+        for (const key of [...secrets.keys()]) {
+          if (key.startsWith('__GIT_')) {
+            secrets.delete(key);
+            changed = true;
+          }
+        }
+        if (changed) writeEnvFile(secrets);
+      } catch {}
       return { success: true };
     }
 
