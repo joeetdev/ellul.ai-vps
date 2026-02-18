@@ -13,7 +13,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getCliSpawnEnv, loadCliEnv } from './cli-env.service';
+import { getCliSpawnEnv, loadCliEnv, saveCliKey } from './cli-env.service';
 import { PROJECTS_DIR, INTERACTIVE_TIMEOUT_MS, MAX_BUFFER_SIZE, DEBOUNCE_MS } from '../config';
 import { getThreadStateDir } from './thread.service';
 
@@ -109,7 +109,7 @@ const interactiveSessions = new Map<WsClient, InteractiveState & { threadId?: st
 const ALLOWED_INTERACTIVE_COMMANDS: Record<string, string[]> = {
   claude: ['claude', 'claude login'],
   codex: ['codex', 'codex login', 'codex login --device-auth'],
-  gemini: ['gemini', 'gemini auth login'],
+  gemini: ['gemini', 'gemini auth login', 'gemini'],
 };
 
 /**
@@ -700,6 +700,11 @@ const chatAuthSessions = new Map<WsClient, InteractiveState & { threadId?: strin
 /**
  * Start an interactive CLI auth flow within the chat conversation.
  * Spawns PTY, auto-skips noise, surfaces auth URL as chat output.
+ *
+ * Auth flows per CLI:
+ * - Claude: `claude login` → theme picker (auto-skip) → OAuth URL + paste code back
+ * - Codex:  `codex login --device-auth` → shows URL + device code (user enters on website, CLI auto-detects)
+ * - Gemini: No headless browser auth available → prompt user for GEMINI_API_KEY directly
  */
 export function startCliAuthInChat(
   session: string,
@@ -709,10 +714,15 @@ export function startCliAuthInChat(
   // Kill any existing in-chat auth for this ws
   cancelCliAuthInChat(ws);
 
+  // Gemini has no headless auth flow — prompt for API key directly
+  if (session === 'gemini') {
+    startGeminiApiKeyAuth(ws, threadId);
+    return;
+  }
+
   const defaults: Record<string, string> = {
     claude: 'claude login',
-    codex: 'codex login',
-    gemini: 'gemini auth login',
+    codex: 'codex login --device-auth',
   };
   const cmd = defaults[session];
   if (!cmd) {
@@ -903,23 +913,48 @@ export function startCliAuthInChat(
       authUrlSent = true;
       const authUrl = parsed.urls[0];
       lastFlush = now;
-      sessionState.awaitingResponse = true;
-      ws.send(JSON.stringify({
-        type: 'output',
-        content: `To authenticate **${session}**, open this URL in your browser:\n\n${authUrl}\n\nThen paste the code you receive here. Type **cancel** to abort.`,
-        threadId,
-        timestamp: Date.now(),
-      }));
+
+      // Codex device auth: extract the one-time code from the output
+      // The code appears after the URL, pattern like "XXXX-XXXXX" (uppercase alphanumeric with dash)
+      if (session === 'codex') {
+        const cleanText = stripAnsi(buffer);
+        const codeMatch = cleanText.match(/\b([A-Z0-9]{4,6}-[A-Z0-9]{4,6})\b/);
+        const deviceCode = codeMatch?.[1] || null;
+        // Codex device auth: user enters the code ON THE WEBSITE, not in terminal
+        // CLI auto-detects completion — no input field needed
+        ws.send(JSON.stringify({
+          type: 'output',
+          content: deviceCode
+            ? `To authenticate **Codex**, open this link and sign in:\n\n${authUrl}\n\nThen enter this one-time code on the website:\n\n**${deviceCode}**\n\n_Waiting for authentication to complete..._`
+            : `To authenticate **Codex**, open this link and sign in:\n\n${authUrl}\n\n_Waiting for authentication to complete..._`,
+          threadId,
+          timestamp: Date.now(),
+        }));
+      } else {
+        // Claude: user needs to paste a code back → show input field
+        sessionState.awaitingResponse = true;
+        ws.send(JSON.stringify({
+          type: 'cli_input',
+          session,
+          prompt: `Authenticate ${session}`,
+          url: authUrl,
+          inChatAuth: true,
+          threadId,
+          timestamp: Date.now(),
+        }));
+      }
       return;
     }
 
-    // Input prompt (auth code entry) — already covered by URL message above
+    // Input prompt (auth code entry) — dedicated input UI
     if (parsed.inputPrompt && !authUrlSent) {
       lastFlush = now;
       sessionState.awaitingResponse = true;
       ws.send(JSON.stringify({
-        type: 'output',
-        content: `Paste the authentication code here. Type **cancel** to abort.`,
+        type: 'cli_input',
+        session,
+        prompt: parsed.inputPrompt || 'Paste authentication code',
+        inChatAuth: true,
         threadId,
         timestamp: Date.now(),
       }));
@@ -969,6 +1004,59 @@ export function startCliAuthInChat(
 }
 
 /**
+ * Gemini API key auth flow — no PTY needed.
+ * Gemini CLI has no headless browser auth, so we prompt for an API key directly.
+ * The key is saved to ~/.ellulai-env and loaded by the CLI spawn environment.
+ */
+function startGeminiApiKeyAuth(ws: WsClient, threadId?: string | null): void {
+  // Mark as awaiting response (so respondToCliAuthInChat routes input here)
+  const sessionState: InteractiveState & { threadId?: string | null } = {
+    proc: null as unknown as ChildProcess,
+    timeout: setTimeout(() => {
+      chatAuthSessions.delete(ws);
+      ws.send(JSON.stringify({ type: 'output', content: 'Gemini setup timed out. You can try again.', threadId, timestamp: Date.now() }));
+    }, INTERACTIVE_TIMEOUT_MS),
+    session: 'gemini',
+    awaitingResponse: true,
+    threadId,
+  };
+  chatAuthSessions.set(ws, sessionState);
+
+  ws.send(JSON.stringify({
+    type: 'output',
+    content: 'Setting up Gemini...',
+    threadId,
+    timestamp: Date.now(),
+  }));
+
+  // Gemini needs an API key — send cli_input to prompt user
+  ws.send(JSON.stringify({
+    type: 'cli_input',
+    session: 'gemini',
+    prompt: 'Enter your Gemini API key',
+    url: 'https://aistudio.google.com/apikey',
+    inChatAuth: true,
+    threadId,
+    timestamp: Date.now(),
+  }));
+}
+
+/**
+ * Save a Gemini API key to the CLI environment file.
+ * Called when the user submits their key through the cli_input UI.
+ */
+export function saveGeminiApiKey(apiKey: string, _threadId?: string | null): boolean {
+  try {
+    saveCliKey('GEMINI_API_KEY', apiKey);
+    // Also set in current process so checkCliNeedsSetup sees it immediately
+    process.env.GEMINI_API_KEY = apiKey;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Check if there's an active in-chat auth session for a WebSocket client.
  */
 export function hasCliAuthInChat(ws: WsClient): boolean {
@@ -986,7 +1074,35 @@ export function respondToCliAuthInChat(
   selectionType: 'number' | 'arrow' | 'text' = 'text',
 ): void {
   const state = chatAuthSessions.get(ws);
-  if (!state || !state.proc || state.proc.killed) {
+  if (!state) {
+    ws.send(JSON.stringify({ type: 'output', content: 'No active authentication session.', timestamp: Date.now() }));
+    return;
+  }
+
+  // Gemini API key flow — no PTY process, just save the key
+  if (state.session === 'gemini') {
+    clearTimeout(state.timeout);
+    chatAuthSessions.delete(ws);
+    const saved = saveGeminiApiKey(message.trim(), state.threadId);
+    if (saved && !checkCliNeedsSetup('gemini')) {
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: 'Gemini is now authenticated and ready to use!',
+        threadId: state.threadId,
+        timestamp: Date.now(),
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        type: 'output',
+        content: 'Failed to save Gemini API key. Please check the key and try again.',
+        threadId: state.threadId,
+        timestamp: Date.now(),
+      }));
+    }
+    return;
+  }
+
+  if (!state.proc || state.proc.killed) {
     ws.send(JSON.stringify({ type: 'output', content: 'No active authentication session.', threadId: state?.threadId, timestamp: Date.now() }));
     return;
   }
@@ -1040,7 +1156,7 @@ export function cancelCliAuthInChat(ws: WsClient): void {
   const state = chatAuthSessions.get(ws);
   if (state) {
     clearTimeout(state.timeout);
-    if (!state.proc.killed) {
+    if (state.proc && !state.proc.killed) {
       try { process.kill(-state.proc.pid!, 'SIGTERM'); } catch {
         try { state.proc.kill('SIGTERM'); } catch {}
       }

@@ -63,11 +63,19 @@ kill_tree() {
 
 port_in_use_by_other() {
   local pids=$(lsof -ti :$PORT 2>/dev/null)
-  # Get all PIDs in our process tree
-  local our_pids="$$ $DEV_PID"
-  [ -n "$DEV_PID" ] && our_pids="$our_pids $(pgrep -P $DEV_PID 2>/dev/null) $(pgrep -g $DEV_PID 2>/dev/null)"
   for pid in $pids; do
-    echo " $our_pids " | grep -q " $pid " && continue
+    # Walk up parent chain — if we reach our script PID ($$), it's ours
+    local check=$pid
+    local is_ours=false
+    while [ "$check" -gt 1 ] 2>/dev/null; do
+      if [ "$check" = "$$" ]; then
+        is_ours=true
+        break
+      fi
+      check=$(ps -o ppid= -p "$check" 2>/dev/null | tr -d ' ')
+      [ -z "$check" ] && break
+    done
+    $is_ours && continue
     return 0
   done
   return 1
@@ -95,7 +103,7 @@ while true; do
   if [ -z "$SELECTED_APP" ]; then
     if [ -n "$DEV_PID" ]; then
       log "No app selected, stopping server"
-      kill $DEV_PID 2>/dev/null
+      kill_tree $DEV_PID
       DEV_PID=""
       CURRENT_APP=""
     fi
@@ -114,7 +122,7 @@ while true; do
   if port_in_use_by_other; then
     if [ -n "$DEV_PID" ]; then
       log "User server detected, stopping auto-server"
-      kill $DEV_PID 2>/dev/null
+      kill_tree $DEV_PID
       DEV_PID=""
     fi
     sleep $CHECK_INTERVAL
@@ -122,7 +130,7 @@ while true; do
   fi
 
   if [ "$SELECTED_APP" != "$CURRENT_APP" ] || [ "$SELECTED_SCRIPT" != "$CURRENT_SCRIPT" ]; then
-    [ -n "$DEV_PID" ] && kill $DEV_PID 2>/dev/null && sleep 1
+    [ -n "$DEV_PID" ] && kill_tree $DEV_PID && sleep 1
     DEV_PID=""
     CURRENT_APP="$SELECTED_APP"
     CURRENT_SCRIPT="$SELECTED_SCRIPT"

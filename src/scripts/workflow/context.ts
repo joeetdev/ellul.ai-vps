@@ -56,7 +56,7 @@ generate_global() {
 
 ## Deployed Apps (DO NOT re-expose these — they already have DNS + SSL)
 \${DEPLOYED_LIST:-"(none)"}
-If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build && pm2 restart <name>\\\` or run \\\`ship\\\`.
+If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build && pm2 restart <name>\\\`.
 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
@@ -66,7 +66,16 @@ If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build 
 5. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
 6. **REQUIRED**: Verify: \\\`curl localhost:3000\\\` → MUST return 200
 7. STOP: Do not report success until step 6 passes!
-8. Deploy: \\\`ship\\\`
+
+## Deployment (expose to production)
+To deploy to a public URL (separate from preview):
+1. Build: \\\`npm run build\\\` (if applicable)
+2. Pick a unique port (3001+, NOT 3000 which is preview): \\\`PORT=3001\\\`
+3. Start production server: \\\`pm2 start npm --name APP_NAME -- start -- -p \\\$PORT\\\` (or \\\`pm2 start "npx serve -s . -l \\\$PORT" --name APP_NAME\\\` for static)
+4. Save PM2: \\\`pm2 save\\\`
+5. Expose: \\\`ellulai-expose APP_NAME \\\$PORT\\\` — this creates DNS + SSL automatically
+6. Verify: \\\`ellulai-apps\\\` → shows app with live URL
+NEVER use \\\`ship\\\` — it requires interactive input. Use the steps above instead.
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -76,7 +85,7 @@ ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 - name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
 - summary: brief description of the app
 **IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in ellulai.json.**
-After deployment, \\\`ship\\\` adds: deployedUrl, deployedDomain, deployedPort
+After deployment, \\\`ellulai-expose\\\` adds: deployedUrl, deployedDomain, deployedPort
 
 ## Dev Server Config (CRITICAL)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -123,8 +132,7 @@ Standard git commands also work (git add, git commit, git push, etc.) — creden
 NEVER configure git credentials manually (no git config, no SSH keys, no tokens). The dashboard handles everything.
 
 ## Commands
-- ship: build + deploy current project
-- ellulai-expose NAME PORT: expose with SSL
+- ellulai-expose NAME PORT: deploy + expose with SSL (creates DNS + SSL automatically)
 - ellulai-apps: list deployed apps
 - ellulai-install postgres|redis|mysql: install DB
 - pm2 logs|restart|delete NAME: manage processes
@@ -371,7 +379,7 @@ get_current_deployment() {
       echo "Port: $APP_PORT"
       echo ""
       echo "IMPORTANT: This project is ALREADY deployed. Do NOT run ellulai-expose again."
-      echo "To update: npm run build && pm2 restart $APP_NAME (or run 'ship')"
+      echo "To update: npm run build && pm2 restart $APP_NAME"
       return 0
     fi
   done
@@ -461,7 +469,7 @@ pm2 start|logs|restart|delete NAME
           DEPLOYMENT_SECTION="
 ## !! LIVE DEPLOYMENT — DO NOT CREATE A NEW ONE !!
 Name: $DEP_NAME | URL: $DEP_URL | Port: $DEP_PORT
-This project is ALREADY deployed. To update: \\\`npm run build && pm2 restart $DEP_NAME\\\` or run \\\`ship\\\`.
+This project is ALREADY deployed. To update: \\\`npm run build && pm2 restart $DEP_NAME\\\`.
 NEVER run ellulai-expose again for this project.
 "
           break
@@ -487,7 +495,13 @@ $DEPLOYMENT_SECTION
 4. Static HTML (no framework): \\\`npx serve -l 3000\\\`
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
 6. Verify: \\\`curl localhost:3000\\\` must return 200
-7. Deploy: \\\`ship\\\`
+7. Deploy to production (separate from preview):
+   a. Pick a unique port (3001+, NOT 3000): \\\`PORT=3001\\\`
+   b. Start prod server: \\\`pm2 start npm --name APP_NAME -- start -- -p \\\$PORT\\\` (or \\\`pm2 start \\"npx serve -s . -l \\\$PORT\\" --name APP_NAME\\\` for static)
+   c. \\\`pm2 save\\\`
+   d. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — creates DNS + SSL automatically
+   e. Verify: \\\`ellulai-apps\\\` shows app with live URL
+   NEVER use \\\`ship\\\` — it requires interactive input.
 
 ## Dev Server Config (CRITICAL — preview won't work without this)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -517,7 +531,7 @@ Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If no
 Standard git commands also work. NEVER configure git credentials manually (no SSH keys, no tokens).
 
 ## Commands
-ship | ellulai-expose NAME PORT | ellulai-apps | ellulai-install postgres|redis|mysql | pm2 logs|restart|delete NAME
+ellulai-expose NAME PORT | ellulai-apps | ellulai-install postgres|redis|mysql | pm2 logs|restart|delete NAME
 <!-- ELLULAI:END -->"
   fi
 
