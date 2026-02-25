@@ -54,12 +54,12 @@ generate_global() {
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside your assigned project directory. NEVER create new directories under ~/projects/. NEVER modify files outside your project.
 2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
+4. **NO AUTO-DEPLOY**: NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks to deploy/publish/go live. Code changes should only affect the dev preview. The user may be testing and does NOT want their live site updated.
 
 ## Deployed Apps (FROZEN SNAPSHOTS — code edits do NOT change live sites)
 \${DEPLOYED_LIST:-"(none)"}
-Deployed apps are frozen snapshots. Editing code only changes the dev preview (port 3000).
-To update a deployed app: \\\`cd ~/projects/<app> && ellulai-expose <name> <port>\\\` — this is the ONLY way to update the live site.
-NEVER manually restart PM2 deployed processes, copy files to ~/.ellulai/deployments/, or modify the snapshot directory.
+Deployed apps are frozen snapshots. Editing source code ONLY changes the dev preview (port 3000). The deployed site is UNCHANGED until the user explicitly asks to deploy.
+NEVER run \\\`ellulai-expose\\\` after making code changes. NEVER manually restart PM2 deployed processes, copy files to ~/.ellulai/deployments/, or modify the snapshot directory.
 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
@@ -73,19 +73,16 @@ NEVER manually restart PM2 deployed processes, copy files to ~/.ellulai/deployme
 7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
 8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
-## Deployment (ONLY when user explicitly asks to deploy)
-Do NOT deploy automatically. Only follow these steps when the user says "deploy", "go live", "publish", or similar.
-**First-time deploy:**
+## Deployment (ONLY when user EXPLICITLY asks to deploy)
+**CRITICAL: NEVER deploy automatically after code changes.** The user may be testing and does not want the live site updated.
+Only deploy when the user says "deploy", "go live", "publish", "ship it", or similar explicit deployment request.
+If the user says "make a change" or "update the code" — that is NOT a deploy request. Only update the source code and report the dev preview URL.
+**Deploy steps:**
 1. Build: \\\`npm run build\\\` (if applicable)
 2. Pick a unique port (3001+, NOT 3000 which is preview): \\\`PORT=3001\\\`
-3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — handles EVERYTHING (snapshot, PM2, Caddy, DNS, SSL)
+3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — snapshots current source, starts PM2 process, configures Caddy
 4. Verify: \\\`ellulai-apps\\\` → shows app with live URL
-**Re-deploy (update already-deployed app):**
-1. Build: \\\`npm run build\\\` (if applicable)
-2. \\\`ellulai-expose APP_NAME PORT --redeploy\\\` — the \\\`--redeploy\\\` flag is REQUIRED to update an existing deployment snapshot
-3. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
-Without \\\`--redeploy\\\`, the existing frozen snapshot is preserved. NEVER re-deploy unless the user explicitly asks.
-NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
+NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks. NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -532,10 +529,11 @@ pm2 start|logs|restart|delete NAME
           DEPLOYMENT_SECTION="
 ## Deployed App (FROZEN SNAPSHOT — code edits do NOT change the live site)
 Name: $DEP_NAME | Live URL: $DEP_URL | Port: $DEP_PORT
-**Code changes are only visible at the dev preview (port 3000).** The deployed app is a frozen snapshot.
-When reporting code changes, ALWAYS reference the dev preview URL, NOT the deployed URL.
+**CRITICAL: Code changes ONLY affect the dev preview (port 3000). The deployed app is a frozen snapshot and is NOT updated by code changes.**
+After making code changes, ALWAYS tell the user their changes are live at the dev PREVIEW URL. NEVER mention the deployed URL unless the user asked to deploy.
+NEVER run \\\`ellulai-expose\\\` after code changes — the user may be testing and does NOT want the live site changed.
 
-### To update the deployed app (ONLY when user asks to deploy/update/publish):
+### To update the deployed app (ONLY when user EXPLICITLY asks to deploy/publish/go live):
 1. \\\`cd $TARGET_DIR\\\`
 2. \\\`ellulai-expose $DEP_NAME $DEP_PORT\\\`  ← the ONLY way to update the deployed site
 3. Verify: \\\`curl -s $DEP_URL | head -5\\\`
@@ -555,6 +553,7 @@ Preview: https://$DEV_DOMAIN (port 3000) | Production: https://$DIR_NAME-$SHORT_
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
 $APP_NAME_LINE
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
+4. **NO AUTO-DEPLOY**: NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks to deploy/publish/go live. Code changes only affect the dev preview. The user may be testing.
 $DEPLOYMENT_SECTION
 ## Setup (within THIS project)
 1. Create/edit project files
@@ -606,19 +605,16 @@ ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 - DB GUI: user runs \\\`ssh -L 5432:localhost:5432 $USER_NAME@$DOMAIN\\\` from their machine
 - **NEVER deploy to production unless the user explicitly asks to deploy.** Creating an app = preview only. Deployment is a separate step the user must request.
 
-## Deployment (ONLY when user explicitly asks to deploy)
-Do NOT deploy automatically. Only follow these steps when the user says \\"deploy\\", \\"go live\\", \\"publish\\", or similar.
-**First-time deploy:**
+## Deployment (ONLY when user EXPLICITLY asks to deploy)
+**CRITICAL: NEVER deploy automatically after code changes.** The user may be testing and does not want the live site updated.
+Only deploy when the user says \\"deploy\\", \\"go live\\", \\"publish\\", \\"ship it\\", or similar explicit deployment request.
+If the user says \\"make a change\\" or \\"update the code\\" — that is NOT a deploy request. Only update the source code and report the dev preview URL.
+**Deploy steps:**
 1. Build: \\\`npm run build\\\` (if applicable)
 2. Pick a unique port (3001+, NOT 3000): \\\`PORT=3001\\\`
-3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — handles EVERYTHING (snapshot, PM2, Caddy, DNS, SSL)
-4. Verify: \\\`ellulai-apps\\\` shows app with live URL
-**Re-deploy (update already-deployed app):**
-1. Build: \\\`npm run build\\\` (if applicable)
-2. \\\`ellulai-expose APP_NAME PORT --redeploy\\\` — the \\\`--redeploy\\\` flag is REQUIRED to update an existing deployment snapshot
-3. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
-Without \\\`--redeploy\\\`, the existing frozen snapshot is preserved. NEVER re-deploy unless the user explicitly asks.
-NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
+3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — snapshots current source, starts PM2 process, configures Caddy
+4. Verify: \\\`ellulai-apps\\\` → shows app with live URL
+NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks. NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
 
 ## Git (Code Backup)
 Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.

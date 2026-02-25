@@ -12,19 +12,9 @@ export function getExposeScript(): string {
   return `#!/bin/bash
 set -e
 
-# Parse --redeploy flag from any position
-REDEPLOY=false
-ARGS=()
-for arg in "$@"; do
-  case "$arg" in
-    --redeploy) REDEPLOY=true ;;
-    *) ARGS+=("$arg") ;;
-  esac
-done
-
-NAME="\${ARGS[0]:-}"
-PORT="\${ARGS[1]:-}"
-CUSTOM_DOMAIN="\${ARGS[2]:-}"
+NAME="$1"
+PORT="$2"
+CUSTOM_DOMAIN="$3"
 
 GREEN='\\033[32m'
 CYAN='\\033[36m'
@@ -39,14 +29,10 @@ if [ -z "$NAME" ]; then
   echo ""
   echo -e "\${CYAN}ellul.ai Expose\${NC}"
   echo ""
-  echo "Usage: ellulai-expose <app_name> [port] [custom_domain] [--redeploy]"
-  echo ""
-  echo "Options:"
-  echo "  --redeploy   Update the deployed snapshot (required for re-deploys)"
+  echo "Usage: ellulai-expose <app_name> [port] [custom_domain]"
   echo ""
   echo "Examples:"
-  echo "  ellulai-expose blog                          # First deploy"
-  echo "  ellulai-expose blog 3001 --redeploy          # Update deployed code"
+  echo "  ellulai-expose blog"
   echo "  ellulai-expose api 4000"
   echo "  ellulai-expose shop 3001 shop.example.com"
   echo ""
@@ -112,11 +98,7 @@ BODY="{\\"name\\":\\"$NAME\\",\\"port\\":$PORT"
 if [ -n "$CUSTOM_DOMAIN" ]; then
   BODY="$BODY,\\"customDomain\\":\\"$CUSTOM_DOMAIN\\""
 fi
-BODY="$BODY,\\"projectPath\\":\\"$PROJECT_PATH\\",\\"stack\\":\\"$STACK\\""
-if [ "$REDEPLOY" = "true" ]; then
-  BODY="$BODY,\\"redeploy\\":true"
-fi
-BODY="$BODY}"
+BODY="$BODY,\\"projectPath\\":\\"$PROJECT_PATH\\",\\"stack\\":\\"$STACK\\"}"
 
 RESULT=$(curl -sf --max-time 45 -X POST http://localhost:3005/api/workflow/expose \\
   -H "Content-Type: application/json" \\

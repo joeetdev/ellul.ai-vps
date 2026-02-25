@@ -70,13 +70,16 @@ export async function refreshZenModels(): Promise<void> {
   if (models.length === 0) return;
   cachedModels = models;
   const best = models[0]!.openCodeId;
+  const zenModelIds = new Set(models.map(m => m.openCodeId));
   if (best !== currentBest) {
     const current = await getCurrentModel();
-    // Only auto-switch if user hasn't manually picked a non-opencode model
-    // (current is null, not an opencode model, or a previous auto-pick)
-    if (!current || !current.startsWith('opencode/') || current === currentBest) {
+    // Auto-switch unless the current model is an actual zen model that the
+    // user picked (not just anything with an opencode/ prefix — e.g.
+    // opencode/claude-opus-4-6 is NOT a free zen model).
+    const isCurrentAZenModel = current ? zenModelIds.has(current) : false;
+    if (!current || !isCurrentAZenModel || current === currentBest) {
       await setModel(best);
-      console.log(`[Zen] Switched model: ${currentBest} → ${best}`);
+      console.log(`[Zen] Switched model: ${current} → ${best}`);
     }
     currentBest = best;
   }

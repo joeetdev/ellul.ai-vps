@@ -673,19 +673,21 @@ export async function sendToOpencodeStreaming(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
-  // Ensure model is a valid free opencode model before sending.
-  // Without this, OpenCode may use its built-in default (e.g. claude-opus)
-  // which isn't free and will fail without API keys.
+  // Ensure model is a valid free zen model before sending.
+  // Without this, OpenCode may use a non-free model (e.g. opencode/claude-opus-4-6)
+  // which will fail without API keys. We check against actual zen models, not just prefix.
   try {
     const currentModel = await getCurrentModel();
-    if (!currentModel || !currentModel.startsWith('opencode/')) {
-      console.log(`[OpenCode] Invalid model "${currentModel}", discovering available models...`);
+    const zenModels = getZenModelList();
+    const zenIds = new Set(zenModels.map(m => m.openCodeId));
+    const isValidZenModel = currentModel ? zenIds.has(currentModel) : false;
+    if (!currentModel || (!isValidZenModel && zenIds.size > 0)) {
+      console.log(`[OpenCode] Model "${currentModel}" is not a free zen model, discovering available models...`);
       await refreshZenModels();
-      // Verify it actually switched
-      const newModel = await getCurrentModel();
-      if (!newModel || !newModel.startsWith('opencode/')) {
-        console.warn(`[OpenCode] Still no valid model after zen refresh: "${newModel}"`);
-      }
+    } else if (!isValidZenModel && zenIds.size === 0) {
+      // No zen models cached yet — trigger discovery
+      console.log(`[OpenCode] No zen models cached, discovering...`);
+      await refreshZenModels();
     }
   } catch {
     // Non-fatal — proceed with whatever model is configured

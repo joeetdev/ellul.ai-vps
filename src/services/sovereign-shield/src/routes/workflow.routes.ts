@@ -288,7 +288,6 @@ export function registerWorkflowRoutes(app: Hono): void {
       customDomain?: string;
       projectPath?: string;
       stack?: string;
-      redeploy?: boolean;
     };
 
     try {
@@ -370,8 +369,8 @@ export function registerWorkflowRoutes(app: Hono): void {
     }
 
     // ── Create deployment snapshot (isolate deployed code from dev) ──
-    // Deployed apps serve from a frozen copy so dev edits don't affect live.
-    // Only updated when user explicitly re-deploys with redeploy: true.
+    // Every deploy takes a fresh snapshot of the current source code.
+    // The snapshot freezes the deployed state so dev edits don't affect live.
     let servingPath = projectPath;
     const { home } = getUserInfo();
 
@@ -379,60 +378,48 @@ export function registerWorkflowRoutes(app: Hono): void {
       const deploymentsDir = `${home}/.ellulai/deployments`;
       const deploymentPath = `${deploymentsDir}/${name}`;
 
-      // Guard: if a snapshot already exists, only re-snapshot on explicit redeploy.
-      // This prevents AI agents from accidentally updating the deployed version
-      // when they call ellulai-expose after making code changes.
-      const snapshotExists = fs.existsSync(deploymentPath) &&
-        fs.readdirSync(deploymentPath).length > 0;
+      try {
+        fs.mkdirSync(deploymentsDir, { recursive: true });
 
-      if (snapshotExists && !body.redeploy) {
-        // Reuse existing frozen snapshot — don't overwrite
-        servingPath = deploymentPath;
-        console.log(`[shield] Deployment snapshot exists, skipping re-snapshot (use redeploy:true to update): ${deploymentPath}`);
-      } else {
+        // Kill existing deployed process — will restart from fresh snapshot
         try {
-          fs.mkdirSync(deploymentsDir, { recursive: true });
+          execSync(`bash -lc 'pm2 delete ${JSON.stringify(name!)} 2>/dev/null'`, {
+            stdio: 'pipe', timeout: 15000,
+          });
+        } catch {}
+        // Kill orphan on previous port
+        try {
+          const prevMeta = JSON.parse(fs.readFileSync(`${appsDir}/${name}.json`, 'utf8'));
+          if (prevMeta.port) {
+            execSync(`fuser -k ${prevMeta.port}/tcp 2>/dev/null || true`, {
+              stdio: 'pipe', timeout: 3000,
+            });
+          }
+        } catch {}
 
-          // Kill existing deployed process — will restart from fresh snapshot
+        // Create fresh snapshot of current project state
+        // Exclude node_modules and .git to keep snapshot fast and small
+        if (fs.existsSync(deploymentPath)) {
+          fs.rmSync(deploymentPath, { recursive: true, force: true });
+        }
+        fs.mkdirSync(deploymentPath, { recursive: true });
+        execSync(
+          `rsync -a --exclude='node_modules' --exclude='.git' ${JSON.stringify(projectPath + '/')} ${JSON.stringify(deploymentPath + '/')}`,
+          { stdio: 'pipe', timeout: 30000 }
+        );
+        // Install production deps in snapshot if package.json exists
+        if (fs.existsSync(`${deploymentPath}/package.json`)) {
           try {
-            execSync(`bash -lc 'pm2 delete ${JSON.stringify(name!)} 2>/dev/null'`, {
-              stdio: 'pipe', timeout: 15000,
+            execSync(`bash -lc 'cd ${JSON.stringify(deploymentPath)} && npm install --omit=dev 2>&1'`, {
+              stdio: 'pipe', timeout: 60000,
             });
           } catch {}
-          // Kill orphan on previous port
-          try {
-            const prevMeta = JSON.parse(fs.readFileSync(`${appsDir}/${name}.json`, 'utf8'));
-            if (prevMeta.port) {
-              execSync(`fuser -k ${prevMeta.port}/tcp 2>/dev/null || true`, {
-                stdio: 'pipe', timeout: 3000,
-              });
-            }
-          } catch {}
-
-          // Create frozen snapshot of current project state
-          // Exclude node_modules and .git to keep snapshot fast and small
-          if (fs.existsSync(deploymentPath)) {
-            fs.rmSync(deploymentPath, { recursive: true, force: true });
-          }
-          fs.mkdirSync(deploymentPath, { recursive: true });
-          execSync(
-            `rsync -a --exclude='node_modules' --exclude='.git' ${JSON.stringify(projectPath + '/')} ${JSON.stringify(deploymentPath + '/')}`,
-            { stdio: 'pipe', timeout: 30000 }
-          );
-          // Install production deps in snapshot if package.json exists
-          if (fs.existsSync(`${deploymentPath}/package.json`)) {
-            try {
-              execSync(`bash -lc 'cd ${JSON.stringify(deploymentPath)} && npm install --omit=dev 2>&1'`, {
-                stdio: 'pipe', timeout: 60000,
-              });
-            } catch {}
-          }
-
-          servingPath = deploymentPath;
-          console.log(`[shield] Created deployment snapshot: ${deploymentPath}`);
-        } catch (e) {
-          console.error(`[shield] Snapshot failed, serving from source: ${(e as Error).message}`);
         }
+
+        servingPath = deploymentPath;
+        console.log(`[shield] Created deployment snapshot: ${deploymentPath}`);
+      } catch (e) {
+        console.error(`[shield] Snapshot failed, serving from source: ${(e as Error).message}`);
       }
     }
 

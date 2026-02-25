@@ -16,6 +16,7 @@ export interface FileTreeNode {
   name: string;
   type: 'file' | 'dir';
   path: string;
+  mtime?: number;
   children?: FileTreeNode[];
   error?: boolean;
 }
@@ -75,7 +76,7 @@ export function getTree(dir: string, relativePath: string = ''): FileTreeNode {
   }
 
   if (!stats.isDirectory()) {
-    return { name, type: 'file', path: relativePath };
+    return { name, type: 'file', path: relativePath, mtime: Math.floor(stats.mtimeMs) };
   }
 
   const children: FileTreeNode[] = [];

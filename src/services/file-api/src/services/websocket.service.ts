@@ -352,7 +352,7 @@ export function initServerStatusWatcher(): void {
  * filesystems). This polls the tree when clients are connected to ensure
  * changes are always detected.
  */
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 1000;
 let pollTimer: NodeJS.Timeout | null = null;
 
 export function startPollingFallback(): void {
