@@ -184,11 +184,21 @@ async function discoverBestZenModel(): Promise<string | null> {
  * switching to the best available model at runtime.
  */
 export async function getOpencodeConfigJson(): Promise<string> {
-  const model = await discoverBestZenModel();
+  // Discover best free model with retries. If we write a null model,
+  // OpenCode falls back to its built-in default (e.g. claude-opus)
+  // which isn't free and will fail without API keys.
+  let model: string | null = null;
+  for (let attempt = 0; attempt < 3 && !model; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 2000));
+    model = await discoverBestZenModel();
+  }
+  if (!model) {
+    console.warn('[ai-config] Zen discovery failed after 3 attempts — config will have no model, runtime zen refresh will handle it');
+  }
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
-      model,
+      ...(model ? { model } : {}),
     },
     null,
     2

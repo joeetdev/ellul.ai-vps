@@ -39,6 +39,7 @@ import {
   initWatchers,
   initServerStatusWatcher,
   initPreviewStatusWatcher,
+  startPollingFallback,
 } from './services/websocket.service';
 import {
   listOpenclawWorkspaceFiles,
@@ -2240,6 +2241,9 @@ setupWebSocket(server);
 // Initialize file watchers
 setTimeout(initWatchers, 1000);
 setInterval(initWatchers, 60000); // Re-scan periodically
+
+// Polling fallback — fs.watch is unreliable on Linux VPS
+startPollingFallback();
 
 // Initialize server status watcher
 setTimeout(initServerStatusWatcher, 2000);

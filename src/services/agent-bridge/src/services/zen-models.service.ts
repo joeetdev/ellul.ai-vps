@@ -72,9 +72,9 @@ export async function refreshZenModels(): Promise<void> {
   const best = models[0]!.openCodeId;
   if (best !== currentBest) {
     const current = await getCurrentModel();
-    // Only auto-switch if user hasn't manually picked a model
-    // (current is null, proxy model, or a previous auto-pick)
-    if (!current || current.startsWith('ellulai/') || current === currentBest) {
+    // Only auto-switch if user hasn't manually picked a non-opencode model
+    // (current is null, not an opencode model, or a previous auto-pick)
+    if (!current || !current.startsWith('opencode/') || current === currentBest) {
       await setModel(best);
       console.log(`[Zen] Switched model: ${currentBest} → ${best}`);
     }

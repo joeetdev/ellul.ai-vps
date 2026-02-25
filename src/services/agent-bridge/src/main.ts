@@ -40,7 +40,6 @@ import {
   DEFAULT_SESSION,
   VALID_SESSIONS,
   CONTEXT_CACHE_MS,
-  ELLULAI_MODELS,
   DEV_DOMAIN,
   type SessionType,
 } from './config';
@@ -402,7 +401,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               providers: result.providers,
               connected: result.connected,
               currentModel: result.currentModel,
-              ellulaiModels: ELLULAI_MODELS,
               zenModels: result.zenModels,
               timestamp: Date.now(),
             })

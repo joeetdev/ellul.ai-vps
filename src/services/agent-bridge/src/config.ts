@@ -6,7 +6,6 @@
 
 import * as os from 'os';
 import * as fs from 'fs';
-import { WATERFALL_MODELS } from '../../../configs/ai';
 
 const HOME = os.homedir();
 
@@ -62,13 +61,6 @@ export const DEFAULT_INTERACTIVE_COMMANDS: Record<string, string> = {
   codex: 'codex login',
   gemini: 'gemini auth login',
 };
-
-// ellul.ai AI waterfall models (from ai-config.ts)
-export const ELLULAI_MODELS = WATERFALL_MODELS.map((m) => ({
-  id: m.modelId,
-  name: m.name,
-  isPaid: m.isPaid,
-}));
 
 // Zen model discovery
 export const ZEN_MODELS_URL = 'https://opencode.ai/zen/v1/models';

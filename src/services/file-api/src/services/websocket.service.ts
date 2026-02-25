@@ -347,6 +347,24 @@ export function initServerStatusWatcher(): void {
 }
 
 /**
+ * Polling fallback for file change detection.
+ * fs.watch is unreliable on Linux VPS (inotify issues on some virtualized
+ * filesystems). This polls the tree when clients are connected to ensure
+ * changes are always detected.
+ */
+const POLL_INTERVAL_MS = 2000;
+let pollTimer: NodeJS.Timeout | null = null;
+
+export function startPollingFallback(): void {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => {
+    if (clients.size > 0) {
+      computeAndBroadcast();
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+/**
  * Set up WebSocket server on existing HTTP server.
  * Note: ws package is an external runtime dependency, dynamically required.
  */

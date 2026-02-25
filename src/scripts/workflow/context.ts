@@ -82,8 +82,9 @@ Do NOT deploy automatically. Only follow these steps when the user says "deploy"
 4. Verify: \\\`ellulai-apps\\\` → shows app with live URL
 **Re-deploy (update already-deployed app):**
 1. Build: \\\`npm run build\\\` (if applicable)
-2. \\\`ellulai-expose APP_NAME PORT\\\` — creates a fresh frozen snapshot from current code
+2. \\\`ellulai-expose APP_NAME PORT --redeploy\\\` — the \\\`--redeploy\\\` flag is REQUIRED to update an existing deployment snapshot
 3. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
+Without \\\`--redeploy\\\`, the existing frozen snapshot is preserved. NEVER re-deploy unless the user explicitly asks.
 NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
@@ -614,8 +615,9 @@ Do NOT deploy automatically. Only follow these steps when the user says \\"deplo
 4. Verify: \\\`ellulai-apps\\\` shows app with live URL
 **Re-deploy (update already-deployed app):**
 1. Build: \\\`npm run build\\\` (if applicable)
-2. \\\`ellulai-expose APP_NAME PORT\\\` — creates a fresh frozen snapshot from current code
+2. \\\`ellulai-expose APP_NAME PORT --redeploy\\\` — the \\\`--redeploy\\\` flag is REQUIRED to update an existing deployment snapshot
 3. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
+Without \\\`--redeploy\\\`, the existing frozen snapshot is preserved. NEVER re-deploy unless the user explicitly asks.
 NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
 
 ## Git (Code Backup)

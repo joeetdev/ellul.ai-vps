@@ -14,8 +14,8 @@ import * as http from 'http';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getCliSpawnEnv } from './cli-env.service';
-import { PROJECTS_DIR, OPENCODE_API_PORT, OPENCODE_BIN, CLI_TIMEOUT_MS, CLI_ONESHOT_TIMEOUT_MS, ELLULAI_MODELS } from '../config';
-import { getZenModelList, type ZenModel } from './zen-models.service';
+import { PROJECTS_DIR, OPENCODE_API_PORT, OPENCODE_BIN, CLI_TIMEOUT_MS, CLI_ONESHOT_TIMEOUT_MS } from '../config';
+import { getZenModelList, refreshZenModels, type ZenModel } from './zen-models.service';
 import {
   getThreadOpencodeSession,
   setThreadOpencodeSession,
@@ -673,6 +673,24 @@ export async function sendToOpencodeStreaming(
   threadId?: string | null,
   project?: string | null
 ): Promise<CliResponse> {
+  // Ensure model is a valid free opencode model before sending.
+  // Without this, OpenCode may use its built-in default (e.g. claude-opus)
+  // which isn't free and will fail without API keys.
+  try {
+    const currentModel = await getCurrentModel();
+    if (!currentModel || !currentModel.startsWith('opencode/')) {
+      console.log(`[OpenCode] Invalid model "${currentModel}", discovering available models...`);
+      await refreshZenModels();
+      // Verify it actually switched
+      const newModel = await getCurrentModel();
+      if (!newModel || !newModel.startsWith('opencode/')) {
+        console.warn(`[OpenCode] Still no valid model after zen refresh: "${newModel}"`);
+      }
+    }
+  } catch {
+    // Non-fatal — proceed with whatever model is configured
+  }
+
   // PRIMARY: Use HTTP API with SSE via /global/event + prompt_async
   // This gives real-time streaming of reasoning, text, and tool events
   const sessionId = await getOpencodeSession(threadId, project).catch(() => null);
@@ -1377,7 +1395,6 @@ export async function getProviders(): Promise<{
   providers: unknown[];
   connected: unknown[];
   currentModel: string | null;
-  ellulaiModels: typeof ELLULAI_MODELS;
   zenModels: ZenModel[];
 }> {
   const result = await httpRequest({
@@ -1398,7 +1415,6 @@ export async function getProviders(): Promise<{
     providers: data?.all || [],
     connected: data?.connected || [],
     currentModel: configData?.model || null,
-    ellulaiModels: ELLULAI_MODELS,
     zenModels: getZenModelList(),
   };
 }
@@ -1420,37 +1436,11 @@ export async function setApiKey(provider: string, key: string): Promise<boolean>
 export async function setModel(model: string): Promise<boolean> {
   const configPath = path.join(process.env.HOME || '/root', '.config', 'opencode', 'config.json');
 
-  // Build the config object
-  let config: Record<string, unknown> = {
+  // Build the config object — only opencode/ models are supported
+  const config: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
     model,
   };
-
-  // If ellulai model, configure the provider with proxy URL and token
-  if (model.startsWith('ellulai/')) {
-    let domain = '';
-    try {
-      domain = fs.readFileSync('/etc/ellulai/domain', 'utf8').trim();
-    } catch {}
-    const token = process.env.ELLULAI_AI_TOKEN || '';
-    if (domain && token) {
-      const models: Record<string, { name: string; maxTokens: number }> = {};
-      for (const m of ELLULAI_MODELS) {
-        models[m.id] = { name: m.name, maxTokens: 16384 };
-      }
-      config.provider = {
-        ellulai: {
-          npm: '@ai-sdk/openai-compatible',
-          name: 'ellul.ai AI',
-          options: {
-            baseURL: 'https://code.' + domain + '/api/ai',
-            apiKey: token,
-          },
-          models,
-        },
-      };
-    }
-  }
 
   try {
     // Write config file and restart OpenCode so it picks up the new model.
