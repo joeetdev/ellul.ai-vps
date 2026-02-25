@@ -5,9 +5,7 @@
  */
 
 import { execSync } from 'child_process';
-
-// System ports that should NEVER be killed
-const SYSTEM_PORTS = [22, 80, 443, 3002, 7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689, 7690];
+import { RESERVED_PORTS } from '../../../shared/constants';
 
 /**
  * Kill result for a single port.
@@ -29,7 +27,7 @@ export function killProcessesOnPorts(ports: number[]): {
   // Filter out system ports
   const safePorts = ports.filter((p) => {
     const port = parseInt(String(p), 10);
-    return !isNaN(port) && port > 0 && port < 65536 && !SYSTEM_PORTS.includes(port);
+    return !isNaN(port) && port > 0 && port < 65536 && !RESERVED_PORTS.has(port);
   });
 
   if (safePorts.length === 0) {

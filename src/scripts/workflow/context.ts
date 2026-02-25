@@ -14,6 +14,7 @@ else
 fi
 
 TARGET_DIR="\${1:-$HOME_DIR/projects/welcome}"
+TARGET_DIR="\${TARGET_DIR%/}"
 CONTEXT_DIR="$HOME_DIR/.ellulai/context"
 GLOBAL_FILE="$CONTEXT_DIR/global.md"
 CURRENT_FILE="$CONTEXT_DIR/current.md"
@@ -54,15 +55,17 @@ generate_global() {
 2. **NAME PROTECTION**: The "name" field in ellulai.json and package.json is USER-DEFINED. NEVER change it.
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 
-## Deployed Apps (DO NOT re-expose these — they already have DNS + SSL)
+## Deployed Apps (FROZEN SNAPSHOTS — code edits do NOT change live sites)
 \${DEPLOYED_LIST:-"(none)"}
-If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build && pm2 restart <name>\\\`.
+Deployed apps are frozen snapshots. Editing code only changes the dev preview (port 3000).
+To update a deployed app: \\\`cd ~/projects/<app> && ellulai-expose <name> <port>\\\` — this is the ONLY way to update the live site.
+NEVER manually restart PM2 deployed processes, copy files to ~/.ellulai/deployments/, or modify the snapshot directory.
 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
 2. **REQUIRED**: Create \\\`ellulai.json\\\` in the project root (see Metadata below)
-3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs (create-next-app, create-vite, etc.) sometimes skip installing all deps.
-   - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install --include=dev\\\` BEFORE any other step — even if you just created the project. Framework CLIs (create-next-app, create-vite, etc.) sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
 5. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
@@ -70,15 +73,18 @@ If an app is listed above, it is ALREADY deployed. To update: \\\`npm run build 
 7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
 8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
-## Deployment (expose to production)
-To deploy to a public URL (separate from preview):
+## Deployment (ONLY when user explicitly asks to deploy)
+Do NOT deploy automatically. Only follow these steps when the user says "deploy", "go live", "publish", or similar.
+**First-time deploy:**
 1. Build: \\\`npm run build\\\` (if applicable)
 2. Pick a unique port (3001+, NOT 3000 which is preview): \\\`PORT=3001\\\`
-3. Start production server: \\\`pm2 start npm --name APP_NAME -- start -- -p \\\$PORT\\\` (or \\\`pm2 start "npx serve -s . -l \\\$PORT" --name APP_NAME\\\` for static)
-4. Save PM2: \\\`pm2 save\\\`
-5. Expose: \\\`ellulai-expose APP_NAME \\\$PORT\\\` — this creates DNS + SSL automatically
-6. Verify: \\\`ellulai-apps\\\` → shows app with live URL
-NEVER use \\\`ship\\\` — it requires interactive input. Use the steps above instead.
+3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — handles EVERYTHING (snapshot, PM2, Caddy, DNS, SSL)
+4. Verify: \\\`ellulai-apps\\\` → shows app with live URL
+**Re-deploy (update already-deployed app):**
+1. Build: \\\`npm run build\\\` (if applicable)
+2. \\\`ellulai-expose APP_NAME PORT\\\` — creates a fresh frozen snapshot from current code
+3. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
+NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -88,7 +94,7 @@ ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 - name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
 - summary: brief description of the app
 **IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in ellulai.json.**
-After deployment, \\\`ellulai-expose\\\` adds: deployedUrl, deployedDomain, deployedPort
+After deployment, \\\`ellulai-expose\\\` adds: deployedUrl, deployedDomain, deployedPort (these are frozen snapshots — code edits do NOT change the deployed site)
 
 ## Dev Server Config (CRITICAL)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -102,7 +108,7 @@ Skipping verification = broken app for the user.
 
 STEP 1 — Dependency check:
   \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install\\\` and retry
+  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
 
 STEP 2 — Process check:
   \\\`pm2 list\\\` → your app must show status "online"
@@ -115,7 +121,11 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-ALL 4 steps must pass. Do NOT tell the user "it's live" until they do.
+STEP 5 — Report preview URL:
+  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
+
+ALL 5 steps must pass. Do NOT tell the user "it's live" until they do.
 
 ## Ports
 - Dev/Preview: 3000 (→ https://$DEV_DOMAIN)
@@ -211,8 +221,8 @@ generate_global_free() {
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
 2. **REQUIRED**: Create \\\`ellulai.json\\\` in the project root (see Metadata below)
-3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs (create-next-app, create-vite, etc.) sometimes skip installing all deps.
-   - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install --include=dev\\\` BEFORE any other step — even if you just created the project. Framework CLIs (create-next-app, create-vite, etc.) sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
 5. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
@@ -241,7 +251,7 @@ Skipping verification = broken app for the user.
 
 STEP 1 — Dependency check:
   \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install\\\` and retry
+  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
 
 STEP 2 — Process check:
   \\\`pm2 list\\\` → your app must show status "online"
@@ -254,7 +264,11 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-ALL 4 steps must pass. Do NOT tell the user "it's live" until they do.
+STEP 5 — Report preview URL:
+  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
+
+ALL 5 steps must pass. Do NOT tell the user "it's live" until they do.
 
 ## Ports
 - Dev/Preview: 3000 (→ https://$DEV_DOMAIN)
@@ -397,13 +411,19 @@ get_current_deployment() {
       APP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
       APP_DOMAIN=$(jq -r '.domain // empty' "$app_file" 2>/dev/null)
 
-      echo "## !! LIVE DEPLOYMENT — ALREADY DEPLOYED !!"
-      echo "Name: $APP_NAME"
-      echo "URL: $APP_URL"
-      echo "Port: $APP_PORT"
+      echo "## Deployed App (FROZEN SNAPSHOT)"
+      echo "Name: $APP_NAME | Live URL: $APP_URL | Port: $APP_PORT"
       echo ""
-      echo "IMPORTANT: This project is ALREADY deployed. Do NOT run ellulai-expose again."
-      echo "To update: npm run build && pm2 restart $APP_NAME"
+      echo "**IMPORTANT**: The deployed app is a FROZEN SNAPSHOT. Editing source code does NOT change the live site."
+      echo "Code changes are only visible at the dev preview (port 3000)."
+      echo ""
+      echo "### To update the deployed app (ONLY when user asks to deploy/update/publish):"
+      echo "1. \\\`cd $CURRENT_PATH\\\`"
+      echo "2. \\\`ellulai-expose $APP_NAME $APP_PORT\\\`  ← this is the ONLY way to update the deployed site"
+      echo "3. Verify: \\\`curl -s https://$APP_DOMAIN | head -5\\\`"
+      echo ""
+      echo "Do NOT try to: restart PM2 manually, copy files to ~/.ellulai/deployments/, or modify the snapshot directory."
+      echo "ellulai-expose handles everything (snapshot, PM2, Caddy, DNS)."
       return 0
     fi
   done
@@ -446,8 +466,8 @@ $APP_NAME_LINE
 1. Create/edit project files
 2. If ellulai.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
    **The \\"name\\" field is USER-DEFINED. If ellulai.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
-3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
-   - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install --include=dev\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
@@ -465,7 +485,7 @@ Skipping verification = broken app for the user.
 
 STEP 1 — Dependency check:
   \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install\\\` and retry
+  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
 
 STEP 2 — Process check:
   \\\`pm2 list\\\` → your app must show status \\"online\\"
@@ -478,7 +498,11 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-ALL 4 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
+STEP 5 — Report preview URL:
+  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
+
+ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
@@ -505,10 +529,16 @@ pm2 start|logs|restart|delete NAME
           DEP_URL=$(jq -r '.url // empty' "$app_file" 2>/dev/null)
           DEP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
           DEPLOYMENT_SECTION="
-## !! LIVE DEPLOYMENT — DO NOT CREATE A NEW ONE !!
-Name: $DEP_NAME | URL: $DEP_URL | Port: $DEP_PORT
-This project is ALREADY deployed. To update: \\\`npm run build && pm2 restart $DEP_NAME\\\`.
-NEVER run ellulai-expose again for this project.
+## Deployed App (FROZEN SNAPSHOT — code edits do NOT change the live site)
+Name: $DEP_NAME | Live URL: $DEP_URL | Port: $DEP_PORT
+**Code changes are only visible at the dev preview (port 3000).** The deployed app is a frozen snapshot.
+When reporting code changes, ALWAYS reference the dev preview URL, NOT the deployed URL.
+
+### To update the deployed app (ONLY when user asks to deploy/update/publish):
+1. \\\`cd $TARGET_DIR\\\`
+2. \\\`ellulai-expose $DEP_NAME $DEP_PORT\\\`  ← the ONLY way to update the deployed site
+3. Verify: \\\`curl -s $DEP_URL | head -5\\\`
+Do NOT restart PM2, copy files, or modify ~/.ellulai/deployments/ directly.
 "
           break
         fi
@@ -529,20 +559,13 @@ $DEPLOYMENT_SECTION
 1. Create/edit project files
 2. If ellulai.json missing: create it with \\\`{ \\"type\\": \\"frontend\\", \\"previewable\\": true, \\"name\\": \\"My App\\", \\"summary\\": \\"...\\" }\\\`
    **The \\"name\\" field is USER-DEFINED. If ellulai.json already exists, NEVER change the \\"name\\" field — leave it as the user set it.**
-3. **MANDATORY FIRST**: ALWAYS run \\\`npm install\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
-   - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install\\\` again.
+3. **MANDATORY FIRST**: ALWAYS run \\\`npm install --include=dev\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
+   - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
 6. Wait for startup: \\\`sleep 3\\\`
 7. Run the FULL verification protocol below — do NOT skip any step
-8. Deploy to production (separate from preview):
-   a. Pick a unique port (3001+, NOT 3000): \\\`PORT=3001\\\`
-   b. Start prod server: \\\`pm2 start npm --name APP_NAME -- start -- -p \\\$PORT\\\` (or \\\`pm2 start \\"npx serve -s . -l \\\$PORT\\" --name APP_NAME\\\` for static)
-   c. \\\`pm2 save\\\`
-   d. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — creates DNS + SSL automatically
-   e. Verify: \\\`ellulai-apps\\\` shows app with live URL
-   NEVER use \\\`ship\\\` — it requires interactive input.
 
 ## Dev Server Config (CRITICAL — preview won't work without this)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -555,7 +578,7 @@ Skipping verification = broken app for the user.
 
 STEP 1 — Dependency check:
   \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install\\\` and retry
+  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
 
 STEP 2 — Process check:
   \\\`pm2 list\\\` → your app must show status \\"online\\"
@@ -568,7 +591,11 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-ALL 4 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
+STEP 5 — Report preview URL:
+  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
+
+ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
@@ -576,6 +603,20 @@ ALL 4 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 - Backend first: expose backend with \\\`ellulai-expose NAME PORT\\\` before frontend depends on it
 - Databases: \\\`ellulai-install postgres|redis|mysql\\\` (warn user about RAM usage)
 - DB GUI: user runs \\\`ssh -L 5432:localhost:5432 $USER_NAME@$DOMAIN\\\` from their machine
+- **NEVER deploy to production unless the user explicitly asks to deploy.** Creating an app = preview only. Deployment is a separate step the user must request.
+
+## Deployment (ONLY when user explicitly asks to deploy)
+Do NOT deploy automatically. Only follow these steps when the user says \\"deploy\\", \\"go live\\", \\"publish\\", or similar.
+**First-time deploy:**
+1. Build: \\\`npm run build\\\` (if applicable)
+2. Pick a unique port (3001+, NOT 3000): \\\`PORT=3001\\\`
+3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — handles EVERYTHING (snapshot, PM2, Caddy, DNS, SSL)
+4. Verify: \\\`ellulai-apps\\\` shows app with live URL
+**Re-deploy (update already-deployed app):**
+1. Build: \\\`npm run build\\\` (if applicable)
+2. \\\`ellulai-expose APP_NAME PORT\\\` — creates a fresh frozen snapshot from current code
+3. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
+NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
 
 ## Git (Code Backup)
 Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.

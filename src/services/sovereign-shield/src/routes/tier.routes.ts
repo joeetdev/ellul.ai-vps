@@ -38,16 +38,11 @@ export function registerTierRoutes(app: Hono): void {
     const ip = getClientIp(c);
 
     // SECURITY: Only accept requests from localhost
-    // This prevents external callers from bypassing the bridge auth
-    // Note: For direct curl requests from localhost, headers won't be set,
-    // so getClientIp returns 'unknown' - we accept that for internal calls
-    // The X-Internal-Request header provides additional verification
-    const internalHeader = c.req.header('x-internal-request');
-    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === 'localhost' ||
-                        (ip === 'unknown' && internalHeader === 'enforcer');
+    // Never trust 'unknown' IP — a spoofable header is not sufficient verification
+    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === 'localhost';
 
     if (!isLocalhost) {
-      console.error('[shield] Rejected tier switch from non-localhost:', ip, 'internal:', internalHeader);
+      console.error('[shield] Rejected tier switch from non-localhost:', ip);
       return c.json({ error: 'Forbidden - internal endpoint' }, 403);
     }
 
@@ -111,11 +106,8 @@ export function registerTierRoutes(app: Hono): void {
    */
   app.get('/_auth/tier/current', (c) => {
     const ip = getClientIp(c);
-    const internalHeader = c.req.header('x-internal-request');
-
     // Only localhost can query this (same logic as tier/switch)
-    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === 'localhost' ||
-                        (ip === 'unknown' && internalHeader === 'enforcer');
+    const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === 'localhost';
     if (!isLocalhost) {
       return c.json({ error: 'Forbidden' }, 403);
     }

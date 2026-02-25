@@ -62,6 +62,12 @@ export const TERMINAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours for termin
 export const CODE_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;    // 24 hours for code tokens
 export const AGENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours for agent tokens
 
+// Ports reserved for ellul.ai internal services — never assign to user apps
+export const RESERVED_PORTS = new Set([
+  22, 80, 443, 2019, 3002, 3005, 3006,
+  7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689, 7690, 7700, 7701,
+]);
+
 // Rate limiting
 export const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;      // 15 minutes
 export const RATE_LIMIT_MAX_ATTEMPTS = 5;

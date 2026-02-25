@@ -12,6 +12,7 @@ import { ROOT_DIR, DEBOUNCE_MS, IGNORED_PATTERNS } from '../config';
 import { safeReadFile, safeStat, safeReadDir } from '../utils';
 // UNIFIED AUTH: sovereign-shield handles all tier logic at token issuance
 import { getTree, getActiveProject } from './files.service';
+import { getPreviewStatus } from './preview.service';
 
 // WebSocket types (ws is external runtime dependency)
 interface WsClient {
@@ -36,6 +37,7 @@ let lastTreeHash = '';
 let lastStatusHash = '';
 let lastAppsHash = '';
 let lastServerStatusHash = '';
+let lastPreviewHash = '';
 
 const SERVER_STATUS_FILE = `${os.homedir()}/.ellulai/server-status.json`;
 
@@ -169,6 +171,17 @@ async function computeAndBroadcast(): Promise<void> {
       console.error('[file-api] Error computing apps:', error.message);
     }
 
+    // Preview status — broadcast when preview state changes (app starts/stops)
+    try {
+      const preview = getPreviewStatus();
+      const previewJson = JSON.stringify(preview);
+      const previewHash = simpleHash(previewJson);
+      if (previewHash !== lastPreviewHash) {
+        lastPreviewHash = previewHash;
+        broadcast('preview_status', preview);
+      }
+    } catch {}
+
     // Server status
     broadcastServerStatus();
   } catch (e) {
@@ -268,6 +281,25 @@ export function initWatchers(): void {
   }
 
   console.log(`[Watch] Watching ${watchedDirs.size} directories`);
+}
+
+/**
+ * Periodically check preview status and broadcast changes.
+ * This detects when the AI agent starts/stops a preview process.
+ */
+export function initPreviewStatusWatcher(): void {
+  setInterval(() => {
+    if (clients.size === 0) return; // No clients — skip
+    try {
+      const preview = getPreviewStatus();
+      const previewJson = JSON.stringify(preview);
+      const previewHash = simpleHash(previewJson);
+      if (previewHash !== lastPreviewHash) {
+        lastPreviewHash = previewHash;
+        broadcast('preview_status', preview);
+      }
+    } catch {}
+  }, 3000);
 }
 
 /**

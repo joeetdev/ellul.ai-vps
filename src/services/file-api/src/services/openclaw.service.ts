@@ -1,17 +1,29 @@
 /**
  * OpenClaw Service
  *
- * Manages OpenClaw workspace files (~/.openclaw/workspace/) and
+ * Manages per-project OpenClaw workspace files ({project}/.openclaw/) and
  * channel configuration (~/.openclaw/openclaw.json).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { HOME } from '../config';
+import { HOME, ROOT_DIR } from '../config';
+import { getActiveProject } from './files.service';
 
 const OPENCLAW_DIR = `${HOME}/.openclaw`;
-const WORKSPACE_DIR = `${OPENCLAW_DIR}/workspace`;
 const CONFIG_FILE = `${OPENCLAW_DIR}/openclaw.json`;
+
+/**
+ * Get the per-project .openclaw/ workspace directory.
+ * Falls back to the global ~/.openclaw/workspace/ if no project is active.
+ */
+function getWorkspaceDir(): string {
+  const activeProject = getActiveProject();
+  if (activeProject && activeProject !== 'welcome') {
+    return path.join(ROOT_DIR, activeProject, '.openclaw');
+  }
+  return `${OPENCLAW_DIR}/workspace`;
+}
 
 // Allowed workspace files (prevents path traversal)
 const ALLOWED_WORKSPACE_FILES = new Set([
@@ -33,17 +45,18 @@ export interface WorkspaceFileInfo {
 }
 
 /**
- * List all workspace files in ~/.openclaw/workspace/.
+ * List all workspace files in the active project's .openclaw/ directory.
  */
 export function listOpenclawWorkspaceFiles(): WorkspaceFileInfo[] {
-  if (!fs.existsSync(WORKSPACE_DIR)) {
+  const wsDir = getWorkspaceDir();
+  if (!fs.existsSync(wsDir)) {
     return [];
   }
 
   const files: WorkspaceFileInfo[] = [];
-  for (const f of fs.readdirSync(WORKSPACE_DIR)) {
+  for (const f of fs.readdirSync(wsDir)) {
     if (!f.endsWith('.md')) continue;
-    const filePath = path.join(WORKSPACE_DIR, f);
+    const filePath = path.join(wsDir, f);
     try {
       const stat = fs.statSync(filePath);
       if (!stat.isFile()) continue;
@@ -73,13 +86,14 @@ export function getOpenclawWorkspaceFile(fileName: string): {
     return null;
   }
 
-  const filePath = path.join(WORKSPACE_DIR, fileName);
+  const wsDir = getWorkspaceDir();
+  const filePath = path.join(wsDir, fileName);
   if (!fs.existsSync(filePath)) {
     return null;
   }
 
   const realPath = fs.realpathSync(filePath);
-  if (!realPath.startsWith(WORKSPACE_DIR)) {
+  if (!realPath.startsWith(fs.realpathSync(wsDir))) {
     return null; // Prevent symlink traversal
   }
 
@@ -103,8 +117,9 @@ export function saveOpenclawWorkspaceFile(
     return { success: false, error: 'File not allowed' };
   }
 
-  fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-  const filePath = path.join(WORKSPACE_DIR, fileName);
+  const wsDir = getWorkspaceDir();
+  fs.mkdirSync(wsDir, { recursive: true });
+  const filePath = path.join(wsDir, fileName);
   fs.writeFileSync(filePath, content);
   return { success: true };
 }

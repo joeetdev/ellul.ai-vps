@@ -19,6 +19,7 @@ import {
   getFileContent,
   listProjects,
   getActiveProject,
+  setActiveProject,
   parseMultipart,
   uploadFile,
   type UploadedFile,
@@ -37,6 +38,7 @@ import {
   setupWebSocket,
   initWatchers,
   initServerStatusWatcher,
+  initPreviewStatusWatcher,
 } from './services/websocket.service';
 import {
   listOpenclawWorkspaceFiles,
@@ -514,23 +516,21 @@ const server = http.createServer(async (req, res) => {
           // Initialize OpenClaw workspace files + create agent (fire-and-forget)
           try {
             const { exec: execCmd } = await import('child_process');
-            // Write dev-focused workspace files before agent creation
+            // Write minimal OpenClaw workspace files into .openclaw/ subdirectory.
+            // Keeps them separate from CLI context files (CLAUDE.md, AGENTS.md) in root.
             const ocDir = path.join(appPath, '.openclaw');
             if (!fs.existsSync(ocDir)) fs.mkdirSync(ocDir, { recursive: true });
-            const soulPath = path.join(appPath, 'SOUL.md');
+            const soulPath = path.join(ocDir, 'SOUL.md');
             if (!fs.existsSync(soulPath)) {
               fs.writeFileSync(soulPath, `# SOUL.md — Dev Assistant\n\nYou are a focused development assistant for the **${dirName}** project.\n\n## Core Principles\n- **Ship code, not conversation.** Help the user build, debug, and deploy.\n- **Be concise and action-oriented.** Suggest what to do next, don't philosophize.\n- **Read before asking.** Check project files, README, package.json before asking the user what the project is.\n- **Stay in scope.** All work happens inside this project directory.\n\n## CLI Setup\nIf a CLI tool isn't authenticated, help the user set it up.\nOutput [SETUP_CLI:toolname] and the system handles the rest — don't try to run login commands yourself.\n`, 'utf8');
             }
-            const agentsPath = path.join(appPath, 'AGENTS.md');
-            if (!fs.existsSync(agentsPath)) {
-              fs.writeFileSync(agentsPath, `# AGENTS.md — Workspace Instructions\n\n## Every Session\n1. Read \`SOUL.md\` — your identity and principles\n2. Check project files (README.md, package.json) for context\n\n## Rules\n- ALL file operations stay within this workspace\n- Never change the "name" field in ellulai.json or package.json\n- Never re-scaffold or re-initialize the project\n\n## CLI Setup\nWhen the user needs a CLI that shows "NOT SET UP" in your CLI Auth Status:\n1. Tell the user you'll set it up\n2. Output the marker: [SETUP_CLI:claude] (or codex, gemini)\n3. The system handles authentication — wait for the user to complete it\n4. Never try to run login commands yourself\n`, 'utf8');
-            }
-            const heartbeatPath = path.join(appPath, 'HEARTBEAT.md');
+            const heartbeatPath = path.join(ocDir, 'HEARTBEAT.md');
             if (!fs.existsSync(heartbeatPath)) {
               fs.writeFileSync(heartbeatPath, '# Keep empty to skip heartbeat checks for dev agents.\n', 'utf8');
             }
 
-            execCmd(`openclaw agents add "dev-${dirName}" --workspace "${appPath}" --non-interactive`, { timeout: 15000 }, (err) => {
+            const ocWorkspace = path.join(appPath, '.openclaw');
+            execCmd(`openclaw agents add "dev-${dirName}" --workspace "${ocWorkspace}" --non-interactive`, { timeout: 15000 }, (err) => {
               if (err) console.warn(`[file-api] OpenClaw agent creation failed for ${dirName}:`, err.message);
               else console.log(`[file-api] OpenClaw agent "dev-${dirName}" created`);
             });
@@ -567,6 +567,13 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
+        // SECURITY: Validate repoFullName to prevent command injection
+        if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(repoFullName)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'Invalid repository name format (expected owner/repo)' }));
+          return;
+        }
+
         // Read git credentials from config
         const gitCredsPath = path.join(ROOT_DIR, '.ellulai', 'git-credentials.json');
         let gitCreds: Record<string, { token?: string }> = {};
@@ -597,13 +604,17 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        // Clone the repo
+        // Clone the repo — use spawn (no shell) to prevent command injection
         const { exec, spawn } = await import('child_process');
         const cloneResult = await new Promise<{ success: boolean; error?: string }>((resolve) => {
-          exec(`git clone ${cloneUrl} ${appPath}`, { timeout: 120000 }, (err) => {
-            if (err) resolve({ success: false, error: err.message });
+          const proc = spawn('git', ['clone', cloneUrl, appPath], { timeout: 120000, stdio: 'pipe' });
+          let stderr = '';
+          proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+          proc.on('close', (code) => {
+            if (code !== 0) resolve({ success: false, error: stderr || `git clone exited with code ${code}` });
             else resolve({ success: true });
           });
+          proc.on('error', (err) => resolve({ success: false, error: err.message }));
         });
 
         if (!cloneResult.success) {
@@ -643,7 +654,8 @@ const server = http.createServer(async (req, res) => {
 
         // Create OpenClaw agent for the new project (fire-and-forget)
         try {
-          exec(`openclaw agents add "dev-${dirName}" --workspace "${appPath}" --non-interactive`, { timeout: 15000 }, (err) => {
+          const ocWorkspace = path.join(appPath, '.openclaw');
+          exec(`mkdir -p "${ocWorkspace}" && openclaw agents add "dev-${dirName}" --workspace "${ocWorkspace}" --non-interactive`, { timeout: 15000 }, (err) => {
             if (err) console.warn(`[file-api] OpenClaw agent creation failed for ${dirName}:`, err.message);
             else console.log(`[file-api] OpenClaw agent "dev-${dirName}" created`);
           });
@@ -667,6 +679,21 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(400);
       res.end(JSON.stringify({ success: false, error: `Invalid type: ${type}` }));
+      return;
+    }
+
+    // POST /api/active-project - Set the active project (for sidebar clicks)
+    if (req.method === 'POST' && pathname === '/api/active-project') {
+      const body = await parseBody(req);
+      const project = body.project as string;
+      if (!project) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ success: false, error: 'Missing project' }));
+        return;
+      }
+      const success = setActiveProject(project);
+      res.writeHead(success ? 200 : 404);
+      res.end(JSON.stringify({ success, project }));
       return;
     }
 
@@ -825,9 +852,40 @@ const server = http.createServer(async (req, res) => {
           cleanup.push('openclaw-agent');
         } catch {}
 
+        // 7.5. Clean up chat threads for this project
+        try {
+          const cleanupReq = http.request(
+            { hostname: '127.0.0.1', port: 7700, path: '/api/cleanup-project', method: 'POST',
+              headers: { 'Content-Type': 'application/json' } },
+            (cleanupRes) => {
+              if (cleanupRes.statusCode === 200) cleanup.push('threads');
+            }
+          );
+          cleanupReq.write(JSON.stringify({ project: app.directory }));
+          cleanupReq.end();
+          // Fire-and-forget — don't block delete on thread cleanup
+        } catch {}
+
+        // 7.6. Remove deployment snapshot if it exists
+        try {
+          const deploymentPath = `${HOME}/.ellulai/deployments/${app.directory}`;
+          if (fs.existsSync(deploymentPath)) {
+            fs.rmSync(deploymentPath, { recursive: true, force: true });
+            cleanup.push('deployment-snapshot');
+          }
+        } catch {}
+
         // 8. Remove the app directory recursively
         fs.rmSync(appPath, { recursive: true, force: true });
         cleanup.push('directory');
+
+        // 9. If deleted app was the active project, clear persistence so it falls back
+        try {
+          const activeFile = `${HOME}/.ellulai/active-project`;
+          if (fs.existsSync(activeFile) && fs.readFileSync(activeFile, 'utf8').trim() === app.directory) {
+            fs.unlinkSync(activeFile);
+          }
+        } catch {}
 
         console.log(`[file-api] Deleted app "${app.name}" with cleanup: ${cleanup.join(', ')}`);
 
@@ -885,19 +943,28 @@ const server = http.createServer(async (req, res) => {
       let previewActivated = false;
 
       if (app.previewable) {
-        // Always activate preview for previewable apps
-        // This ensures switching works reliably
-        const result = setPreviewApp(app.directory);
-        previewActivated = true;
-        previewStatus = {
-          app: app.directory,
-          running: result.preview?.success ?? false,
-        };
+        // Check if preview is already running for this app — avoid killing it
+        const currentPreview = getPreviewStatus();
+        if (currentPreview.app === app.directory && currentPreview.running) {
+          // Preview already running for this app — reuse it
+          previewStatus = { app: app.directory, running: true };
+        } else {
+          // Need to start/switch preview
+          const result = setPreviewApp(app.directory);
+          previewActivated = true;
+          previewStatus = {
+            app: app.directory,
+            running: result.preview?.success ?? false,
+          };
+        }
       } else {
         // Stop preview for non-previewable apps
         stopPreview();
         previewStatus = { app: null, running: false };
       }
+
+      // Persist as active project (survives browser refresh)
+      setActiveProject(app.directory);
 
       // Check for context files
       const contextDir = `${HOME}/.ellulai/context`;
@@ -2176,5 +2243,8 @@ setInterval(initWatchers, 60000); // Re-scan periodically
 
 // Initialize server status watcher
 setTimeout(initServerStatusWatcher, 2000);
+
+// Initialize preview status watcher (broadcasts when AI starts/stops preview)
+initPreviewStatusWatcher();
 
 console.log('[WS] WebSocket server ready on /ws');

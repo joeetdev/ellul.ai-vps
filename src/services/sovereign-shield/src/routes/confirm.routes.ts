@@ -220,19 +220,13 @@ export function registerConfirmRoutes(app: Hono): void {
       return c.json({ error: 'Missing confirmation or operation' }, 400);
     }
 
-    // Verify caller is authorized (localhost or platform)
+    // Verify caller is authorized (localhost only)
+    // SECURITY: Do NOT trust body-supplied verifierIp as a platform indicator —
+    // any external caller can set it. Only localhost can verify confirmations.
     const callerIp = getClientIp(c);
-    const isLocalCall = callerIp === '127.0.0.1' || callerIp === '::1' || callerIp === 'localhost';
+    const isLocalCall = callerIp === '127.0.0.1' || callerIp === '::1' || callerIp === '::ffff:127.0.0.1' || callerIp === 'localhost';
 
-    // Platform IP ranges (ellul.ai infrastructure)
-    // In production, this should be configured via environment or file
-    const isPlatformCall = isLocalCall || (
-      // Cloudflare ranges or known platform IPs can be added here
-      // For now, we trust the caller if they provide verifierIp (platform-only param)
-      verifierIp !== undefined
-    );
-
-    if (!isLocalCall && !isPlatformCall) {
+    if (!isLocalCall) {
       logAuditEvent({
         type: 'confirmation_unauthorized_caller',
         ip: callerIp,

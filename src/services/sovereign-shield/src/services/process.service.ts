@@ -8,18 +8,7 @@
  */
 
 import { execSync } from 'child_process';
-
-/** System ports that must never be killed */
-const SYSTEM_PORTS = new Set([
-  22,    // SSH
-  80,    // HTTP
-  443,   // HTTPS
-  3002,  // file-api
-  3005,  // sovereign-shield
-  3006,  // daemon (Caddy → file-api)
-  7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689, 7690, // ttyd range
-  7700,  // agent-bridge
-]);
+import { RESERVED_PORTS } from '../../../shared/constants';
 
 /** Default dev ports to kill (mirrors operations.routes.ts DEV_PORTS) */
 export const DEV_PORTS = [3000, 3001, 4000, 5000, 5173, 8000, 8080, 8888, 9000];
@@ -35,7 +24,7 @@ export function killPorts(ports: number[]): { killed: number; skipped: number[] 
   for (const port of ports) {
     if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
 
-    if (SYSTEM_PORTS.has(port)) {
+    if (RESERVED_PORTS.has(port)) {
       skipped.push(port);
       continue;
     }

@@ -104,6 +104,10 @@ export const FRAMEWORK_PATTERNS = {
     files: [],
     packageJson: ['hono'],
   },
+  html: {
+    files: ['index.html'],
+    packageJson: [],
+  },
 } as const;
 
 // Default ports by framework
@@ -116,6 +120,7 @@ export const DEFAULT_PORTS: Record<string, number> = {
   express: 3000,
   fastify: 3000,
   hono: 3000,
+  html: 3000,
   unknown: 3000,
 };
 

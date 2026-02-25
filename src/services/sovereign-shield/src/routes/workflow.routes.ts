@@ -15,6 +15,7 @@
 import fs from 'fs';
 import { execSync } from 'child_process';
 import type { Hono } from 'hono';
+import { RESERVED_PORTS } from '../../../shared/constants';
 
 const BILLING_TIER_FILE = '/etc/ellulai/billing-tier';
 const DOMAIN_FILE = '/etc/ellulai/domain';
@@ -22,13 +23,6 @@ const CADDYFILE = '/etc/caddy/Caddyfile';
 const SITES_DIR = '/etc/caddy/sites-enabled';
 const APP_ROUTES_DIR = '/etc/caddy/app-routes.d';
 const CF_CA_FILE = '/etc/caddy/cf-origin-pull-ca.pem';
-
-// Ports reserved for ellul.ai internal services
-const RESERVED_PORTS = new Set([
-  22, 2019, 3000, 3002, 3005,
-  7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689,
-  7690, 7691, 7692, 7693, 7694, 7695, 7696, 7697, 7698, 7699, 7700, 7701,
-]);
 
 function getBillingTier(): string {
   try {
@@ -84,6 +78,29 @@ function ensureAppProcess(
   projectPath: string,
   appsDir: string,
 ): { port: number } {
+  // Fast path: if the requested port already has a healthy listener owned by THIS project,
+  // skip PM2 entirely. This prevents the destructive delete-and-restart cycle when
+  // preview hands off a running process, while ensuring we don't accept a stale app.
+  try {
+    execSync(`curl -sf -o /dev/null http://localhost:${requestedPort}`, {
+      stdio: 'pipe',
+      timeout: 2000,
+    });
+    // Verify the listener actually belongs to this project via /proc/{pid}/cwd
+    const pid = execSync(
+      `ss -tlnpH sport = :${requestedPort} 2>/dev/null | grep -oP 'pid=\\K\\d+' | head -1`,
+      { stdio: 'pipe', timeout: 3000, encoding: 'utf8' },
+    ).trim();
+    if (pid && fs.existsSync(`/proc/${pid}/cwd`)) {
+      const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+      if (cwd === projectPath) {
+        return { port: requestedPort };
+      }
+    }
+  } catch {
+    // Port not healthy or identity check failed — fall through to PM2 management
+  }
+
   // A. Get pm2 process list
   let pm2List: Array<{
     name: string;
@@ -107,17 +124,23 @@ function ensureAppProcess(
       existing.pm2_env?.cwd === projectPath &&
       existing.pm2_env?.status === 'online'
     ) {
-      const existingPort = parseInt(existing.pm2_env?.PORT || '0', 10);
-      if (existingPort > 0) {
-        // Verify port is actually listening
+      const existingPort = parseInt(
+        existing.pm2_env?.PORT || (existing.pm2_env as any)?.env?.PORT || '0', 10
+      );
+      if (existingPort > 0 && !RESERVED_PORTS.has(existingPort)) {
+        // Verify port is actually listening by this pm2 process (not another service)
         try {
-          execSync(`ss -tlnp 2>/dev/null | grep -q ':${existingPort} '`, {
+          const pid = (existing as { pid?: number }).pid;
+          const check = pid
+            ? `ss -tlnpH sport = :${existingPort} 2>/dev/null | grep -q 'pid=${pid},'`
+            : `ss -tlnH sport = :${existingPort} 2>/dev/null`;
+          execSync(check, {
             stdio: 'pipe',
             timeout: 3000,
           });
           return { port: existingPort };
         } catch {
-          // Port not listening despite pm2 saying online — fall through to restart
+          // Port not listening or owned by different process — fall through to restart
         }
       }
     }
@@ -135,11 +158,12 @@ function ensureAppProcess(
 
   function isPortOccupied(p: number): boolean {
     try {
-      execSync(`ss -tlnp 2>/dev/null | grep -q ':${p} '`, {
+      const out = execSync(`ss -tlnH sport = :${p}`, {
         stdio: 'pipe',
         timeout: 3000,
+        encoding: 'utf8',
       });
-      return true;
+      return out.trim().length > 0;
     } catch {
       return false;
     }
@@ -198,7 +222,8 @@ function ensureAppProcess(
   if (hasStartScript) {
     startCmd = `PORT=${port} pm2 start npm --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)} -- start`;
   } else {
-    startCmd = `pm2 start "npx serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
+    // Set PORT env var so ensureAppProcess can detect the port on subsequent calls
+    startCmd = `PORT=${port} pm2 start "npx serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
   }
 
   execSync(`bash -lc '${startCmd}'`, {
@@ -299,6 +324,11 @@ export function registerWorkflowRoutes(app: Hono): void {
     const isFree = billingTier === 'free';
     const { appsDir } = getUserInfo();
 
+    // SECURITY: Validate customDomain to prevent command injection and Caddy config injection
+    if (customDomain && !/^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(customDomain)) {
+      return c.json({ error: 'Invalid custom domain format' }, 400);
+    }
+
     // ── Free tier enforcements ───────────────────────────────────────
     if (isFree && customDomain) {
       return c.json({
@@ -338,10 +368,64 @@ export function registerWorkflowRoutes(app: Hono): void {
       }
     }
 
-    // ── Ensure app process is running (port ownership + lifecycle) ──
+    // ── Create deployment snapshot (isolate deployed code from dev) ──
+    // Deployed apps serve from a frozen copy so dev edits don't affect live.
+    // Only updated when user explicitly re-deploys.
+    let servingPath = projectPath;
+    const { home } = getUserInfo();
+
     if (projectPath) {
+      const deploymentsDir = `${home}/.ellulai/deployments`;
+      const deploymentPath = `${deploymentsDir}/${name}`;
       try {
-        const result = ensureAppProcess(name!, port, projectPath, appsDir);
+        fs.mkdirSync(deploymentsDir, { recursive: true });
+
+        // Kill existing deployed process — will restart from fresh snapshot
+        try {
+          execSync(`bash -lc 'pm2 delete ${JSON.stringify(name!)} 2>/dev/null'`, {
+            stdio: 'pipe', timeout: 15000,
+          });
+        } catch {}
+        // Kill orphan on previous port
+        try {
+          const prevMeta = JSON.parse(fs.readFileSync(`${appsDir}/${name}.json`, 'utf8'));
+          if (prevMeta.port) {
+            execSync(`fuser -k ${prevMeta.port}/tcp 2>/dev/null || true`, {
+              stdio: 'pipe', timeout: 3000,
+            });
+          }
+        } catch {}
+
+        // Create frozen snapshot of current project state
+        // Exclude node_modules and .git to keep snapshot fast and small
+        if (fs.existsSync(deploymentPath)) {
+          fs.rmSync(deploymentPath, { recursive: true, force: true });
+        }
+        fs.mkdirSync(deploymentPath, { recursive: true });
+        execSync(
+          `rsync -a --exclude='node_modules' --exclude='.git' ${JSON.stringify(projectPath + '/')} ${JSON.stringify(deploymentPath + '/')}`,
+          { stdio: 'pipe', timeout: 30000 }
+        );
+        // Install production deps in snapshot if package.json exists
+        if (fs.existsSync(`${deploymentPath}/package.json`)) {
+          try {
+            execSync(`bash -lc 'cd ${JSON.stringify(deploymentPath)} && npm install --omit=dev 2>&1'`, {
+              stdio: 'pipe', timeout: 60000,
+            });
+          } catch {}
+        }
+
+        servingPath = deploymentPath;
+        console.log(`[shield] Created deployment snapshot: ${deploymentPath}`);
+      } catch (e) {
+        console.error(`[shield] Snapshot failed, serving from source: ${(e as Error).message}`);
+      }
+    }
+
+    // ── Ensure app process is running (port ownership + lifecycle) ──
+    if (servingPath) {
+      try {
+        const result = ensureAppProcess(name!, port, servingPath, appsDir);
         port = result.port;
       } catch (e) {
         return c.json({ error: (e as Error).message }, 500);
@@ -428,6 +512,7 @@ handle @app-${name} {${authBlock}
       summary: '',
       createdAt: new Date().toISOString(),
       projectPath: projectPath || null,
+      deploymentPath: servingPath !== projectPath ? servingPath : null,
     };
 
     const metaFile = `${appsDir}/${name}.json`;
@@ -469,13 +554,12 @@ handle @app-${name} {${authBlock}
       const psjsonPath = `${projectPath}/ellulai.json`;
       try {
         if (fs.existsSync(psjsonPath)) {
-          execSync(
-            `jq --arg url "https://${appDomain}" --arg domain "${appDomain}" --argjson port ${port} ` +
-            `'. + {deployedUrl: $url, deployedDomain: $domain, deployedPort: $port}' ` +
-            `"${psjsonPath}" > "${psjsonPath}.tmp" && mv "${psjsonPath}.tmp" "${psjsonPath}"`,
-            { stdio: 'pipe', timeout: 5000 }
-          );
-          // File already owned by current user (service runs as $SVC_USER)
+          // SECURITY: Use Node.js JSON operations instead of shell jq to prevent injection
+          const existing = JSON.parse(fs.readFileSync(psjsonPath, 'utf8'));
+          existing.deployedUrl = `https://${appDomain}`;
+          existing.deployedDomain = appDomain;
+          existing.deployedPort = port;
+          fs.writeFileSync(psjsonPath, JSON.stringify(existing, null, 2));
         }
       } catch {}
     }

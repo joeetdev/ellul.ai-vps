@@ -100,7 +100,7 @@ if [ -n "$CUSTOM_DOMAIN" ]; then
 fi
 BODY="$BODY,\\"projectPath\\":\\"$PROJECT_PATH\\",\\"stack\\":\\"$STACK\\"}"
 
-RESULT=$(curl -sf -X POST http://localhost:3005/api/workflow/expose \\
+RESULT=$(curl -sf --max-time 45 -X POST http://localhost:3005/api/workflow/expose \\
   -H "Content-Type: application/json" \\
   -d "$BODY" 2>&1)
 

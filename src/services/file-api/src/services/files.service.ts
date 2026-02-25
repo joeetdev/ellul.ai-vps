@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { ROOT_DIR, MAX_FILE_SIZE } from '../config';
+import { ROOT_DIR, HOME, MAX_FILE_SIZE } from '../config';
 import { safeReadFile, safeStat, safeReadDir, shouldIgnore } from '../utils';
 
 /**
@@ -20,16 +20,44 @@ export interface FileTreeNode {
   error?: boolean;
 }
 
+const ACTIVE_PROJECT_FILE = `${HOME}/.ellulai/active-project`;
+
+/**
+ * Set the active project (persists across refreshes).
+ */
+export function setActiveProject(projectName: string): boolean {
+  const projectPath = path.join(ROOT_DIR, projectName);
+  if (!fs.existsSync(projectPath)) return false;
+  fs.mkdirSync(path.dirname(ACTIVE_PROJECT_FILE), { recursive: true });
+  fs.writeFileSync(ACTIVE_PROJECT_FILE, projectName);
+  return true;
+}
+
 /**
  * Get active project directory.
+ * Reads from persistent file first, falls back to first non-welcome directory.
  */
 export function getActiveProject(): string {
+  // 1. Try persistent file
+  try {
+    if (fs.existsSync(ACTIVE_PROJECT_FILE)) {
+      const saved = fs.readFileSync(ACTIVE_PROJECT_FILE, 'utf8').trim();
+      if (saved && fs.existsSync(path.join(ROOT_DIR, saved))) return saved;
+    }
+  } catch {}
+
+  // 2. Fallback: first non-welcome directory
   try {
     const projects = fs.readdirSync(ROOT_DIR).filter((f) => {
       const stat = fs.statSync(path.join(ROOT_DIR, f));
       return stat.isDirectory() && f !== 'welcome';
     });
-    return projects.length > 0 ? (projects[0] as string) : 'welcome';
+    const fallback = projects.length > 0 ? (projects[0] as string) : 'welcome';
+    // Persist the fallback so next read is consistent
+    if (fallback !== 'welcome') {
+      try { setActiveProject(fallback); } catch {}
+    }
+    return fallback;
   } catch {
     return 'welcome';
   }

@@ -187,10 +187,7 @@ STEP 4: Tell the user the result. If the CLI created or modified a web app, veri
 The CLI uses free models from OpenCode Zen. You can pick the model with the \`-m\` flag:
 \`opencode run -m PROVIDER/MODEL 'REQUEST'\`
 
-Run \`opencode models\` to see what's available. Pick the best quality model — prefer these in order:
-1. opencode/kimi-k2.5-free (best)
-2. opencode/minimax-m2.5-free
-3. Any other free model available
+Run \`opencode models\` to see what's available. Pick the first model listed — it's auto-selected as the best available.
 
 If the user asks to change models, use \`opencode models\` to show them what's available and switch with \`-m\`.
 

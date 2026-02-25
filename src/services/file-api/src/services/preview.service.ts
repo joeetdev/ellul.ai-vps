@@ -38,6 +38,32 @@ const NVM_BIN = `${HOME}/.node/bin`;
 const EXEC_ENV = { ...process.env, PATH: `${NVM_BIN}:${process.env.PATH || ''}` };
 
 /**
+ * Check if npm install is complete — node_modules exists AND expected framework binaries are present.
+ * A partial install (directory exists but key packages missing) returns false.
+ */
+function isInstallComplete(appPath: string): boolean {
+  const nm = path.join(appPath, 'node_modules');
+  if (!fs.existsSync(nm)) return false;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(appPath, 'package.json'), 'utf8'));
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const binaryChecks: [string, string][] = [
+      ['vite', '.bin/vite'],
+      ['next', '.bin/next'],
+      ['react-scripts', '.bin/react-scripts'],
+      ['astro', '.bin/astro'],
+      ['@remix-run/dev', '.bin/remix'],
+    ];
+    for (const [dep, bin] of binaryChecks) {
+      if (allDeps[dep] && !fs.existsSync(path.join(nm, bin))) return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Run PM2 command safely.
  */
 function runPm2(cmd: string): string {
@@ -199,13 +225,27 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   runPm2('fuser -k 3000/tcp 2>/dev/null || true');
   runPm2('sleep 0.5'); // Allow port to fully release
 
+  // Clean up stale preview metadata (port 3000 apps) so the dashboard
+  // doesn't show the previous preview as still "deployed" after switching.
+  try {
+    const appsDir = `${HOME}/.ellulai/apps`;
+    if (fs.existsSync(appsDir)) {
+      for (const f of fs.readdirSync(appsDir).filter(f => f.endsWith('.json'))) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(`${appsDir}/${f}`, 'utf8'));
+          if (meta.port === 3000 && meta.isPreview !== false) fs.unlinkSync(`${appsDir}/${f}`);
+        } catch {}
+      }
+    }
+  } catch {}
+
   // Check if superseded after cleanup
   if (requestId !== undefined && !isLatestRequest(requestId)) {
     return { success: false, error: 'Superseded by newer request' };
   }
 
-  // Auto-install dependencies if node_modules is missing
-  if (fs.existsSync(packageJsonPath) && !fs.existsSync(path.join(appPath, 'node_modules'))) {
+  // Auto-install dependencies if node_modules is missing or incomplete
+  if (fs.existsSync(packageJsonPath) && !isInstallComplete(appPath)) {
     const lockFile = fs.existsSync(path.join(appPath, 'pnpm-lock.yaml'))
       ? 'pnpm' : fs.existsSync(path.join(appPath, 'yarn.lock'))
       ? 'yarn' : 'npm';
@@ -243,7 +283,36 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
     }
   }
 
-  // Try package.json scripts
+  // Framework-aware direct startup — bypasses package.json scripts to avoid
+  // broken CLI flags written by the AI agent (e.g. `vite -H` instead of `vite --host`).
+  if (!started && fs.existsSync(packageJsonPath)) {
+    const FRAMEWORK_COMMANDS: Record<string, { bin: string; cmd: string }> = {
+      vite:   { bin: '.bin/vite',           cmd: 'npx vite --host 0.0.0.0 --port 3000' },
+      nextjs: { bin: '.bin/next',           cmd: 'npx next dev -H 0.0.0.0 -p 3000' },
+      cra:    { bin: '.bin/react-scripts',  cmd: 'npx react-scripts start' },
+      astro:  { bin: '.bin/astro',          cmd: 'npx astro dev --host 0.0.0.0 --port 3000' },
+      remix:  { bin: '.bin/remix',          cmd: 'npx remix vite:dev --host 0.0.0.0 --port 3000' },
+    };
+
+    try {
+      const { detectApps } = require('./apps.service');
+      const apps = detectApps();
+      const app = apps.find((a: { directory: string }) => a.directory === appDirectory);
+      const fw = app?.framework as string | undefined;
+      const fwCmd = fw ? FRAMEWORK_COMMANDS[fw] : undefined;
+
+      if (fwCmd && fs.existsSync(path.join(appPath, 'node_modules', fwCmd.bin))) {
+        const result = runPm2(
+          `cd "${appPath}" && pm2 start bash --name preview --cwd "${appPath}" -- -c "${frameworkEnv} && ${fwCmd.cmd}"`
+        );
+        if (result.includes('launched') || result.includes('online')) {
+          started = true;
+        }
+      }
+    } catch {}
+  }
+
+  // Fallback: try package.json scripts for unknown frameworks
   if (!started && fs.existsSync(packageJsonPath)) {
     try {
       const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
@@ -288,26 +357,6 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
 
   const ready = waitForReady(8000);
 
-  // Register as deployment so it shows in the dashboard's "Deployed" section
-  if (ready) {
-    try {
-      const { detectApps } = require('./apps.service');
-      const apps = detectApps();
-      const app = apps.find((a: { directory: string }) => a.directory === appDirectory);
-      const name = appDirectory.toLowerCase().replace(/[^a-z0-9-]/g, '');
-      fetch('http://localhost:3005/api/workflow/expose', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          port: 3000,
-          projectPath: appPath,
-          stack: app?.framework || 'Unknown',
-        }),
-      }).catch(() => {});
-    } catch {}
-  }
-
   return { success: true, ready };
 }
 
@@ -322,7 +371,7 @@ export function stopPreview(): void {
       for (const f of fs.readdirSync(appsDir).filter(f => f.endsWith('.json'))) {
         try {
           const meta = JSON.parse(fs.readFileSync(`${appsDir}/${f}`, 'utf8'));
-          if (meta.port === 3000) fs.unlinkSync(`${appsDir}/${f}`);
+          if (meta.port === 3000 && meta.isPreview !== false) fs.unlinkSync(`${appsDir}/${f}`);
         } catch {}
       }
     }

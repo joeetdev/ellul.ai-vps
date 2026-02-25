@@ -872,6 +872,48 @@ export async function sendToOpencodeStreaming(
                 }
               }
 
+              // Auto-answer question tool calls — the bridge can't relay interactive
+              // questions to the frontend, so pick the first option automatically.
+              if (parsed.type === 'question.asked' && parsed.properties?.sessionID === sessionId) {
+                const qProps = parsed.properties as { id: string; questions: Array<{ question: string; options: Array<{ label: string }> }> };
+                const questionId = qProps.id;
+                const answers = (qProps.questions || []).map(
+                  (q: { options: Array<{ label: string }> }) => [q.options?.[0]?.label || 'yes']
+                );
+                console.log(`[Bridge] Auto-answering question ${questionId}: ${JSON.stringify(answers)}`);
+                const replyData = JSON.stringify({ answers });
+                const replyReq = http.request({
+                  hostname: '127.0.0.1',
+                  port: OPENCODE_API_PORT,
+                  path: `/question/${questionId}/reply`,
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(replyData) },
+                }, (res) => { res.resume(); console.log(`[Bridge] Question reply status: ${res.statusCode}`); });
+                replyReq.on('error', (err) => console.error(`[Bridge] Question reply error: ${err.message}`));
+                replyReq.write(replyData);
+                replyReq.end();
+              }
+
+              // Auto-grant permission requests — OpenCode asks for permission before
+              // file writes, shell commands, etc. Always allow since the agent operates
+              // in a sandboxed VPS environment.
+              if (parsed.type === 'permission.asked' && parsed.properties?.sessionID === sessionId) {
+                const permId = (parsed.properties as { id: string }).id;
+                const permName = (parsed.properties as { permission?: string }).permission || 'unknown';
+                console.log(`[Bridge] Auto-granting permission ${permId}: ${permName}`);
+                const replyData = JSON.stringify({ reply: 'always' });
+                const replyReq = http.request({
+                  hostname: '127.0.0.1',
+                  port: OPENCODE_API_PORT,
+                  path: `/permission/${permId}/reply`,
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(replyData) },
+                }, (res) => { res.resume(); console.log(`[Bridge] Permission reply status: ${res.statusCode}`); });
+                replyReq.on('error', (err) => console.error(`[Bridge] Permission reply error: ${err.message}`));
+                replyReq.write(replyData);
+                replyReq.end();
+              }
+
               if (parsed.type === 'session.error' && parsed.properties?.sessionID === sessionId) {
                 const errMsg = parsed.properties?.error || 'Session error';
                 console.error('[Bridge] Session error:', errMsg);

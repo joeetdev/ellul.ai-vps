@@ -284,7 +284,7 @@ interface FileEntry {
   owner?: string; // 'dev' for user-owned files, default is root
 }
 
-function buildManifest(config: VpsConfig): FileEntry[] {
+async function buildManifest(config: VpsConfig): Promise<FileEntry[]> {
   const { serverId, domain, apiUrl, aiProxyToken, billingTier } = config;
   const svcUser = billingTier === "free" ? "coder" : "dev";
   const svcHome = `/home/${svcUser}`;
@@ -364,7 +364,7 @@ function buildManifest(config: VpsConfig): FileEntry[] {
 
     // ── User config files ─────────────────────────────────────────
     { path: `${svcHome}/.bashrc`, content: getBashrcConfig(aiProxyToken), mode: 0o644, owner: svcUser },
-    { path: `${svcHome}/.config/opencode/config.json`, content: getOpencodeConfigJson(), mode: 0o644, owner: svcUser },
+    { path: `${svcHome}/.config/opencode/config.json`, content: await getOpencodeConfigJson(), mode: 0o644, owner: svcUser },
     { path: `${svcHome}/.ellulai/context/README.md`, content: getContextReadme(), mode: 0o644, owner: svcUser },
 
     // ── Welcome/docs files ────────────────────────────────────────
@@ -529,7 +529,7 @@ async function main(): Promise<void> {
   console.log(`[rebuild-all] Server: ${config.serverId} Domain: ${config.domain}`);
 
   // 2. Generate file manifest
-  const manifest = buildManifest(config);
+  const manifest = await buildManifest(config);
   console.log(`[rebuild-all] Writing ${manifest.length} files...`);
 
   // 3. Write all files

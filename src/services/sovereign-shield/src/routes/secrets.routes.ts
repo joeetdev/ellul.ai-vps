@@ -62,15 +62,10 @@ function checkAuth(c: Context): AuthResult {
     return { authenticated: false, error: 'Passkey authentication required', tier: currentTier };
   }
 
-  // Standard: validate JWT
-  const authHeader = c.req.header('authorization');
-  const cookies = parseCookies(c.req.header('cookie'));
-  const token = authHeader?.replace('Bearer ', '') || cookies.term_session || cookies.terminal_token;
-  if (token) {
-    const decoded = verifyJwtToken(token);
-    if (decoded) {
-      return { authenticated: true, method: 'jwt', tier: currentTier };
-    }
+  // Standard: validate JWT — pass the HonoRequest, not the raw token string
+  const decoded = verifyJwtToken(c.req);
+  if (decoded) {
+    return { authenticated: true, method: 'jwt', tier: currentTier };
   }
 
   return { authenticated: false, error: 'Authentication required', tier: currentTier };

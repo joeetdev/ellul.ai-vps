@@ -432,6 +432,19 @@ export function getMessageCount(threadId: string): number {
 }
 
 /**
+ * Delete all threads and messages for a specific project.
+ * Cleans up state directories and active thread settings.
+ */
+export function deleteThreadsByProject(project: string): number {
+  const threadIds = db.prepare('SELECT id FROM threads WHERE project = ?')
+    .all(project) as { id: string }[];
+  const result = db.prepare('DELETE FROM threads WHERE project = ?').run(project);
+  for (const { id } of threadIds) cleanupThreadStateDir(id);
+  db.prepare('DELETE FROM settings WHERE key = ?').run(`active_thread_id:${project}`);
+  return result.changes;
+}
+
+/**
  * Delete all threads and messages (for testing/cleanup)
  */
 export function deleteAllThreads(): void {

@@ -141,17 +141,54 @@ export function getOpenclawConfigJson(apiUrl: string, aiProxyToken: string): str
 }
 
 /**
+ * Heuristic quality score for a model ID. Higher = better.
+ * Version numbers aren't comparable across families (glm-5 ≠ better than minimax-m2.5),
+ * so we just check presence of a version as a quality signal. Among equal scores,
+ * the Zen API order is preserved (stable sort) as the tiebreaker.
+ */
+function modelQualityScore(id: string): number {
+  let score = /\d/.test(id) ? 1 : 0; // versioned models above unversioned
+  if (/large/i.test(id)) score += 0.3;
+  if (/mini|nano|small/i.test(id)) score -= 1;
+  return score;
+}
+
+/**
+ * Discover the best free model from OpenCode's Zen endpoint.
+ * All Zen models are treated as free — no hardcoded model names.
+ * Picks the highest-quality model by version number heuristic.
+ * Returns the opencode/ prefixed model ID, or null if discovery fails.
+ */
+async function discoverBestZenModel(): Promise<string | null> {
+  try {
+    const res = await fetch("https://opencode.ai/zen/v1/models", {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { data?: { id: string }[] };
+    const models = data.data || [];
+    if (models.length === 0) return null;
+    // Sort by quality heuristic — highest version number wins
+    models.sort((a, b) => modelQualityScore(b.id) - modelQualityScore(a.id));
+    return `opencode/${models[0]!.id}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Generate the OpenCode config JSON for a server.
  *
- * Uses OpenCode's native Zen integration (built-in `opencode` provider).
- * No custom provider config needed — the agent bridge's zen-models service
- * auto-discovers the best free model and switches to it at startup.
+ * Fetches the best free model from OpenCode's Zen endpoint at provisioning time.
+ * The agent bridge's zen-models service will continue auto-discovering and
+ * switching to the best available model at runtime.
  */
-export function getOpencodeConfigJson(): string {
+export async function getOpencodeConfigJson(): Promise<string> {
+  const model = await discoverBestZenModel();
   return JSON.stringify(
     {
       $schema: "https://opencode.ai/config.json",
-      model: "opencode/kimi-k2.5-free",
+      model,
     },
     null,
     2

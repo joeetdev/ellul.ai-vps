@@ -114,6 +114,7 @@ import {
   getThread,
   getThreadWithMessages,
   deleteThread,
+  deleteThreadsByProject,
   renameThread,
   updateThreadSession,
   updateThreadModel,
@@ -201,6 +202,30 @@ const httpServer = http.createServer(async (req, res) => {
         contextLoaded: !!refreshGlobalContext(),
       })
     );
+    return;
+  }
+
+  // POST /api/cleanup-project - Delete all threads for a project (called by file-api on app delete)
+  if (req.method === 'POST' && url.pathname === '/api/cleanup-project') {
+    let body = '';
+    req.on('data', (chunk: Buffer) => (body += chunk.toString()));
+    req.on('end', () => {
+      try {
+        const { project } = JSON.parse(body) as { project?: string };
+        if (!project) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'Missing project' }));
+          return;
+        }
+        const deleted = deleteThreadsByProject(project);
+        console.log(`[Bridge] Cleaned up ${deleted} threads for project "${project}"`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, deleted }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: (err as Error).message }));
+      }
+    });
     return;
   }
 

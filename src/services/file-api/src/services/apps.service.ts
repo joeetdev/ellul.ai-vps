@@ -138,8 +138,9 @@ export function detectApps(): AppInfo[] {
       { type?: string; previewable?: boolean; summary?: string } | undefined;
 
     // Priority: app-level ellulai.json > package.json ellulai field > framework inference
+    // Ignore "unknown" as explicit type — it means auto-detect
     const explicitType = appConfig.type || pkgEllulai?.type;
-    let type: AppInfo['type'] = explicitType
+    let type: AppInfo['type'] = (explicitType && explicitType !== 'unknown')
       ? explicitType as AppInfo['type']
       : getTypeFromFramework(framework);
 
@@ -163,9 +164,13 @@ export function detectApps(): AppInfo[] {
       }
     }
 
-    // Explicit previewable from config, otherwise true for frontend apps
+    // Detect previewable: auto-detect from type/files, respect explicit true always
+    // Stale false from ellulai.json shouldn't block if app is clearly previewable
     const explicitPreviewable = appConfig.previewable ?? pkgEllulai?.previewable;
-    const previewable = explicitPreviewable !== undefined ? explicitPreviewable : type === 'frontend';
+    const detectedPreviewable = type === 'frontend'
+      || fs.existsSync(path.join(projectPath, 'index.html'))
+      || (hasPackageJson && !!packageJson.scripts && !!(packageJson.scripts.dev || packageJson.scripts.start));
+    const previewable = explicitPreviewable === true || detectedPreviewable;
 
     if (appConfig.port) port = appConfig.port;
 
