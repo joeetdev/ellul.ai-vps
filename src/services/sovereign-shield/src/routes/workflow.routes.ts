@@ -212,18 +212,34 @@ function ensureAppProcess(
   // Detect start method
   let hasStartScript = false;
   let hasPackageJson = false;
+  let startScriptValue = '';
   try {
     const pkg = JSON.parse(fs.readFileSync(`${projectPath}/package.json`, 'utf8'));
     hasPackageJson = true;
-    hasStartScript = !!(pkg.scripts && pkg.scripts.start);
+    if (pkg.scripts && pkg.scripts.start) {
+      hasStartScript = true;
+      startScriptValue = pkg.scripts.start;
+    }
   } catch {}
 
+  // Determine if this is a static HTML site that needs a file server.
+  // If the start script just runs a plain node file (no framework server)
+  // and index.html exists, use npx serve instead — the node script likely
+  // won't bind to the right port or serve static files correctly.
+  const hasIndexHtml = fs.existsSync(`${projectPath}/index.html`);
+  const isStaticSite = hasIndexHtml && (
+    !hasStartScript ||
+    /^node\s+\S+\.js$/.test(startScriptValue.trim())
+  );
+
   let startCmd: string;
-  if (hasStartScript) {
+  if (isStaticSite) {
+    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
+  } else if (hasStartScript) {
     startCmd = `PORT=${port} pm2 start npm --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)} -- start`;
   } else {
     // Set PORT env var so ensureAppProcess can detect the port on subsequent calls
-    startCmd = `PORT=${port} pm2 start "npx serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
+    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
   }
 
   execSync(`bash -lc '${startCmd}'`, {

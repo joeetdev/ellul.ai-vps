@@ -119,8 +119,9 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-STEP 5 — Report preview URL:
-  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+STEP 5 — Report to user:
+  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
+  Give the user this tokenized URL — it works for 60 seconds without authentication.
   Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
 
 ALL 5 steps must pass. Do NOT tell the user "it's live" until they do.
@@ -262,8 +263,9 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-STEP 5 — Report preview URL:
-  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+STEP 5 — Report to user:
+  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
+  Give the user this tokenized URL — it works for 60 seconds without authentication.
   Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
 
 ALL 5 steps must pass. Do NOT tell the user "it's live" until they do.
@@ -496,8 +498,9 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-STEP 5 — Report preview URL:
-  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+STEP 5 — Report to user:
+  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
+  Give the user this tokenized URL — it works for 60 seconds without authentication.
   Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
 
 ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
@@ -591,8 +594,9 @@ STEP 3 — HTTP check (with retry):
 STEP 4 — Content check:
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
-STEP 5 — Report preview URL:
-  Tell the user their changes are live at **https://$DEV_DOMAIN** — ALWAYS use this URL for code changes, NEVER say localhost:3000.
+STEP 5 — Report to user:
+  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
+  Give the user this tokenized URL — it works for 60 seconds without authentication.
   Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
 
 ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.

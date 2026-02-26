@@ -902,6 +902,68 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // GET /api/deployment/:name/tree - Get file tree for a deployment snapshot
+    if (req.method === 'GET' && pathname.match(/^\/api\/deployment\/[^/]+\/tree$/)) {
+      const parts = pathname.split('/');
+      const deployName = decodeURIComponent(parts[3] || '');
+
+      if (!deployName || !/^[a-z0-9][a-z0-9-]*$/.test(deployName)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid deployment name' }));
+        return;
+      }
+
+      const deployPath = path.join(HOME, '.ellulai', 'deployments', deployName);
+      if (!fs.existsSync(deployPath)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Deployment snapshot not found', name: deployName }));
+        return;
+      }
+
+      const tree = getTree(deployPath);
+      res.writeHead(200);
+      res.end(JSON.stringify({ root: deployName, tree }));
+      return;
+    }
+
+    // GET /api/deployment/:name/file?path=... - Get file content from a deployment snapshot
+    if (req.method === 'GET' && pathname.match(/^\/api\/deployment\/[^/]+\/file$/)) {
+      const parts = pathname.split('/');
+      const deployName = decodeURIComponent(parts[3] || '');
+
+      if (!deployName || !/^[a-z0-9][a-z0-9-]*$/.test(deployName)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid deployment name' }));
+        return;
+      }
+
+      const filePath = parsedUrl.query.path as string;
+      if (!filePath) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Missing path parameter' }));
+        return;
+      }
+
+      const deployPath = path.join(HOME, '.ellulai', 'deployments', deployName);
+      if (!fs.existsSync(deployPath)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Deployment snapshot not found', name: deployName }));
+        return;
+      }
+
+      const result = getFileContent(filePath, deployPath);
+      if (result.error) {
+        res.writeHead(result.statusCode);
+        res.end(JSON.stringify({ error: result.error }));
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/plain');
+      res.writeHead(200);
+      res.end(result.content);
+      return;
+    }
+
     // GET /api/app/:directory - Get single app details + auto-activate preview
     // This is the main backend-driven endpoint for app pages
     if (req.method === 'GET' && pathname.startsWith('/api/app/') && !pathname.includes('/tree') && !pathname.includes('/context') && !pathname.includes('/status')) {

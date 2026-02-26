@@ -711,6 +711,8 @@ export async function sendToOpencodeStreaming(
     let sseConnected = false;
     let eventCount = 0;
     let reasoningCount = 0;
+    let retryCount = 0;
+    const MAX_RETRIES_BEFORE_ERROR = 5; // Stop after 5 rate limit retries instead of spinning for minutes
 
     function finish() {
       if (settled) return;
@@ -885,10 +887,33 @@ export async function sendToOpencodeStreaming(
                 return;
               }
               if (parsed.type === 'session.status' && parsed.properties?.sessionID === sessionId) {
-                if (parsed.properties.status?.type === 'idle') {
+                const status = parsed.properties.status as { type?: string; message?: string; attempt?: number } | undefined;
+                if (status?.type === 'idle') {
                   console.log('[Bridge] Session status idle - response complete');
                   finish();
                   return;
+                }
+                if (status?.type === 'retry' && status.message) {
+                  retryCount++;
+                  const isRateLimit = /rate.?limit|429|too many requests/i.test(status.message);
+                  console.warn(`[Bridge] Session retry #${retryCount}: attempt=${status.attempt}, msg=${status.message.substring(0, 120)}`);
+
+                  if (isRateLimit && retryCount >= MAX_RETRIES_BEFORE_ERROR) {
+                    // Stop waiting — surface the error immediately
+                    console.error(`[Bridge] Rate limit retries exhausted (${retryCount}), aborting`);
+                    if (!settled) {
+                      settled = true;
+                      if (eventReq) { try { eventReq.destroy(); } catch {} }
+                      reject(new Error('Rate limit reached for this model. Try switching to a different model.'));
+                    }
+                    return;
+                  }
+
+                  // Surface retry status to the user as a thinking step
+                  const retryMsg = isRateLimit
+                    ? `Rate limit hit (attempt ${status.attempt || '?'}). Retrying...`
+                    : `Retrying (attempt ${status.attempt || '?'})...`;
+                  sendThinkingStep(ws, retryMsg, threadId);
                 }
               }
 

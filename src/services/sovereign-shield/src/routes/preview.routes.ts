@@ -202,6 +202,38 @@ export function registerPreviewRoutes(app: Hono, hostname: string): void {
     const result = validatePreviewCredentials(body);
     return c.json(result);
   });
+
+  /**
+   * GET /api/preview-url
+   *
+   * Localhost-only endpoint for the AI agent to get a tokenized preview URL.
+   * Returns a one-time URL with an embedded preview token (60s TTL).
+   * No auth required — only accessible from localhost (127.0.0.1).
+   */
+  app.get('/api/preview-url', (c) => {
+    // Localhost guard: external requests always arrive via Caddy/CF with proxy headers.
+    // Direct localhost curl from the AI agent won't have these headers.
+    const hasProxyHeaders = !!(c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || c.req.header('x-real-ip'));
+    if (hasProxyHeaders) {
+      return c.json({ error: 'Localhost only' }, 403);
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const now = Date.now();
+    const expiresAt = now + PREVIEW_TOKEN_TTL_MS;
+
+    db.prepare(`
+      INSERT INTO preview_tokens (token, session_id, created_at, expires_at, used)
+      VALUES (?, ?, ?, ?, 0)
+    `).run(token, 'agent:local', now, expiresAt);
+
+    // Build dev preview URL
+    const shortId = (hostname.match(/^([a-f0-9]{8})-/) || [])[1] || hostname.split('.')[0];
+    const devDomain = `${shortId}-dev.ellul.app`;
+    const url = `https://${devDomain}?_preview_token=${token}`;
+
+    return c.json({ url, expiresIn: 60 });
+  });
 }
 
 /**

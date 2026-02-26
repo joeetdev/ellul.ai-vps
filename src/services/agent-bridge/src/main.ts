@@ -700,10 +700,20 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               && ['claude', 'codex', 'gemini'].includes(commandSession)) {
               startCliAuthInChat(commandSession, ws, commandThreadId);
             } else {
-              // Surface install-state errors directly, generic message for others
-              const userMsg = (errMsg.includes('installing') || errMsg.includes('not installed'))
-                ? errMsg
-                : 'Something went wrong. Please try again.';
+              // Surface meaningful errors to the user instead of swallowing them
+              let userMsg: string;
+              if (errMsg.includes('installing') || errMsg.includes('not installed')) {
+                userMsg = errMsg;
+              } else if (/rate.?limit|429|too many requests/i.test(errMsg)) {
+                userMsg = 'Rate limit reached for the current model. Try switching to a different model or wait a moment.';
+              } else if (/timeout|timed out/i.test(errMsg)) {
+                userMsg = 'Request timed out. Please try again.';
+              } else if (/opencode:/i.test(errMsg)) {
+                // Pass through OpenCode session errors (they contain useful info)
+                userMsg = errMsg.replace(/^OpenCode:\s*/i, '');
+              } else {
+                userMsg = 'Something went wrong. Please try again.';
+              }
               ws.send(JSON.stringify({ type: 'error', message: userMsg, threadId: commandThreadId, timestamp: Date.now() }));
             }
             ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
