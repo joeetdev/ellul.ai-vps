@@ -80,6 +80,7 @@ export interface Message {
   thinking: string[] | null;
   metadata: Record<string, unknown> | null;
   createdAt: number;
+  seq: number;
 }
 
 // Internal row types (snake_case from SQLite)
@@ -104,6 +105,7 @@ interface MessageRow {
   thinking: string | null;
   metadata: string | null;
   created_at: number;
+  seq: number;
 }
 
 // Helper to generate IDs
@@ -137,6 +139,7 @@ function rowToMessage(row: MessageRow): Message {
     thinking: row.thinking ? JSON.parse(row.thinking) : null,
     metadata: row.metadata ? JSON.parse(row.metadata) : null,
     createdAt: row.created_at,
+    seq: row.seq,
   };
 }
 
@@ -359,14 +362,15 @@ export function touchThread(id: string): void {
  */
 export function addMessage(
   threadId: string,
-  message: Omit<Message, 'id' | 'threadId' | 'createdAt'>
+  message: Omit<Message, 'id' | 'threadId' | 'createdAt' | 'seq'>
 ): Message {
   const now = Date.now();
   const id = generateId();
 
   db.prepare(`
-    INSERT INTO messages (id, thread_id, type, content, session, model, thinking, metadata, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO messages (id, thread_id, type, content, session, model, thinking, metadata, created_at, seq)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE thread_id = ?))
   `).run(
     id,
     threadId,
@@ -376,8 +380,12 @@ export function addMessage(
     message.model || null,
     message.thinking ? JSON.stringify(message.thinking) : null,
     message.metadata ? JSON.stringify(message.metadata) : null,
-    now
+    now,
+    threadId
   );
+
+  // Read back the assigned seq
+  const row = db.prepare('SELECT seq FROM messages WHERE id = ?').get(id) as { seq: number };
 
   // Touch thread's updated_at
   touchThread(threadId);
@@ -392,6 +400,7 @@ export function addMessage(
     thinking: message.thinking || null,
     metadata: message.metadata || null,
     createdAt: now,
+    seq: row.seq,
   };
 }
 
@@ -407,6 +416,25 @@ export function getMessages(threadId: string, limit: number = 200): Message[] {
   `).all(threadId, limit) as MessageRow[];
 
   return rows.map(rowToMessage);
+}
+
+/**
+ * Get messages since a given sequence number (delta sync).
+ * Returns only messages with seq > afterSeq, ordered by seq ASC.
+ */
+export function getMessagesSince(threadId: string, afterSeq: number, limit: number = 200): Message[] {
+  const rows = db.prepare(`
+    SELECT * FROM messages WHERE thread_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?
+  `).all(threadId, afterSeq, limit) as MessageRow[];
+  return rows.map(rowToMessage);
+}
+
+/**
+ * Get the highest sequence number for a thread.
+ */
+export function getLastSeq(threadId: string): number {
+  const r = db.prepare('SELECT COALESCE(MAX(seq), 0) as seq FROM messages WHERE thread_id = ?').get(threadId) as { seq: number };
+  return r.seq;
 }
 
 /**

@@ -540,8 +540,8 @@ export function registerRecoveryRoutes(app: Hono, hostname: string): void {
         details: { aaguid: aaguidStr, name: name || 'Recovered Passkey' }
       });
 
-      // Notify platform
-      await notifyPlatformPasskeyRegistered(credentialIdB64, name || 'Recovered Passkey');
+      // Notify platform (fire-and-forget)
+      notifyPlatformPasskeyRegistered(credentialIdB64, name || 'Recovered Passkey').catch(() => {});
 
       return c.json({
         verified: true,

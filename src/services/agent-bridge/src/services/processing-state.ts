@@ -17,6 +17,7 @@ interface WsClient {
 interface ProcessingEntry {
   isProcessing: boolean;
   thinkingSteps: string[];
+  streamedText: string;
   startedAt: number;
   session: string;
   subscribers: Set<WsClient>;
@@ -36,6 +37,7 @@ export function startProcessing(threadId: string, session: string): void {
   const entry: ProcessingEntry = {
     isProcessing: true,
     thinkingSteps: [],
+    streamedText: '',
     startedAt: Date.now(),
     session,
     subscribers: existing?.subscribers ?? new Set(),
@@ -73,16 +75,49 @@ export function addThinkingStep(threadId: string, step: string): void {
 }
 
 /**
- * End processing for a thread. Notifies subscribers that processing is done.
+ * Broadcast an arbitrary JSON message to all subscribers of a thread.
+ * Used for final output/ack delivery to all connected clients (not just the original sender).
  */
-export function endProcessing(threadId: string): void {
+export function broadcastToSubscribers(threadId: string, msg: Record<string, unknown>): void {
   const entry = processingStore.get(threadId);
   if (!entry) return;
 
-  // Notify subscribers that processing ended
+  const message = JSON.stringify(msg);
+  for (const ws of entry.subscribers) {
+    try {
+      if (ws.readyState === 1) { // OPEN
+        ws.send(message);
+      }
+    } catch {
+      // Connection might be closing
+    }
+  }
+}
+
+/**
+ * Update accumulated streamed text and broadcast output to all subscribers.
+ * Ensures reconnecting clients see in-progress streamed content.
+ */
+export function updateStreamedText(threadId: string, text: string): void {
+  const entry = processingStore.get(threadId);
+  if (!entry || !entry.isProcessing) return;
+
+  entry.streamedText = text;
+}
+
+/**
+ * End processing for a thread. Notifies subscribers that processing is done.
+ * Includes lastSeq so clients can detect missed messages.
+ */
+export function endProcessing(threadId: string, lastSeq?: number): void {
+  const entry = processingStore.get(threadId);
+  if (!entry) return;
+
+  // Notify subscribers that processing ended (with lastSeq for gap detection)
   const message = JSON.stringify({
     type: 'processing_done',
     threadId,
+    lastSeq: lastSeq ?? null,
     timestamp: Date.now(),
   });
 
@@ -108,6 +143,7 @@ export function endProcessing(threadId: string): void {
 export function getProcessingState(threadId: string): {
   isProcessing: boolean;
   thinkingSteps: string[];
+  streamedText: string;
   session: string;
   startedAt: number;
 } | null {
@@ -117,6 +153,7 @@ export function getProcessingState(threadId: string): {
   return {
     isProcessing: entry.isProcessing,
     thinkingSteps: [...entry.thinkingSteps],
+    streamedText: entry.streamedText,
     session: entry.session,
     startedAt: entry.startedAt,
   };
@@ -132,6 +169,7 @@ export function subscribe(threadId: string, ws: WsClient): void {
     entry = {
       isProcessing: false,
       thinkingSteps: [],
+      streamedText: '',
       startedAt: 0,
       session: '',
       subscribers: new Set(),

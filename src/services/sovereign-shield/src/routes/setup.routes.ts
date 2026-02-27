@@ -414,8 +414,8 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
 
       logAuditEvent({ type: 'credential_registered', ip, fingerprint: fingerprintData.hash, credentialId: credId });
 
-      // Notify platform about passkey registration
-      await notifyPlatformPasskeyRegistered(credentialIdB64, body.name || 'Passkey');
+      // Notify platform about passkey registration (fire-and-forget)
+      notifyPlatformPasskeyRegistered(credentialIdB64, body.name || 'Passkey').catch(() => {});
 
       // Create session with IP + fingerprint binding
       const session = createSession(credId, ip, fingerprintData);

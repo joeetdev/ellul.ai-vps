@@ -545,6 +545,39 @@ export function registerTokenRoutes(app: Hono): void {
   });
 
   /**
+   * Establish a code session cookie on the code subdomain.
+   * Called by the dashboard's CodeTokenContext to set __Host-code_session cookie.
+   * After this, all file-api requests use the cookie (multi-use, 30min TTL)
+   * instead of single-use X-Code-Token headers — dramatically reducing request count.
+   *
+   * The code session ID comes from the bridge (get_code_session) which already
+   * validated passkey + PoP. This endpoint just sets the cookie.
+   */
+  app.get('/_auth/code/establish', async (c) => {
+    const codeSessionId = c.req.query('_code_session');
+    if (!codeSessionId) {
+      return c.json({ error: 'Missing _code_session parameter' }, 400);
+    }
+
+    const sessionData = codeSessions.get(codeSessionId);
+    if (!sessionData) {
+      return c.json({ error: 'Invalid or expired code session' }, 401);
+    }
+
+    if (sessionData.expiresAt < Date.now()) {
+      codeSessions.delete(codeSessionId);
+      return c.json({ error: 'Code session expired' }, 401);
+    }
+
+    // Set cookie on the code subdomain
+    const maxAge = Math.floor((sessionData.expiresAt - Date.now()) / 1000);
+    c.header('Set-Cookie', `__Host-code_session=${codeSessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`);
+
+    console.log('[shield] Code session cookie established for:', sessionData.credentialId?.substring(0, 8));
+    return c.json({ established: true, expiresAt: sessionData.expiresAt });
+  });
+
+  /**
    * Authorize agent bridge access - returns short-lived token
    * Tier-aware: standard (JWT), web_locked (passkey+PoP)
    */

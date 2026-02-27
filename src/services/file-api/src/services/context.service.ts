@@ -12,6 +12,9 @@ import { HOME, ROOT_DIR } from '../config';
 const CONTEXT_DIR = `${HOME}/.ellulai/context`;
 const GLOBAL_CLAUDE = `${HOME}/CLAUDE.md`;
 
+/** Files to exclude from project context scanning (handled separately or irrelevant) */
+const PROJECT_MD_EXCLUDE = new Set(['README.md', 'LICENSE.md', 'CHANGELOG.md', 'CONTRIBUTING.md']);
+
 /**
  * Context file info.
  */
@@ -50,16 +53,25 @@ export function listContextFiles(): ContextFileInfo[] {
     }
   }
 
-  // Project CLAUDE.md files
+  // Project context files — all root-level .md files except excluded ones
   if (fs.existsSync(ROOT_DIR)) {
     for (const proj of fs.readdirSync(ROOT_DIR)) {
-      const claudeFile = path.join(ROOT_DIR, proj, 'CLAUDE.md');
-      if (fs.existsSync(claudeFile)) {
-        const stat = fs.statSync(claudeFile);
-        const content = fs.readFileSync(claudeFile, 'utf8');
+      const projDir = path.join(ROOT_DIR, proj);
+      try {
+        if (!fs.statSync(projDir).isDirectory()) continue;
+      } catch { continue; }
+      for (const f of fs.readdirSync(projDir)) {
+        if (!f.endsWith('.md') || PROJECT_MD_EXCLUDE.has(f)) continue;
+        // Only include root-level files (not subdirectory entries)
+        const filePath = path.join(projDir, f);
+        try {
+          if (!fs.statSync(filePath).isFile()) continue;
+        } catch { continue; }
+        const stat = fs.statSync(filePath);
+        const content = fs.readFileSync(filePath, 'utf8');
         files.push({
-          name: `${proj}/CLAUDE.md`,
-          path: claudeFile,
+          name: `${proj}/${f}`,
+          path: filePath,
           type: 'project',
           project: proj,
           size: stat.size,
@@ -91,12 +103,18 @@ export function listContextFiles(): ContextFileInfo[] {
  * Resolve context file name to path.
  */
 function resolveContextPath(fileName: string): string {
-  if (fileName.includes('/CLAUDE.md')) {
-    const proj = fileName.replace('/CLAUDE.md', '');
-    return path.join(ROOT_DIR, proj, 'CLAUDE.md');
-  }
   if (fileName === 'CLAUDE.md (global)') {
     return GLOBAL_CLAUDE;
+  }
+  // Match project context files: {project}/{file}.md
+  const slashIdx = fileName.indexOf('/');
+  if (slashIdx > 0 && fileName.endsWith('.md')) {
+    const proj = fileName.slice(0, slashIdx);
+    const mdFile = fileName.slice(slashIdx + 1);
+    // Ensure it's a simple filename (no nested paths)
+    if (!mdFile.includes('/')) {
+      return path.join(ROOT_DIR, proj, mdFile);
+    }
   }
   if (!fileName.startsWith('/')) {
     return path.join(CONTEXT_DIR, fileName);
@@ -181,12 +199,25 @@ export function saveContextFile(
 /**
  * Delete a context file.
  */
+/** Core project files that cannot be deleted (managed by ellulai-ctx) */
+const PROTECTED_PROJECT_FILES = new Set(['CLAUDE.md', 'AGENTS.md', 'GEMINI.md']);
+
 export function deleteContextFile(fileName: string): { success: boolean; error?: string } {
   const filePath = resolveContextPath(decodeURIComponent(fileName));
 
-  // Only allow deleting custom context files
-  if (!filePath.startsWith(CONTEXT_DIR)) {
-    return { success: false, error: 'Can only delete context files' };
+  if (!isAllowedPath(filePath)) {
+    return { success: false, error: 'Path not allowed' };
+  }
+
+  // Block deletion of global CLAUDE.md
+  if (path.resolve(filePath) === GLOBAL_CLAUDE) {
+    return { success: false, error: 'Cannot delete global context' };
+  }
+
+  // Block deletion of core project context files (managed by ellulai-ctx)
+  const baseName = path.basename(filePath);
+  if (filePath.startsWith(ROOT_DIR) && PROTECTED_PROJECT_FILES.has(baseName)) {
+    return { success: false, error: `Cannot delete ${baseName} — managed by platform` };
   }
 
   if (!fs.existsSync(filePath)) {

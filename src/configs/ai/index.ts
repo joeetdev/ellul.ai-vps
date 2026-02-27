@@ -20,7 +20,7 @@
 export interface WaterfallModelConfig {
   id: string;
   name: string;
-  provider: "opencode" | "deepseek";
+  provider: "opencode" | "deepseek" | "openrouter";
   modelId: string;
   baseUrl: string;
   isPaid: boolean;
@@ -43,12 +43,17 @@ export const WATERFALL_MODELS: WaterfallModelConfig[] = [
   },
 ];
 
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
 /**
  * Get the API key for a given provider
  */
-export function getProviderApiKey(provider: "opencode" | "deepseek"): string | undefined {
+export function getProviderApiKey(provider: "opencode" | "deepseek" | "openrouter"): string | undefined {
   if (provider === "deepseek") {
     return process.env.DEEPSEEK_API_KEY;
+  }
+  if (provider === "openrouter") {
+    return undefined; // OpenRouter keys are per-request (user's own key from DB)
   }
   return process.env.OPENCODE_API_KEY;
 }

@@ -52,16 +52,24 @@ export async function discoverZenModels(): Promise<ZenModel[]> {
   // Get locally available models to cross-reference
   const localModels = getLocalModels();
 
+  // If opencode binary can't report its models, skip discovery entirely.
+  // This prevents showing ALL Zen models (including paid ones) when the
+  // local model list is unavailable at startup.
+  if (localModels.size === 0) {
+    console.log('[Zen] Local model list empty, skipping discovery (will retry next refresh)');
+    return cachedModels;
+  }
+
   const res = await fetch(ZEN_MODELS_URL, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) return cachedModels; // keep stale on failure
   const data = (await res.json()) as { data?: { id: string }[] };
   const all = data.data || [];
-  // All Zen models are free — no hardcoded name filtering needed.
-  // Sort by quality heuristic (highest version number first).
+  // Only include models that the local opencode binary supports (free models).
   const available = all
     .map(m => ({ id: m.id, openCodeId: `opencode/${m.id}` }))
-    .filter(m => localModels.size === 0 || localModels.has(m.openCodeId))
+    .filter(m => localModels.has(m.openCodeId))
     .sort((a, b) => modelQualityScore(b.id) - modelQualityScore(a.id));
+  console.log(`[Zen] Discovered ${available.length} free models (from ${all.length} total)`);
   return available;
 }
 
@@ -86,9 +94,16 @@ export async function refreshZenModels(): Promise<void> {
 }
 
 export function startZenModelRefresh(): void {
-  refreshZenModels().catch(err =>
-    console.warn('[Zen] Initial discovery failed:', (err as Error).message)
-  );
+  refreshZenModels()
+    .then(() => {
+      // If no models found (local list was empty at startup), retry in 10s
+      if (cachedModels.length === 0) {
+        setTimeout(() => refreshZenModels().catch(() => {}), 10_000);
+      }
+    })
+    .catch(err =>
+      console.warn('[Zen] Initial discovery failed:', (err as Error).message)
+    );
   setInterval(
     () =>
       refreshZenModels().catch(err =>

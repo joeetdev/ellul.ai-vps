@@ -393,6 +393,36 @@ function writeFileAtomic(entry: FileEntry): void {
   }
 }
 
+// ─── VPS-UI resolver plugin for on-VPS esbuild ─────────────────────
+// Resolves @ellul.ai/vps-ui/* imports from pre-deployed HTML files
+// at /opt/ellulai/ui/ (written during provisioning/updates)
+
+const VPS_UI_DIR = path.join(REPO_DIR, 'ui');
+
+function vpsUiPlugin() {
+  return {
+    name: 'vps-ui-resolver',
+    setup(build: any) {
+      build.onResolve({ filter: /^@ellul\.ai\/vps-ui\// }, (args: any) => {
+        const name = args.path.replace('@ellul.ai/vps-ui/', '');
+        const htmlPath = path.join(VPS_UI_DIR, `${name}.html`);
+        if (fs.existsSync(htmlPath)) {
+          return { path: htmlPath, namespace: 'vps-ui-html' };
+        }
+        console.warn(`[rebuild-all] vps-ui: ${name}.html not found at ${htmlPath}`);
+        return undefined;
+      });
+      build.onLoad({ filter: /.*/, namespace: 'vps-ui-html' }, (args: any) => {
+        const html = fs.readFileSync(args.path, 'utf8');
+        return {
+          contents: `module.exports = ${JSON.stringify(html)};`,
+          loader: 'js',
+        };
+      });
+    },
+  };
+}
+
 // ─── Node.js service rebuilds ───────────────────────────────────────
 
 async function rebuildNodeServices(config: VpsConfig): Promise<number> {
@@ -448,6 +478,7 @@ async function rebuildNodeServices(config: VpsConfig): Promise<number> {
         format: 'cjs',
         write: false,
         external: svc.external,
+        plugins: [vpsUiPlugin()],
       });
 
       const code = (svc.banner ? svc.banner + '\n' : '') + result.outputFiles[0].text;

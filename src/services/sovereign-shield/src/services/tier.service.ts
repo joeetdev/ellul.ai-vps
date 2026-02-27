@@ -538,8 +538,9 @@ export async function executeTierSwitch(
   const { onTierChanged } = await import('./settings.service');
   onTierChanged();
 
-  // Notify platform
-  await notifyPlatformTierChange(currentTier, targetTier, ipAddress, userAgent);
+  // Notify platform in background — VPS is source of truth, local state is already committed.
+  // Platform DB will be updated async; SSE will push the event when it arrives.
+  notifyPlatformTierChange(currentTier, targetTier, ipAddress, userAgent).catch(() => {});
   } finally {
     // Always release transition lock
     try { fs.unlinkSync(TIER_TRANSITION_LOCK); } catch {}

@@ -48,6 +48,7 @@ import {
   getOpenclawChannels,
   saveOpenclawChannel,
 } from './services/openclaw.service';
+import codeBrowserHtml from '@ellul.ai/vps-ui/code-browser';
 
 // Auth is handled by sovereign-shield via Caddy forward_auth.
 // file-api trusts X-Auth-User headers set by the forward_auth layer.
@@ -174,6 +175,9 @@ function verifyDaemonJwt(authHeader: string | undefined): boolean {
   }
 }
 
+// In-memory cache for OpenAPI spec detection (path + spec, 30s TTL)
+const openApiSpecCache = new Map<string, { path: string; spec: unknown; timestamp: number }>();
+
 // Create HTTP server
 const server = http.createServer(async (req, res) => {
   // CORS is handled by Caddy (edge proxy) - file-api only runs on localhost
@@ -256,6 +260,20 @@ const server = http.createServer(async (req, res) => {
   const projectPath = showRoot ? ROOT_DIR : path.join(ROOT_DIR, activeProject);
 
   try {
+    // ============================================
+    // Code Browser SPA (VPS-served iframe)
+    // ============================================
+
+    if (pathname === '/browser') {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': "frame-ancestors 'self' https://console.ellul.ai",
+        'Cache-Control': 'no-store',
+      });
+      res.end(codeBrowserHtml);
+      return;
+    }
+
     // ============================================
     // File API endpoints
     // Auth: sovereign-shield via Caddy forward_auth (port 3005)
@@ -1002,7 +1020,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Handle preview based on app type
-      let previewStatus: { app: string | null; running: boolean } = { app: null, running: false };
+      let previewStatus: { app: string | null; running: boolean; failReason?: string | null } = { app: null, running: false };
       let previewActivated = false;
 
       if (app.previewable) {
@@ -1017,7 +1035,8 @@ const server = http.createServer(async (req, res) => {
           previewActivated = true;
           previewStatus = {
             app: app.directory,
-            running: result.preview?.success ?? false,
+            running: result.preview?.ready ?? false,
+            failReason: result.preview?.failReason ?? null,
           };
         }
       } else {
@@ -1044,6 +1063,7 @@ const server = http.createServer(async (req, res) => {
           app: previewStatus.app,
           activated: previewActivated,
           port: 3000, // Default preview port
+          failReason: previewStatus.failReason ?? null,
         },
         context: {
           hasProjectContext,
@@ -1166,6 +1186,119 @@ const server = http.createServer(async (req, res) => {
           port: 3000,
         },
       }));
+      return;
+    }
+
+    // GET /api/openapi-spec?app=<directory> - Probe running dev server for OpenAPI spec
+    if (req.method === 'GET' && pathname === '/api/openapi-spec') {
+      const appDir = parsedUrl.query.app as string;
+      if (!appDir) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ found: false, reason: 'Missing app parameter' }));
+        return;
+      }
+
+      // Resolve and find the app
+      const resolvedDir = resolveProjectDir(appDir);
+      if (!resolvedDir) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ found: false, reason: 'App not found' }));
+        return;
+      }
+
+      // Check preview is running
+      const previewStatus = getPreviewStatus();
+      if (!previewStatus.running || previewStatus.app !== resolvedDir) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ found: false, reason: 'Preview not running for this app' }));
+        return;
+      }
+
+      // Get the app's configured port
+      const allApps = detectApps();
+      const appInfo = allApps.find(a => a.directory === resolvedDir);
+      const port = appInfo?.port ?? 3000;
+
+      // Check in-memory cache (path → spec, 30s TTL)
+      const cacheKey = `${resolvedDir}:${port}`;
+      const cached = openApiSpecCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 30000) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ found: true, path: cached.path, spec: cached.spec }));
+        return;
+      }
+
+      // Common OpenAPI spec paths across frameworks (deduped, ordered by popularity)
+      const specPaths = [
+        '/openapi.json',
+        '/swagger.json',
+        '/api-docs',
+        '/api-docs/swagger.json',
+        '/api-docs/openapi.json',
+        '/documentation/json',
+        '/docs/json',
+        '/api-json',
+        '/swagger-json',
+        '/doc',
+        '/v3/api-docs',
+        '/v2/api-docs',
+        '/api/openapi.json',
+        '/api/schema/',
+        '/schema/',
+        '/swagger/v1/swagger.json',
+        '/swagger/v2/swagger.json',
+        '/apispec.json',
+      ];
+
+      // Probe all paths in parallel with 2s timeout each
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const results = await Promise.allSettled(
+          specPaths.map(async (specPath) => {
+            const ac = new AbortController();
+            const t = setTimeout(() => ac.abort(), 2000);
+            try {
+              const response = await fetch(`http://localhost:${port}${specPath}`, {
+                signal: ac.signal,
+                headers: { 'Accept': 'application/json' },
+              });
+              if (!response.ok) return null;
+              const text = await response.text();
+              const json = JSON.parse(text);
+              // Validate it's actually an OpenAPI/Swagger spec
+              if (json.openapi || json.swagger) {
+                return { path: specPath, spec: json };
+              }
+              return null;
+            } finally {
+              clearTimeout(t);
+            }
+          })
+        );
+
+        clearTimeout(timeout);
+
+        // Find first successful result
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value) {
+            const { path: specPath, spec } = result.value;
+            // Cache the result
+            openApiSpecCache.set(cacheKey, { path: specPath, spec, timestamp: Date.now() });
+            res.writeHead(200);
+            res.end(JSON.stringify({ found: true, path: specPath, spec }));
+            return;
+          }
+        }
+
+        res.writeHead(200);
+        res.end(JSON.stringify({ found: false, reason: 'No OpenAPI spec found at common paths' }));
+      } catch {
+        clearTimeout(timeout);
+        res.writeHead(200);
+        res.end(JSON.stringify({ found: false, reason: 'Failed to probe dev server' }));
+      }
       return;
     }
 

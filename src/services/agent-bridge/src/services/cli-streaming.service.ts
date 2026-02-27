@@ -21,9 +21,117 @@ import {
   setThreadOpencodeSession,
   ensureThreadStateDir,
   withThreadLock,
+  addMessage,
 } from './thread.service';
 import { getActiveProject } from './context.service';
-import { addThinkingStep } from './processing-state';
+import { addThinkingStep, broadcastToSubscribers } from './processing-state';
+
+// Pending OpenCode question resolvers — keyed by threadId
+// When OpenCode asks a question, we forward it to the frontend and wait for the user's answer.
+// After the user answers, we abort+re-prompt because OpenCode's question reply API
+// has a bug where the session stays "busy" forever after replying.
+const pendingQuestionResolvers = new Map<string, {
+  questionId: string;
+  questions: Array<{ question: string; options: Array<{ label: string }> }>;
+  sessionId: string;
+  originalMessage: string;
+  project: string | null;
+  timer: ReturnType<typeof setTimeout>;
+  // Called after abort+re-prompt to reset stall timer in the SSE handler
+  onRetry: () => void;
+}>();
+
+/**
+ * Check if a thread has a pending OpenCode question awaiting user response.
+ */
+export function hasPendingQuestion(threadId: string): boolean {
+  return pendingQuestionResolvers.has(threadId);
+}
+
+/**
+ * Respond to a pending OpenCode question from the frontend.
+ * `value` is the option number string (e.g. "1", "2") from the cli_prompt UI.
+ *
+ * Strategy: OpenCode's question reply API has a bug where the session stays
+ * "busy" forever after replying. So we:
+ * 1. Reply to the question API (clears the pending question)
+ * 2. Abort the stuck session
+ * 3. Re-prompt with the user's answer baked into the message
+ */
+export function respondToPendingQuestion(threadId: string, value: string): void {
+  const pending = pendingQuestionResolvers.get(threadId);
+  if (!pending) return;
+
+  clearTimeout(pending.timer);
+  pendingQuestionResolvers.delete(threadId);
+
+  // Map option number back to label
+  const optionIdx = parseInt(value, 10) - 1;
+  const firstQuestion = pending.questions[0];
+  const selectedLabel = firstQuestion?.options?.[optionIdx]?.label || value;
+
+  console.log(`[Bridge] User answered question: "${selectedLabel}". Aborting stuck session and re-prompting...`);
+
+  // Step 1: Reply to question API (clears the pending question state)
+  const answers = pending.questions.map((q) => {
+    const match = q.options?.find(o => o.label === selectedLabel);
+    return [match?.label || selectedLabel];
+  });
+  const replyData = JSON.stringify({ answers });
+  const replyReq = http.request({
+    hostname: '127.0.0.1',
+    port: OPENCODE_API_PORT,
+    path: `/question/${pending.questionId}/reply`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(replyData) },
+  }, (res) => { res.resume(); });
+  replyReq.on('error', () => {});
+  replyReq.write(replyData);
+  replyReq.end();
+
+  // Step 2: Abort the stuck session (after a brief delay for the reply to settle)
+  setTimeout(() => {
+    console.log(`[Bridge] Aborting session ${pending.sessionId.substring(0, 12)} after question reply`);
+    const abortReq = http.request({
+      hostname: '127.0.0.1',
+      port: OPENCODE_API_PORT,
+      path: `/session/${pending.sessionId}/abort`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+    }, (res) => {
+      res.resume();
+      console.log(`[Bridge] Abort status: ${res.statusCode}`);
+
+      // Step 3: Wait for session to go idle, then re-prompt with answer baked in
+      setTimeout(() => {
+        const questionText = firstQuestion?.question || 'your question';
+        const newMessage = `The user was asked: "${questionText}" and chose: "${selectedLabel}". Now proceed with that choice. Original request: ${pending.originalMessage}`;
+
+        console.log(`[Bridge] Re-prompting with answer baked in`);
+        const dirParam = pending.project ? `?directory=${encodeURIComponent('/home/' + (process.env.USER || 'dev') + '/projects/' + pending.project)}` : '';
+        const promptData = JSON.stringify({ parts: [{ type: 'text', text: newMessage }] });
+        const promptReq = http.request({
+          hostname: '127.0.0.1',
+          port: OPENCODE_API_PORT,
+          path: `/session/${pending.sessionId}/prompt_async${dirParam}`,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(promptData) },
+        }, (res) => {
+          res.resume();
+          console.log(`[Bridge] Re-prompt status: ${res.statusCode}`);
+          // Reset stall timer so the SSE handler keeps monitoring
+          pending.onRetry();
+        });
+        promptReq.on('error', (err) => console.error(`[Bridge] Re-prompt error: ${err.message}`));
+        promptReq.write(promptData);
+        promptReq.end();
+      }, 1500);
+    });
+    abortReq.on('error', (err) => console.error(`[Bridge] Abort error: ${err.message}`));
+    abortReq.write('{}');
+    abortReq.end();
+  }, 500);
+}
 
 // Lazy AI flag file — touched when all background npm installs complete
 const LAZY_AI_READY_FLAG = '/var/lib/ellul.ai/lazy-ai-ready';
@@ -185,6 +293,7 @@ export async function ensureOpencodeServer(): Promise<boolean> {
     if (result.status === 200) {
       console.log('[Bridge] OpenCode server is running');
       opencodeReady = true;
+      await setOpencodeGlobalPermissions();
       return true;
     }
   } catch {
@@ -207,12 +316,52 @@ export async function ensureOpencodeServer(): Promise<boolean> {
         if (check.status === 200) {
           console.log('[Bridge] OpenCode server started');
           opencodeReady = true;
+          await setOpencodeGlobalPermissions();
           return true;
         }
       } catch {}
     }
   }
   return false;
+}
+
+/**
+ * Set global OpenCode permissions: deny question tool, allow everything else.
+ * This is the equivalent of Claude Code's --dangerously-skip-permissions.
+ */
+async function setOpencodeGlobalPermissions(): Promise<void> {
+  try {
+    await httpRequest(
+      {
+        hostname: '127.0.0.1',
+        port: OPENCODE_API_PORT,
+        path: '/global/config',
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+      },
+      {
+        permission: {
+          question: 'deny',
+          read: 'allow',
+          edit: 'allow',
+          bash: 'allow',
+          glob: 'allow',
+          grep: 'allow',
+          list: 'allow',
+          task: 'allow',
+          webfetch: 'allow',
+          websearch: 'allow',
+          todowrite: 'allow',
+          todoread: 'allow',
+          codesearch: 'allow',
+          skill: 'allow',
+        },
+      }
+    );
+    console.log('[Bridge] OpenCode global permissions set (question: deny, all else: allow)');
+  } catch (err) {
+    console.warn('[Bridge] Failed to set OpenCode global permissions:', (err as Error).message);
+  }
 }
 
 /**
@@ -365,7 +514,14 @@ async function createOpencodeSession(project?: string | null): Promise<string | 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       },
-      {}
+      {
+        // Deny question tool (skip permissions, like Claude Code's --dangerously-skip-permissions)
+        // Allow all other tools without asking
+        permission: [
+          { permission: 'question', pattern: '*', action: 'deny' },
+          { permission: '*', pattern: '*', action: 'allow' },
+        ],
+      }
     );
     const data = result.data as { id?: string } | null;
     if (result.status === 200 && data?.id) {
@@ -713,12 +869,33 @@ export async function sendToOpencodeStreaming(
     let reasoningCount = 0;
     let retryCount = 0;
     const MAX_RETRIES_BEFORE_ERROR = 5; // Stop after 5 rate limit retries instead of spinning for minutes
+    let lastMeaningfulEventAt = Date.now();
+    const STALL_TIMEOUT_MS = 60000; // 60s without meaningful events = stalled
+    let stallTimer: ReturnType<typeof setInterval> | null = null;
+
+    function startStallDetector() {
+      stallTimer = setInterval(() => {
+        if (settled) { if (stallTimer) clearInterval(stallTimer); return; }
+        if (Date.now() - lastMeaningfulEventAt > STALL_TIMEOUT_MS) {
+          console.warn(`[Bridge] SSE stall detected (${Math.round((Date.now() - lastMeaningfulEventAt) / 1000)}s without events), finishing`);
+          if (stallTimer) clearInterval(stallTimer);
+          finish();
+        }
+      }, 10000);
+    }
 
     function finish() {
       if (settled) return;
       settled = true;
+      if (stallTimer) { clearInterval(stallTimer); stallTimer = null; }
       if (eventReq) {
         try { eventReq.destroy(); } catch {}
+      }
+      // Clean up any pending question resolver for this thread
+      if (threadId && pendingQuestionResolvers.has(threadId)) {
+        const pending = pendingQuestionResolvers.get(threadId)!;
+        clearTimeout(pending.timer);
+        pendingQuestionResolvers.delete(threadId);
       }
       if (reasoningBuffer.trim()) {
         response.reasoning.push(reasoningBuffer.trim());
@@ -821,6 +998,7 @@ export async function sendToOpencodeStreaming(
               if (parsed.type === 'server.connected' && !sseConnected) {
                 sseConnected = true;
                 console.log('[Bridge] SSE /global/event ready - sending prompt_async');
+                startStallDetector();
                 sendMessageAsync();
                 continue;
               }
@@ -838,6 +1016,8 @@ export async function sendToOpencodeStreaming(
                 }
                 const delta = parsed.properties.delta || '';
                 const partType = part.type || '';
+                // Reset stall detector on any meaningful content event
+                lastMeaningfulEventAt = Date.now();
 
                 if (partType === 'reasoning' || partType === 'thinking') {
                   reasoningCount++;
@@ -866,10 +1046,14 @@ export async function sendToOpencodeStreaming(
                     else response.text[response.text.length - 1] = part.text;
                   }
                 } else if (partType === 'tool') {
-                  // Track tools in response but do NOT send as thinking steps
-                  // Tool steps are actions, not reasoning — keep thinking section clean
                   const toolName = part.tool || 'tool';
                   if (!response.tools.includes(toolName)) response.tools.push(toolName);
+                  // Send tool usage as a thinking step so the frontend shows activity
+                  const toolStatus = part.state?.status || 'running';
+                  if (toolStatus === 'running' || toolStatus === 'completed') {
+                    const label = toolStatus === 'completed' ? `${toolName} done` : `Using ${toolName}...`;
+                    sendThinkingStep(ws, label, threadId);
+                  }
                 } else if (partType === 'step-start' || partType === 'step-finish') {
                   // Step lifecycle events — no display needed
                 } else if (partType !== '') {
@@ -917,26 +1101,113 @@ export async function sendToOpencodeStreaming(
                 }
               }
 
-              // Auto-answer question tool calls — the bridge can't relay interactive
-              // questions to the frontend, so pick the first option automatically.
+              // Forward question tool calls to the frontend as cli_prompt.
+              // The user picks an option, which triggers respondToPendingQuestion().
               if (parsed.type === 'question.asked' && parsed.properties?.sessionID === sessionId) {
-                const qProps = parsed.properties as { id: string; questions: Array<{ question: string; options: Array<{ label: string }> }> };
+                const qProps = parsed.properties as { id: string; questions: Array<{ question: string; options: Array<{ label: string; description?: string }> }> };
                 const questionId = qProps.id;
-                const answers = (qProps.questions || []).map(
-                  (q: { options: Array<{ label: string }> }) => [q.options?.[0]?.label || 'yes']
-                );
-                console.log(`[Bridge] Auto-answering question ${questionId}: ${JSON.stringify(answers)}`);
-                const replyData = JSON.stringify({ answers });
-                const replyReq = http.request({
-                  hostname: '127.0.0.1',
-                  port: OPENCODE_API_PORT,
-                  path: `/question/${questionId}/reply`,
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(replyData) },
-                }, (res) => { res.resume(); console.log(`[Bridge] Question reply status: ${res.statusCode}`); });
-                replyReq.on('error', (err) => console.error(`[Bridge] Question reply error: ${err.message}`));
-                replyReq.write(replyData);
-                replyReq.end();
+                const questions = qProps.questions || [];
+                const firstQuestion = questions[0];
+
+                if (threadId && firstQuestion?.options?.length) {
+                  // Build cli_prompt options
+                  const options = firstQuestion.options.map((opt, i) => ({
+                    number: String(i + 1),
+                    label: opt.label,
+                    description: opt.description || '',
+                  }));
+                  const context = firstQuestion.question || 'Please select an option:';
+
+                  console.log(`[Bridge] Forwarding question ${questionId} to frontend: ${options.length} options`);
+
+                  // Send cli_prompt to all subscribers (handles reconnected clients)
+                  const promptMsg = {
+                    type: 'cli_prompt',
+                    session: 'opencode',
+                    context,
+                    options,
+                    selectionType: 'number',
+                    inChatAuth: false,
+                    threadId,
+                    timestamp: Date.now(),
+                  };
+                  broadcastToSubscribers(threadId, promptMsg);
+
+                  // Save to thread DB so reloading chat shows the prompt
+                  addMessage(threadId, {
+                    type: 'cli_prompt',
+                    content: context,
+                    session: 'opencode',
+                    model: null,
+                    thinking: null,
+                    metadata: { options, selectionType: 'number', inChatAuth: false },
+                  });
+
+                  sendThinkingStep(ws, 'Waiting for your choice...', threadId);
+
+                  // Register resolver — auto-answer after 2 minutes if no user response
+                  const autoAnswerTimer = setTimeout(() => {
+                    if (pendingQuestionResolvers.has(threadId)) {
+                      console.log(`[Bridge] Question ${questionId} timed out, auto-answering with first option`);
+                      // Use respondToPendingQuestion with option "1" (first option)
+                      respondToPendingQuestion(threadId, '1');
+                    }
+                  }, 120000);
+
+                  pendingQuestionResolvers.set(threadId, {
+                    questionId,
+                    questions,
+                    sessionId,
+                    originalMessage: message,
+                    project: project || null,
+                    timer: autoAnswerTimer,
+                    onRetry: () => { lastMeaningfulEventAt = Date.now(); },
+                  });
+                } else {
+                  // No threadId or no options — auto-answer with first option via abort+re-prompt
+                  const selectedLabel = firstQuestion?.options?.[0]?.label || 'yes';
+                  console.log(`[Bridge] Auto-answering question ${questionId} (no thread): ${selectedLabel}`);
+                  // Reply to clear pending question, then abort+re-prompt
+                  const answers = questions.map((q) => [q.options?.[0]?.label || 'yes']);
+                  const replyData = JSON.stringify({ answers });
+                  const replyReq = http.request({
+                    hostname: '127.0.0.1',
+                    port: OPENCODE_API_PORT,
+                    path: `/question/${questionId}/reply`,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(replyData) },
+                  }, (res) => { res.resume(); });
+                  replyReq.on('error', () => {});
+                  replyReq.write(replyData);
+                  replyReq.end();
+                  // Abort + re-prompt after brief delay
+                  setTimeout(() => {
+                    const abortReq = http.request({
+                      hostname: '127.0.0.1', port: OPENCODE_API_PORT,
+                      path: `/session/${sessionId}/abort`, method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+                    }, (res) => {
+                      res.resume();
+                      setTimeout(() => {
+                        const questionText = firstQuestion?.question || 'your question';
+                        const newMsg = `The user chose: "${selectedLabel}" for "${questionText}". Proceed with that choice. Original request: ${message}`;
+                        const dirParam = project ? `?directory=${encodeURIComponent('/home/' + (process.env.USER || 'dev') + '/projects/' + project)}` : '';
+                        const promptData = JSON.stringify({ parts: [{ type: 'text', text: newMsg }] });
+                        const promptReq = http.request({
+                          hostname: '127.0.0.1', port: OPENCODE_API_PORT,
+                          path: `/session/${sessionId}/prompt_async${dirParam}`, method: 'POST',
+                          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(promptData) },
+                        }, (res2) => { res2.resume(); lastMeaningfulEventAt = Date.now(); });
+                        promptReq.on('error', () => {});
+                        promptReq.write(promptData);
+                        promptReq.end();
+                      }, 1500);
+                    });
+                    abortReq.on('error', () => {});
+                    abortReq.write('{}');
+                    abortReq.end();
+                  }, 500);
+                }
               }
 
               // Auto-grant permission requests — OpenCode asks for permission before
@@ -1467,6 +1738,23 @@ export async function setModel(model: string): Promise<boolean> {
   const config: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
     model,
+    // Deny question tool, allow all others (equivalent to dangerously-skip-permissions)
+    permission: {
+      question: 'deny',
+      read: 'allow',
+      edit: 'allow',
+      bash: 'allow',
+      glob: 'allow',
+      grep: 'allow',
+      list: 'allow',
+      task: 'allow',
+      webfetch: 'allow',
+      websearch: 'allow',
+      todowrite: 'allow',
+      todoread: 'allow',
+      codesearch: 'allow',
+      skill: 'allow',
+    },
   };
 
   try {
@@ -1508,6 +1796,7 @@ export async function setModel(model: string): Promise<boolean> {
         if (check.status === 200) {
           console.log(`[OpenCode] Restarted with model=${model}`);
           opencodeReady = true;
+          await setOpencodeGlobalPermissions();
           return true;
         }
       } catch {}

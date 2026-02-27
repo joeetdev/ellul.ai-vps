@@ -46,6 +46,7 @@ export const CLI_KEY_MAP: Record<string, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
   gemini: 'GEMINI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
 };
 
 // Allowed interactive commands (whitelist only - prevents command injection)

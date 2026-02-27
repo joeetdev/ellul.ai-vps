@@ -13,6 +13,7 @@
  */
 
 import fs from 'fs';
+import path from 'path';
 import { execSync } from 'child_process';
 import type { Hono } from 'hono';
 import { RESERVED_PORTS } from '../../../shared/constants';
@@ -517,8 +518,10 @@ handle @app-${name} {${authBlock}
 
     // ── Write app metadata ───────────────────────────────────────────
     const isPreview = isFree;
+    const directory = projectPath ? path.basename(projectPath) : name;
     const appMeta = {
       name,
+      directory,
       port,
       domain: appDomain,
       url: `https://${appDomain}`,
@@ -570,16 +573,26 @@ handle @app-${name} {${authBlock}
     if (projectPath) {
       const psjsonPath = `${projectPath}/ellulai.json`;
       try {
+        // SECURITY: Use Node.js JSON operations instead of shell jq to prevent injection
+        let existing: Record<string, unknown> = {};
         if (fs.existsSync(psjsonPath)) {
-          // SECURITY: Use Node.js JSON operations instead of shell jq to prevent injection
-          const existing = JSON.parse(fs.readFileSync(psjsonPath, 'utf8'));
-          existing.deployedUrl = `https://${appDomain}`;
-          existing.deployedDomain = appDomain;
-          existing.deployedPort = port;
-          fs.writeFileSync(psjsonPath, JSON.stringify(existing, null, 2));
+          existing = JSON.parse(fs.readFileSync(psjsonPath, 'utf8'));
         }
+        existing.name = name; // Sync app name with deployment name
+        existing.deployedUrl = `https://${appDomain}`;
+        existing.deployedDomain = appDomain;
+        existing.deployedPort = port;
+        fs.writeFileSync(psjsonPath, JSON.stringify(existing, null, 2));
       } catch {}
     }
+
+    // ── Trigger immediate heartbeat so deployments show in dashboard instantly ──
+    try {
+      const pid = fs.readFileSync('/run/ellulai-enforcer.pid', 'utf8').trim();
+      if (pid) {
+        execSync(`kill -USR1 ${pid}`, { stdio: 'pipe', timeout: 2000 });
+      }
+    } catch {}
 
     // ── Kick off background AI inspection ────────────────────────────
     try {

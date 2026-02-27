@@ -144,6 +144,22 @@ export function detectApps(): AppInfo[] {
       ? explicitType as AppInfo['type']
       : getTypeFromFramework(framework);
 
+    // Backend override: if framework detection picked a frontend build tool (e.g. vite)
+    // but the app has a backend runtime dep (express, fastify, etc.), treat it as backend.
+    // Common case: Express app with vite.config.ts for bundling gets detected as "vite" → "frontend".
+    if (type === 'frontend' && hasPackageJson) {
+      const allDeps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+      for (const backendFw of BACKEND_FRAMEWORKS) {
+        const patterns = FRAMEWORK_PATTERNS[backendFw as keyof typeof FRAMEWORK_PATTERNS];
+        if (patterns?.packageJson?.some((dep: string) => allDeps[dep])) {
+          type = 'backend';
+          framework = backendFw;
+          port = getDefaultPort(backendFw);
+          break;
+        }
+      }
+    }
+
     let isMonorepo = false;
     let packages: string[] | undefined;
 

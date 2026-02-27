@@ -56,10 +56,14 @@ generate_global() {
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT.
 4. **NO AUTO-DEPLOY**: NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks to deploy/publish/go live. Code changes should only affect the dev preview. The user may be testing and does NOT want their live site updated.
 
-## Deployed Apps (FROZEN SNAPSHOTS — code edits do NOT change live sites)
+## Preview vs Deployed (two separate things)
+- **Preview** (port 3000) = live source code. Every code edit is reflected here immediately.
+- **Deployed** (port 3001+) = frozen snapshot. A copy-in-time taken by \\\`ellulai-expose\\\`. Code edits do NOT change it.
+Editing code ONLY updates the preview. The deployed site is a completely separate copy and is NEVER affected by code changes.
+Do NOT deploy or redeploy unless the user explicitly asks — they may just be iterating on the preview.
+
+### Currently deployed:
 \${DEPLOYED_LIST:-"(none)"}
-Deployed apps are frozen snapshots. Editing source code ONLY changes the dev preview (port 3000). The deployed site is UNCHANGED until the user explicitly asks to deploy.
-NEVER run \\\`ellulai-expose\\\` after making code changes. NEVER manually restart PM2 deployed processes, copy files to ~/.ellulai/deployments/, or modify the snapshot directory.
 
 ## Project Setup (within your assigned directory)
 1. Create/edit project files
@@ -73,16 +77,24 @@ NEVER run \\\`ellulai-expose\\\` after making code changes. NEVER manually resta
 7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
 8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
-## Deployment (ONLY when user EXPLICITLY asks to deploy)
-**CRITICAL: NEVER deploy automatically after code changes.** The user may be testing and does not want the live site updated.
-Only deploy when the user says "deploy", "go live", "publish", "ship it", or similar explicit deployment request.
-If the user says "make a change" or "update the code" — that is NOT a deploy request. Only update the source code and report the dev preview URL.
-**Deploy steps:**
-1. Build: \\\`npm run build\\\` (if applicable)
-2. Pick a unique port (3001+, NOT 3000 which is preview): \\\`PORT=3001\\\`
-3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — snapshots current source, starts PM2 process, configures Caddy
-4. Verify: \\\`ellulai-apps\\\` → shows app with live URL
-NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks. NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
+## Deployment (ONLY when user EXPLICITLY asks — never assume)
+The preview (port 3000) = live source code. The deployed site (port 3001+) = frozen snapshot.
+Code edits ONLY affect the preview. The deployed site is NEVER updated by code changes.
+**Each deploy is a one-time action, NOT a standing mode.** If the user asked to deploy earlier in the conversation and then asks for a code change, do NOT redeploy — just update the source code and report the preview URL. A new deploy requires a new explicit request.
+Only deploy/redeploy when the CURRENT message says "deploy", "redeploy", "go live", "publish", "ship it", or similar.
+"Make a change", "update the code", "fix this", "change X to Y" = NOT a deploy request. Only update source and report the preview URL.
+
+### New deployment:
+1. Build: \\\`npm run build\\\` (if applicable — skip for static HTML)
+2. \\\`ellulai-expose APP_NAME 3001\\\` — snapshots source, starts PM2, configures Caddy
+3. Verify: \\\`ellulai-apps\\\`
+
+### Redeploy (update existing deployment):
+1. Read \\\`ellulai.json\\\` in the project root for the existing app name and port
+2. Build: \\\`npm run build\\\` (if applicable — skip for static HTML)
+3. \\\`ellulai-expose NAME PORT\\\` — using the SAME name and port from ellulai.json
+4. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
+The command handles everything: fresh snapshot, PM2 restart, Caddy reload. Do NOT manually restart PM2 or copy files.
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -93,6 +105,33 @@ ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 - summary: brief description of the app
 **IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in ellulai.json.**
 After deployment, \\\`ellulai-expose\\\` adds: deployedUrl, deployedDomain, deployedPort (these are frozen snapshots — code edits do NOT change the deployed site)
+
+## Backend Apps — OpenAPI Spec (REQUIRED)
+When creating or setting up a backend/API app, you MUST add an OpenAPI spec endpoint so the dashboard can render interactive API documentation in the Preview tab. Without this, the preview shows a blank fallback.
+
+**For Express:**
+\\\`\\\`\\\`js
+// Add to your main file — serves spec at GET /openapi.json
+const openapiSpec = {
+  openapi: "3.0.0",
+  info: { title: "My API", version: "1.0.0", description: "..." },
+  paths: {
+    // Define all your routes here with parameters, request bodies, and responses
+    // Use $ref to components/schemas for reusable models
+  },
+  components: { schemas: { /* your models */ } }
+};
+app.get("/openapi.json", (req, res) => res.json(openapiSpec));
+\\\`\\\`\\\`
+
+**For other frameworks:**
+- Fastify: \\\`@fastify/swagger\\\` → serves at \\\`/documentation/json\\\`
+- NestJS: \\\`@nestjs/swagger\\\` → serves at \\\`/api-json\\\`
+- Hono: \\\`@hono/zod-openapi\\\` → serves at \\\`/doc\\\`
+- FastAPI: built-in at \\\`/openapi.json\\\`
+- Flask: \\\`flask-smorest\\\` → serves at \\\`/api/openapi.json\\\`
+
+The spec MUST include: all endpoints with methods, path/query parameters, request body schemas with property types and descriptions, response schemas for each status code, and reusable model definitions in components/schemas. Do NOT create a minimal/empty spec — include full details for every endpoint so the dashboard renders complete documentation.
 
 ## Dev Server Config (CRITICAL)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -237,6 +276,9 @@ ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 - name: display name for the dashboard (USER-DEFINED - NEVER overwrite if already set)
 - summary: brief description of the app
 **IMPORTANT: The "name" field is set by the user. NEVER change it if it already exists in ellulai.json.**
+
+## Backend Apps — OpenAPI Spec (REQUIRED)
+When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
 
 ## Dev Server Config (CRITICAL)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -411,19 +453,14 @@ get_current_deployment() {
       APP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
       APP_DOMAIN=$(jq -r '.domain // empty' "$app_file" 2>/dev/null)
 
-      echo "## Deployed App (FROZEN SNAPSHOT)"
-      echo "Name: $APP_NAME | Live URL: $APP_URL | Port: $APP_PORT"
+      echo "## Deployed App (frozen snapshot — separate from preview)"
+      echo "Name: $APP_NAME | Live: $APP_URL | Port: $APP_PORT"
+      echo "The deployed site is a frozen snapshot taken by ellulai-expose. Code edits ONLY affect the preview (port 3000), NOT the deployed site."
+      echo "Do NOT redeploy unless the user explicitly asks — they may just be testing changes in the preview."
       echo ""
-      echo "**IMPORTANT**: The deployed app is a FROZEN SNAPSHOT. Editing source code does NOT change the live site."
-      echo "Code changes are only visible at the dev preview (port 3000)."
-      echo ""
-      echo "### To update the deployed app (ONLY when user asks to deploy/update/publish):"
-      echo "1. \\\`cd $CURRENT_PATH\\\`"
-      echo "2. \\\`ellulai-expose $APP_NAME $APP_PORT\\\`  ← this is the ONLY way to update the deployed site"
-      echo "3. Verify: \\\`curl -s https://$APP_DOMAIN | head -5\\\`"
-      echo ""
-      echo "Do NOT try to: restart PM2 manually, copy files to ~/.ellulai/deployments/, or modify the snapshot directory."
-      echo "ellulai-expose handles everything (snapshot, PM2, Caddy, DNS)."
+      echo "### To redeploy (ONLY when user asks to deploy/redeploy/publish):"
+      echo "\\\`cd $CURRENT_PATH && ellulai-expose $APP_NAME $APP_PORT\\\`"
+      echo "Verify: \\\`curl -s https://$APP_DOMAIN | head -5\\\`"
       return 0
     fi
   done
@@ -461,6 +498,7 @@ Preview: https://$DEV_DOMAIN (port 3000) — deployment not available on free ti
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
 $APP_NAME_LINE
 3. **SECURITY**: NEVER touch /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*. Tampering = PERMANENT LOCKOUT with no recovery.
+4. **PREFER ACTION**: When the choice is ambiguous (e.g. framework, language), prefer the most popular/common option (Node.js + Express for backends, React + Vite for frontends) and proceed. Only ask the user if the choice fundamentally changes the project direction.
 
 ## Setup (within THIS project)
 1. Create/edit project files
@@ -473,6 +511,9 @@ $APP_NAME_LINE
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
 6. Wait for startup: \\\`sleep 3\\\`
 7. Run the FULL verification protocol below — do NOT skip any step
+
+## Backend Apps — OpenAPI Spec (REQUIRED)
+When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
 
 ## Dev Server Config (CRITICAL — preview won't work without this)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -530,17 +571,14 @@ pm2 start|logs|restart|delete NAME
           DEP_URL=$(jq -r '.url // empty' "$app_file" 2>/dev/null)
           DEP_PORT=$(jq -r '.port // empty' "$app_file" 2>/dev/null)
           DEPLOYMENT_SECTION="
-## Deployed App (FROZEN SNAPSHOT — code edits do NOT change the live site)
-Name: $DEP_NAME | Live URL: $DEP_URL | Port: $DEP_PORT
-**CRITICAL: Code changes ONLY affect the dev preview (port 3000). The deployed app is a frozen snapshot and is NOT updated by code changes.**
-After making code changes, ALWAYS tell the user their changes are live at the dev PREVIEW URL. NEVER mention the deployed URL unless the user asked to deploy.
-NEVER run \\\`ellulai-expose\\\` after code changes — the user may be testing and does NOT want the live site changed.
+## Deployed App (frozen snapshot — separate from preview)
+Name: $DEP_NAME | Live: $DEP_URL | Port: $DEP_PORT
+The deployed site is a frozen snapshot. Code edits ONLY affect the preview (port 3000), NOT the deployed site.
+Do NOT redeploy unless the user explicitly asks — they may just be testing changes in the preview.
 
-### To update the deployed app (ONLY when user EXPLICITLY asks to deploy/publish/go live):
-1. \\\`cd $TARGET_DIR\\\`
-2. \\\`ellulai-expose $DEP_NAME $DEP_PORT\\\`  ← the ONLY way to update the deployed site
-3. Verify: \\\`curl -s $DEP_URL | head -5\\\`
-Do NOT restart PM2, copy files, or modify ~/.ellulai/deployments/ directly.
+### To redeploy (ONLY when user asks to deploy/redeploy/publish):
+\\\`cd $TARGET_DIR && ellulai-expose $DEP_NAME $DEP_PORT\\\`
+Verify: \\\`curl -s $DEP_URL | head -5\\\`
 "
           break
         fi
@@ -556,7 +594,8 @@ Preview: https://$DEV_DOMAIN (port 3000) | Production: https://$DIR_NAME-$SHORT_
 1. **WORKSPACE BOUNDARY**: All work MUST stay inside this directory ($TARGET_DIR). NEVER create new directories under ~/projects/. NEVER modify files in other projects.
 $APP_NAME_LINE
 3. **SECURITY**: NEVER touch /etc/ellulai/*, ~/.ssh/authorized_keys, /var/lib/sovereign-shield/*, sovereign-shield/sshd services. Tampering = PERMANENT LOCKOUT with no recovery.
-4. **NO AUTO-DEPLOY**: NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks to deploy/publish/go live. Code changes only affect the dev preview. The user may be testing.
+4. **NO AUTO-DEPLOY**: Only run \\\`ellulai-expose\\\` when the user explicitly asks to deploy/redeploy/publish. Code changes only affect the dev preview.
+5. **PREFER ACTION**: When the choice is ambiguous (e.g. framework, language), prefer the most popular/common option (Node.js + Express for backends, React + Vite for frontends) and proceed. Only ask the user if the choice fundamentally changes the project direction.
 $DEPLOYMENT_SECTION
 ## Setup (within THIS project)
 1. Create/edit project files
@@ -569,6 +608,9 @@ $DEPLOYMENT_SECTION
 5. PM2: \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start \\"npx serve -l 3000\\" --name preview\\\`
 6. Wait for startup: \\\`sleep 3\\\`
 7. Run the FULL verification protocol below — do NOT skip any step
+
+## Backend Apps — OpenAPI Spec (REQUIRED)
+When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
 
 ## Dev Server Config (CRITICAL — preview won't work without this)
 Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
@@ -607,18 +649,26 @@ ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
 - Backend first: expose backend with \\\`ellulai-expose NAME PORT\\\` before frontend depends on it
 - Databases: \\\`ellulai-install postgres|redis|mysql\\\` (warn user about RAM usage)
 - DB GUI: user runs \\\`ssh -L 5432:localhost:5432 $USER_NAME@$DOMAIN\\\` from their machine
-- **NEVER deploy to production unless the user explicitly asks to deploy.** Creating an app = preview only. Deployment is a separate step the user must request.
+- Only deploy/redeploy when the user explicitly asks. Creating an app = preview only.
 
-## Deployment (ONLY when user EXPLICITLY asks to deploy)
-**CRITICAL: NEVER deploy automatically after code changes.** The user may be testing and does not want the live site updated.
-Only deploy when the user says \\"deploy\\", \\"go live\\", \\"publish\\", \\"ship it\\", or similar explicit deployment request.
-If the user says \\"make a change\\" or \\"update the code\\" — that is NOT a deploy request. Only update the source code and report the dev preview URL.
-**Deploy steps:**
-1. Build: \\\`npm run build\\\` (if applicable)
-2. Pick a unique port (3001+, NOT 3000): \\\`PORT=3001\\\`
-3. \\\`ellulai-expose APP_NAME \\\$PORT\\\` — snapshots current source, starts PM2 process, configures Caddy
-4. Verify: \\\`ellulai-apps\\\` → shows app with live URL
-NEVER run \\\`ellulai-expose\\\` unless the user explicitly asks. NEVER use \\\`ship\\\`, manually restart PM2, or copy files to ~/.ellulai/deployments/.
+## Deployment (ONLY when user EXPLICITLY asks — never assume)
+The preview (port 3000) = live source code. The deployed site (port 3001+) = frozen snapshot.
+Code edits ONLY affect the preview. The deployed site is NEVER updated by code changes.
+**Each deploy is a one-time action, NOT a standing mode.** If the user asked to deploy earlier in the conversation and then asks for a code change, do NOT redeploy — just update the source code and report the preview URL. A new deploy requires a new explicit request.
+Only deploy/redeploy when the CURRENT message says \\"deploy\\", \\"redeploy\\", \\"go live\\", \\"publish\\", \\"ship it\\", or similar.
+\\"Make a change\\", \\"update the code\\", \\"fix this\\", \\"change X to Y\\" = NOT a deploy request. Only update source and report the preview URL.
+
+### New deployment:
+1. Build: \\\`npm run build\\\` (if applicable — skip for static HTML)
+2. \\\`ellulai-expose APP_NAME 3001\\\`
+3. Verify: \\\`ellulai-apps\\\`
+
+### Redeploy (update existing deployment):
+1. Read \\\`ellulai.json\\\` in the project root for the existing app name and port
+2. Build: \\\`npm run build\\\` (if applicable — skip for static HTML)
+3. \\\`ellulai-expose NAME PORT\\\` — using the SAME name and port from ellulai.json
+4. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
+The command handles everything: fresh snapshot, PM2 restart, Caddy reload. Do NOT manually restart PM2 or copy files.
 
 ## Git (Code Backup)
 Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.

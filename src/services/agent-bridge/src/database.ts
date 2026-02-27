@@ -51,9 +51,11 @@ db.exec(`
     thinking TEXT,
     metadata TEXT,
     created_at INTEGER NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq);
 
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,

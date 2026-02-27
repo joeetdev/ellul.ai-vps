@@ -49,6 +49,7 @@ import {
   loadCliEnv,
   saveCliKey,
   removeCliKey,
+  syncOpenRouterKey,
   CLI_KEY_MAP,
 } from './services/cli-env.service';
 import {
@@ -69,6 +70,8 @@ import {
   sendToClaudeStreaming,
   sendToCodexStreaming,
   sendToGeminiStreaming,
+  hasPendingQuestion,
+  respondToPendingQuestion,
   type CliResponse,
 } from './services/cli-streaming.service';
 import {
@@ -78,6 +81,8 @@ import {
   killInteractiveSession,
   startCliAuthInChat,
   hasCliAuthInChat,
+  hasCliAuthForThread,
+  getCliAuthThreadId,
   respondToCliAuthInChat,
   cancelCliAuthInChat,
   detachCliAuth,
@@ -100,6 +105,8 @@ import {
   endProcessing,
   addThinkingStep,
   getProcessingState,
+  broadcastToSubscribers,
+  updateStreamedText,
   subscribe as subscribeProcessing,
   unsubscribe as unsubscribeProcessing,
   unsubscribeAll as unsubscribeAllProcessing,
@@ -115,10 +122,11 @@ import {
   deleteThread,
   deleteThreadsByProject,
   renameThread,
-  updateThreadSession,
   updateThreadModel,
   clearThreadOpencodeSession,
   addMessage,
+  getMessagesSince,
+  getLastSeq,
   getActiveThreadId,
   setActiveThreadId,
   type Message,
@@ -142,6 +150,29 @@ interface ConnectionState {
   currentSession: SessionType;
   currentProject: string | null;
   currentThreadId: string | null;
+}
+
+/**
+ * Try to send a JSON message over WebSocket. Silently swallows errors
+ * (e.g. connection already closed by Chrome tab suspension).
+ */
+function trySend(ws: WsClient, msg: Record<string, unknown>): void {
+  try {
+    if (ws.readyState === 1) ws.send(JSON.stringify(msg));
+  } catch {}
+}
+
+/**
+ * Send a message to all subscribers of a thread (broadcast), falling back
+ * to direct send if no threadId. This ensures final output/ack reaches
+ * all connected clients — not just the original (possibly dead) ws.
+ */
+function sendToThread(ws: WsClient, threadId: string | null, msg: Record<string, unknown>): void {
+  if (threadId) {
+    broadcastToSubscribers(threadId, msg);
+  } else {
+    trySend(ws, msg);
+  }
 }
 
 // Context cache
@@ -317,12 +348,21 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
       // ============ Session Management ============
       if (msgType === 'switch_session' && VALID_SESSIONS.includes(msg.session as SessionType)) {
-        state.currentSession = msg.session as SessionType;
+        const prevSession = state.currentSession;
+        let requestedSession = msg.session as SessionType;
 
-        // Update thread's last session if there's an active thread
+        // When a thread is active, its session is the source of truth.
+        // The frontend sends switch_session reactively when initialSession prop changes,
+        // but set_thread already sets the correct session from thread.lastSession.
+        // Allowing switch_session to override creates desync (e.g., claude session on opencode thread).
         if (state.currentThreadId) {
-          updateThreadSession(state.currentThreadId, state.currentSession);
+          const thread = getThread(state.currentThreadId);
+          if (thread && VALID_SESSIONS.includes(thread.lastSession as SessionType)) {
+            requestedSession = thread.lastSession as SessionType;
+          }
         }
+
+        state.currentSession = requestedSession;
 
         ws.send(
           JSON.stringify({
@@ -333,23 +373,11 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           })
         );
 
-        // Auto-start auth if the new session needs it (same logic as set_thread)
-        // But skip if auth for this same session is already running (e.g. set_thread just started it)
-        if (state.currentThreadId) {
-          const sessionNeedsAuth = state.currentSession !== 'opencode' && state.currentSession !== 'main' && state.currentSession !== 'claw';
-          if (sessionNeedsAuth && checkCliNeedsSetup(state.currentSession)) {
-            if (hasCliAuthInChat(ws)) {
-              console.log(`[Bridge] Auth already in progress for ${state.currentSession}, skipping duplicate from switch_session`);
-            } else {
-              console.log(`[Bridge] Auto-starting ${state.currentSession} auth on session switch`);
-              cancelCliAuthInChat(ws);
-              startCliAuthInChat(state.currentSession, ws, state.currentThreadId);
-            }
-          } else {
-            // Session doesn't need auth or is already authed — cancel any stale auth from prev session
-            cancelCliAuthInChat(ws);
-          }
-        } else {
+        // Cancel auth only when actually changing sessions.
+        // When selecting a thread, set_thread fires first (starts auth), then
+        // the frontend sends switch_session with the same session (from useEffect).
+        // Canceling unconditionally would kill the auth that set_thread just started.
+        if (prevSession !== state.currentSession) {
           cancelCliAuthInChat(ws);
         }
         return;
@@ -414,6 +442,11 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
       if (msgType === 'set_api_key' && msg.provider && msg.key) {
         try {
           const success = await setApiKey(msg.provider as string, msg.key as string);
+          // Persist to env file so key survives VPS restarts
+          const envVar = CLI_KEY_MAP[msg.provider as string];
+          if (envVar) {
+            saveCliKey(envVar, msg.key as string);
+          }
           ws.send(
             JSON.stringify({
               type: 'api_key_set',
@@ -510,6 +543,12 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           respondToCliAuthInChat(ws, msg.value as string, (msg.selectionType as 'number' | 'arrow' | 'text') || 'text');
           return;
         }
+        // Check for pending OpenCode question (forwarded from question.asked SSE event)
+        if (state.currentThreadId && hasPendingQuestion(state.currentThreadId)) {
+          console.log(`[Bridge] cli_response routed to pending OpenCode question: ${msg.value}`);
+          respondToPendingQuestion(state.currentThreadId, msg.value as string);
+          return;
+        }
         respondToInteractiveCli(ws, msg.value as string, (msg.selectionType as 'number' | 'arrow') || 'number');
         return;
       }
@@ -553,8 +592,19 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
         // Capture thread context at start - prevents race condition when user switches threads during processing
         const commandThreadId = state.currentThreadId;
-        const commandSession = state.currentSession;
+        let commandSession = state.currentSession;
         const commandProject = state.currentProject;
+
+        // Fix session desync: thread's lastSession is the source of truth.
+        // switch_session race conditions can leave state.currentSession mismatched.
+        if (commandThreadId) {
+          const thread = getThread(commandThreadId);
+          if (thread && VALID_SESSIONS.includes(thread.lastSession as SessionType) && thread.lastSession !== commandSession) {
+            console.log(`[Bridge] Session desync corrected: state=${commandSession}, thread=${thread.lastSession}`);
+            commandSession = thread.lastSession as SessionType;
+            state.currentSession = commandSession;
+          }
+        }
 
         console.log(`[Bridge] Command received, threadId=${commandThreadId?.substring(0, 8) || 'null'}, session=${commandSession}`);
         ws.send(JSON.stringify({ type: 'thinking', session: commandSession, threadId: commandThreadId, timestamp: Date.now() }));
@@ -567,36 +617,47 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           subscribeProcessing(commandThreadId, ws);
         }
 
-        // Helper to save messages to thread (uses captured threadId)
-        const saveToThread = (userContent: string, assistantContent: string, thinking?: string[]) => {
-          if (!commandThreadId) {
-            console.log('[Bridge] No thread ID, skipping message save');
-            return;
-          }
+        // Save user message to thread immediately (before CLI dispatch).
+        // This ensures the user's message is persisted even if the CLI takes
+        // a long time and the WS drops before the response completes.
+        const saveUserMessage = (content: string) => {
+          if (!commandThreadId) return;
           try {
-            // Save user message
             addMessage(commandThreadId, {
               type: 'user',
-              content: userContent,
+              content,
               session: commandSession,
               model: null,
               thinking: null,
               metadata: null,
             });
-            // Save assistant message
+            console.log(`[Bridge] Saved user message to thread ${commandThreadId.substring(0, 8)}...`);
+          } catch (err) {
+            console.error('[Bridge] Failed to save user message:', (err as Error).message);
+          }
+        };
+
+        // Save assistant message to thread BEFORE sending over WS.
+        // DB is the source of truth; WS is just a notification channel.
+        const saveAssistantMessage = (content: string, thinking?: string[]) => {
+          if (!commandThreadId) return;
+          try {
             addMessage(commandThreadId, {
               type: 'assistant',
-              content: assistantContent,
+              content,
               session: commandSession,
               model: null,
               thinking: thinking || null,
               metadata: null,
             });
-            console.log(`[Bridge] Saved 2 messages to thread ${commandThreadId.substring(0, 8)}...`);
+            console.log(`[Bridge] Saved assistant message to thread ${commandThreadId.substring(0, 8)}...`);
           } catch (err) {
-            console.error('[Bridge] Failed to save messages:', (err as Error).message);
+            console.error('[Bridge] Failed to save assistant message:', (err as Error).message);
           }
         };
+
+        // Save user message to DB immediately (survives WS drops during long CLI responses)
+        saveUserMessage(msg.content as string);
 
         try {
           const project = (msg.project as string) || commandProject;
@@ -619,12 +680,14 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               (chunk: OpenClawChunk) => {
                 if (chunk.type === 'text' && chunk.content) {
                   streamedText += chunk.content;
-                  ws.send(JSON.stringify({
+                  // Track streamed text for mid-stream reconnection recovery
+                  if (commandThreadId) updateStreamedText(commandThreadId, streamedText);
+                  sendToThread(ws, commandThreadId, {
                     type: 'output',
                     content: streamedText,
                     threadId: commandThreadId,
                     timestamp: Date.now(),
-                  }));
+                  });
                 } else if (chunk.type === 'tool_use' && chunk.tool) {
                   if (commandThreadId) {
                     addThinkingStep(commandThreadId, `Using ${chunk.tool}...`);
@@ -637,9 +700,10 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             );
 
             const output = openclawResponse.text.trim() || 'Done';
-            ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
-            ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-            saveToThread(msg.content as string, output, openclawResponse.reasoning);
+            // Save to DB first (source of truth), then broadcast to all subscribers
+            saveAssistantMessage(output, openclawResponse.reasoning);
+            sendToThread(ws, commandThreadId, { type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() });
+            sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           } else {
           // Auth pre-flight: check if CLI needs setup before invoking
           // opencode/main don't need external auth (uses free models)
@@ -684,12 +748,10 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           const output = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
             || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
 
-          // Send final output + ack
-          ws.send(JSON.stringify({ type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() }));
-          ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
-
-          // Save to thread
-          saveToThread(msg.content as string, output, cliResponse.reasoning);
+          // Save to DB first (source of truth), then broadcast to all subscribers
+          saveAssistantMessage(output, cliResponse.reasoning);
+          sendToThread(ws, commandThreadId, { type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() });
+          sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           }
         } catch (err) {
           const errMsg = (err as Error).message || 'Unknown error';
@@ -714,16 +776,19 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               } else {
                 userMsg = 'Something went wrong. Please try again.';
               }
-              ws.send(JSON.stringify({ type: 'error', message: userMsg, threadId: commandThreadId, timestamp: Date.now() }));
+              // Save error response to DB so user sees their failed attempt in history
+              saveAssistantMessage(userMsg);
+              sendToThread(ws, commandThreadId, { type: 'error', message: userMsg, threadId: commandThreadId, timestamp: Date.now() });
             }
-            ws.send(JSON.stringify({ type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() }));
+            sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           } catch {
             // WebSocket already closed
           }
         } finally {
           // ALWAYS end processing — stops thinking spinner on frontend
+          // Include lastSeq so clients can detect missed messages via gap detection
           if (commandThreadId) {
-            endProcessing(commandThreadId);
+            endProcessing(commandThreadId, getLastSeq(commandThreadId));
           }
         }
         return;
@@ -797,11 +862,14 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           if (result) {
             // Include in-progress processing state if this thread is currently being processed
             const processingState = getProcessingState(msg.threadId as string);
+            const lastMsg = result.messages[result.messages.length - 1];
+            const lastSeq = lastMsg ? lastMsg.seq : 0;
             ws.send(JSON.stringify({
               type: 'thread_data',
               thread: result.thread,
               messages: result.messages,
               processingState: processingState || null,
+              lastSeq,
               timestamp: Date.now(),
             }));
           } else {
@@ -844,8 +912,17 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           unsubscribeProcessing(state.currentThreadId, ws);
         }
 
-        // Cancel any in-progress auth from a DIFFERENT thread
-        cancelCliAuthInChat(ws);
+        // If the target thread already has an active auth running, just reattach
+        // instead of canceling + restarting (prevents duplicate auth prompts).
+        // But always cancel auth on the current ws if it belongs to a different thread.
+        const targetHasAuth = threadId ? hasCliAuthForThread(threadId) : false;
+        const currentAuthThread = getCliAuthThreadId(ws);
+        if (!targetHasAuth) {
+          cancelCliAuthInChat(ws);
+        } else if (currentAuthThread && currentAuthThread !== threadId) {
+          // This ws has auth for a different thread — cancel it before reattaching target's auth
+          cancelCliAuthInChat(ws);
+        }
 
         if (threadId) {
           const thread = getThread(threadId);
@@ -863,12 +940,17 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             ws.send(JSON.stringify({ type: 'thread_set', threadId, session: state.currentSession, timestamp: Date.now() }));
 
             // Try to reattach an auth session from a dropped ws (reconnect scenario)
-            const reattached = reattachCliAuth(ws, threadId);
+            // Pass thread session to prevent cross-session reattach (e.g., claude auth on opencode thread)
+            const reattached = targetHasAuth ? reattachCliAuth(ws, threadId, state.currentSession) : false;
 
             // Auto-start auth setup if this CLI session needs it (don't wait for first message)
             const sessionNeedsAuth = state.currentSession !== 'opencode' && state.currentSession !== 'main' && state.currentSession !== 'claw';
             if (!reattached && sessionNeedsAuth && checkCliNeedsSetup(state.currentSession)) {
               console.log(`[Bridge] Auto-starting ${state.currentSession} auth on thread select`);
+              // Signal "thinking" so the frontend shows a loading spinner while PTY starts up
+              startProcessing(threadId, state.currentSession);
+              subscribeProcessing(threadId, ws);
+              ws.send(JSON.stringify({ type: 'thinking', session: state.currentSession, threadId, timestamp: Date.now() }));
               startCliAuthInChat(state.currentSession, ws, threadId);
             }
           } else {
@@ -901,6 +983,20 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         } catch (err) {
           ws.send(JSON.stringify({ type: 'error', message: 'Failed to add message: ' + (err as Error).message, timestamp: Date.now() }));
         }
+        return;
+      }
+
+      // ============ Delta Sync ============
+      if (msgType === 'sync_messages' && msg.threadId && msg.afterSeq !== undefined) {
+        const messages = getMessagesSince(msg.threadId as string, msg.afterSeq as number);
+        const lastSeq = getLastSeq(msg.threadId as string);
+        ws.send(JSON.stringify({
+          type: 'sync_messages',
+          messages,
+          lastSeq,
+          threadId: msg.threadId,
+          timestamp: Date.now(),
+        }));
         return;
       }
 
@@ -943,6 +1039,14 @@ httpServer.listen(PORT, '127.0.0.1', async () => {
   }).catch((err) => {
     console.error('[Bridge] OpenCode server startup error:', (err as Error).message);
   });
+
+  // Sync OpenRouter key from platform on startup, then every 5 minutes
+  syncOpenRouterKey().then(() => {
+    console.log('[Bridge] Initial OpenRouter key sync done');
+  }).catch(() => {});
+  setInterval(() => {
+    syncOpenRouterKey().catch(() => {});
+  }, 5 * 60 * 1000);
 
   console.log('[Bridge] Ready');
 });

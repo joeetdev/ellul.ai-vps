@@ -19,6 +19,7 @@ interface WsClient {
   readyState: number;
   send(data: string): void;
   close(): void;
+  ping(data?: unknown, mask?: boolean, cb?: (err: Error) => void): void;
   on(event: string, listener: (...args: unknown[]) => void): void;
 }
 
@@ -378,6 +379,21 @@ export function setupWebSocket(server: import('http').Server): WsServer {
     console.error('[WS] Server error:', err.message);
   }) as (...args: unknown[]) => void);
 
+  // Keepalive: ping all clients every 30s to prevent Cloudflare/proxy idle timeout.
+  // Cloudflare closes WebSocket connections after ~100s of inactivity.
+  const PING_INTERVAL_MS = 30_000;
+  const pingInterval = setInterval(() => {
+    for (const client of clients) {
+      if (client.readyState === WS_OPEN) {
+        try {
+          client.ping();
+        } catch {
+          clients.delete(client);
+        }
+      }
+    }
+  }, PING_INTERVAL_MS);
+
   wss.on('connection', ((ws: WsClient) => {
     // UNIFIED AUTH: If client has valid code token, they're authorized
     // Tier enforcement happens at token issuance in sovereign-shield
@@ -390,7 +406,21 @@ export function setupWebSocket(server: import('http').Server): WsServer {
     // Immediate initial data push
     setTimeout(() => computeAndBroadcast(), 100);
 
+    // Track liveness via pong responses
+    let isAlive = true;
+    ws.on('pong', () => { isAlive = true; });
+
+    const aliveCheck = setInterval(() => {
+      if (!isAlive) {
+        clearInterval(aliveCheck);
+        ws.close();
+        return;
+      }
+      isAlive = false;
+    }, PING_INTERVAL_MS);
+
     ws.on('close', () => {
+      clearInterval(aliveCheck);
       clients.delete(ws);
       console.log(`[WS] Client disconnected. Total: ${clients.size}`);
     });
@@ -398,6 +428,7 @@ export function setupWebSocket(server: import('http').Server): WsServer {
     ws.on('error', (err: unknown) => {
       const error = err as Error;
       console.error('[WS] Error:', error.message);
+      clearInterval(aliveCheck);
       clients.delete(ws);
     });
   }) as (...args: unknown[]) => void);

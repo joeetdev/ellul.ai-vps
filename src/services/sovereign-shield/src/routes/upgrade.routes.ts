@@ -190,8 +190,8 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
         credentialId: credId,
       });
 
-      // Notify platform
-      await notifyPlatformPasskeyRegistered(credentialIdB64, name || 'Passkey');
+      // Notify platform (fire-and-forget — local state is committed, don't block response)
+      notifyPlatformPasskeyRegistered(credentialIdB64, name || 'Passkey').catch(() => {});
 
       // Create session
       const session = createSession(credId, ip, fingerprintData);
@@ -276,6 +276,8 @@ export function registerUpgradeRoutes(app: Hono, hostname: string): void {
   .recovery code { display: block; background: #0a0a0a; padding: 0.4rem; border-radius: 4px; font-size: 0.75rem; color: #fcd34d; margin: 0.2rem 0; }
   .btn-icon { display: flex; align-items: center; }
   .btn-icon svg { width: 18px; height: 18px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; }
 </style>
 </head>
 <body>
@@ -329,7 +331,7 @@ window.startRegistration = async function() {
     const { options } = await optRes.json();
     const credential = await startRegistration({ optionsJSON: options });
 
-    btnText.textContent = 'Verifying...';
+    btnText.innerHTML = '<span class="spinner"></span> Activating Web Locked...';
 
     const verifyRes = await fetch('/_auth/upgrade-to-web-locked/verify', {
       method: 'POST',
@@ -395,6 +397,8 @@ window.startRegistration = async function() {
   .recovery code { display: block; background: #0a0a0a; padding: 0.5rem; border-radius: 4px; font-size: 0.8rem; color: #fcd34d; margin: 0.25rem 0; }
   .btn-icon { display: flex; align-items: center; }
   .btn-icon svg { width: 18px; height: 18px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
 </style>
 </head>
 <body>
@@ -467,7 +471,7 @@ window.startRegistration = async function() {
     const { options } = await optRes.json();
     const credential = await startRegistration({ optionsJSON: options });
 
-    btnText.textContent = 'Verifying...';
+    btnText.innerHTML = '<span class="spinner"></span> Activating Web Locked...';
 
     const verifyRes = await fetch('/_auth/upgrade-to-web-locked/verify', {
       method: 'POST',

@@ -108,26 +108,95 @@ function getAppPath(appIdentifier: string): string {
 }
 
 /**
- * Wait for preview to be ready.
+ * Get the PID of the process listening on a given port, or null if port is free.
  */
-function waitForReady(maxWaitMs: number = 10000): boolean {
-  const startTime = Date.now();
-  while (Date.now() - startTime < maxWaitMs) {
+function getPidOnPort(port: number): number | null {
+  try {
+    const out = execSync(`ss -tlnp 'sport = :${port}'`, { encoding: 'utf8', timeout: 3000 });
+    const m = out.match(/pid=(\d+)/);
+    return m?.[1] ? parseInt(m[1], 10) : null;
+  } catch { return null; }
+}
+
+/**
+ * Retry-based port cleanup — verifies the port is actually free.
+ */
+function ensurePortFree(port: number): boolean {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const pid = getPidOnPort(port);
+    if (pid === null) return true;
     try {
-      execSync(
-        'curl -s -o /dev/null -w "%{http_code}" http://localhost:3000 | grep -q "200\\|304\\|301\\|302"',
-        {
-          timeout: 2000,
-          stdio: 'pipe',
-          env: EXEC_ENV,
-        }
-      );
-      return true;
-    } catch {
-      execSync('sleep 0.5', { env: EXEC_ENV });
-    }
+      execSync(`kill ${pid} 2>/dev/null || true`, { env: EXEC_ENV, timeout: 3000 });
+      execSync('sleep 0.8', { env: EXEC_ENV });
+    } catch {}
+  }
+  // Hard kill any remaining process
+  const residual = getPidOnPort(port);
+  if (residual !== null) {
+    try { execSync(`kill -9 ${residual} 2>/dev/null || true`, { env: EXEC_ENV, timeout: 3000 }); } catch {}
+    execSync('sleep 0.3', { env: EXEC_ENV });
+  }
+  return getPidOnPort(port) === null;
+}
+
+/**
+ * Get the PM2-managed preview process PID.
+ */
+function getPreviewPid(): number | null {
+  const list = runPm2('pm2 jlist');
+  try {
+    const procs = JSON.parse(list || '[]');
+    const preview = procs.find((p: any) => p.name === 'preview' && p.pm2_env?.status === 'online');
+    return preview?.pid ?? null;
+  } catch { return null; }
+}
+
+/**
+ * Check if childPid is a descendant of ancestorPid via /proc/PID/status.
+ */
+function isDescendantOf(childPid: number, ancestorPid: number): boolean {
+  let pid = childPid;
+  for (let i = 0; i < 8; i++) {
+    if (pid === ancestorPid) return true;
+    try {
+      const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      const m = status.match(/^PPid:\s+(\d+)/m);
+      if (!m?.[1]) return false;
+      pid = parseInt(m[1], 10);
+      if (pid <= 1) return false;
+    } catch { return false; }
   }
   return false;
+}
+
+/**
+ * Wait for preview to be ready with process ownership + content-type verification.
+ */
+function waitForReady(maxWaitMs: number = 10000): 'ready' | 'wrong_process' | 'timeout' {
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    const portPid = getPidOnPort(3000);
+    if (portPid !== null) {
+      const previewPid = getPreviewPid();
+      if (previewPid !== null && isDescendantOf(portPid, previewPid)) {
+        // Ownership confirmed — check content-type
+        try {
+          const headers = execSync(
+            'curl -sI http://localhost:3000/ 2>/dev/null',
+            { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
+          );
+          if (/content-type:.*text\/html/i.test(headers)) {
+            return 'ready';
+          }
+        } catch {}
+      } else if (portPid !== null && previewPid !== null) {
+        // Wrong process on port — kill it immediately
+        try { execSync(`kill -9 ${portPid} 2>/dev/null || true`, { env: EXEC_ENV, timeout: 3000 }); } catch {}
+      }
+    }
+    try { execSync('sleep 0.5', { env: EXEC_ENV }); } catch {}
+  }
+  return 'timeout';
 }
 
 /**
@@ -198,6 +267,7 @@ export interface PreviewStartResult {
   error?: string;
   ready?: boolean;
   alreadyRunning?: boolean;
+  failReason?: 'port_stuck' | 'wrong_process' | 'timeout' | 'no_config' | null;
 }
 
 /**
@@ -220,10 +290,11 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   const ecosystemPath = path.join(appPath, 'ecosystem.config.js');
   const packageJsonPath = path.join(appPath, 'package.json');
 
-  // Robust cleanup: stop PM2 process + kill any orphaned processes on port 3000
+  // Robust cleanup: stop PM2 process + ensure port 3000 is actually free
   runPm2('pm2 delete preview 2>/dev/null || true');
-  runPm2('fuser -k 3000/tcp 2>/dev/null || true');
-  runPm2('sleep 0.5'); // Allow port to fully release
+  if (!ensurePortFree(3000)) {
+    return { success: false, error: 'Port 3000 could not be freed', failReason: 'port_stuck' };
+  }
 
   // Clean up stale preview metadata (port 3000 apps) so the dashboard
   // doesn't show the previous preview as still "deployed" after switching.
@@ -355,9 +426,13 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
     return { success: true, ready: false, error: 'Superseded - skipped wait' };
   }
 
-  const ready = waitForReady(8000);
+  const readyStatus = waitForReady(10000);
 
-  return { success: true, ready };
+  return {
+    success: true,
+    ready: readyStatus === 'ready',
+    failReason: readyStatus === 'ready' ? null : readyStatus,
+  };
 }
 
 /**

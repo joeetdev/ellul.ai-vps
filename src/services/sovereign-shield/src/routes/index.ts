@@ -40,6 +40,7 @@ import { registerGitRoutes } from './git.routes';
 import { registerWorkflowRoutes } from './workflow.routes';
 import { registerPreviewRoutes } from './preview.routes';
 import { registerSecretsRoutes } from './secrets.routes';
+import { registerChatRoutes } from './chat.routes';
 
 export interface RouteConfig {
   hostname: string;
@@ -101,6 +102,9 @@ export function registerAllRoutes(app: Hono, config: RouteConfig): void {
   // Preview auth (cross-site dev domain token flow)
   registerPreviewRoutes(app, config.hostname);
 
+  // Chat SPA (VPS-served iframe for SSH-equivalent security)
+  registerChatRoutes(app);
+
   // Static assets
   registerStaticRoutes(app);
 }
@@ -124,4 +128,5 @@ export {
   registerWorkflowRoutes,
   registerPreviewRoutes,
   registerSecretsRoutes,
+  registerChatRoutes,
 };

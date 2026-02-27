@@ -70,6 +70,45 @@ export function removeCliKey(varName: string): void {
 }
 
 /**
+ * Sync OpenRouter API key from the platform API.
+ * Reads the AI proxy token from /etc/ellulai/ai-proxy-token and calls
+ * GET /api/ai/llm-keys to fetch the user's decrypted OpenRouter key.
+ * Saves/removes the key in ~/.ellulai-env so OpenCode can use it.
+ */
+export async function syncOpenRouterKey(): Promise<void> {
+  try {
+    const apiUrl = fs.readFileSync('/etc/ellulai/api-url', 'utf8').trim();
+    const token = fs.readFileSync('/etc/ellulai/ai-proxy-token', 'utf8').trim();
+    if (!apiUrl || !token) return;
+
+    const res = await fetch(`${apiUrl}/api/ai/llm-keys`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      console.warn(`[cli-env] llm-keys sync failed: ${res.status}`);
+      return;
+    }
+
+    const data = (await res.json()) as { keys?: Record<string, string> };
+    const orKey = data.keys?.openrouter;
+    const varName = CLI_KEY_MAP['openrouter'];
+    if (!varName) return;
+
+    if (orKey) {
+      saveCliKey(varName, orKey);
+      console.log('[cli-env] OpenRouter key synced');
+    } else {
+      // Key was removed by user — clean up local copy
+      removeCliKey(varName);
+      console.log('[cli-env] OpenRouter key removed (not set on platform)');
+    }
+  } catch (err) {
+    console.warn('[cli-env] OpenRouter key sync error:', (err as Error).message);
+  }
+}
+
+/**
  * Get spawn env with CLI keys merged.
  */
 export function getCliSpawnEnv(): NodeJS.ProcessEnv {

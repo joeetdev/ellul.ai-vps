@@ -267,7 +267,7 @@ export function buildClawSystemPrompt(
 - Be concise and direct. Avoid unnecessary preamble.
 - Write clean, working code. Prefer simplicity over cleverness.
 - When making changes, explain what you did and why in 1-2 sentences.
-- If something is ambiguous, ask for clarification rather than guessing.`);
+- If something is ambiguous, make a reasonable decision and proceed. Pick the most popular/common option rather than asking.`);
 
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);

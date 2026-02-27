@@ -266,8 +266,8 @@ export function registerBridgeRoutes(app: Hono, hostname: string): void {
       details: { credentialId }
     });
 
-    // Notify platform
-    await notifyPlatformPasskeyRemoved(credentialId, passkeyName);
+    // Notify platform (fire-and-forget)
+    notifyPlatformPasskeyRemoved(credentialId, passkeyName).catch(() => {});
 
     return c.json({ success: true, credentialId });
   });

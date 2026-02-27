@@ -3,6 +3,7 @@ import { startAuthentication, startRegistration } from '/_auth/static/simpleweba
 const DASHBOARD_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
 let session = null;
 let pendingAuth = null;
+let pendingSessionCheck = null;
 let popReady = false;
 
 // SECURITY: Capture the exact parent origin when iframe loads
@@ -251,15 +252,20 @@ async function handleMessage(type, data) {
 }
 
 async function checkSession() {
-  try {
-    const res = await fetch('/_auth/bridge/session', { credentials: 'include' });
-    if (res.ok) {
-      session = await res.json();
-      return true;
-    }
-  } catch {}
-  session = null;
-  return false;
+  // Deduplicate concurrent calls — share a single in-flight request
+  if (pendingSessionCheck) return pendingSessionCheck;
+  pendingSessionCheck = (async () => {
+    try {
+      const res = await fetch('/_auth/bridge/session', { credentials: 'include' });
+      if (res.ok) {
+        session = await res.json();
+        return true;
+      }
+    } catch {}
+    session = null;
+    return false;
+  })();
+  try { return await pendingSessionCheck; } finally { pendingSessionCheck = null; }
 }
 
 async function requireSession() {

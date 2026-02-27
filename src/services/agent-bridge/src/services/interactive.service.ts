@@ -15,7 +15,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getCliSpawnEnv, loadCliEnv, saveCliKey } from './cli-env.service';
 import { PROJECTS_DIR, INTERACTIVE_TIMEOUT_MS, MAX_BUFFER_SIZE, DEBOUNCE_MS } from '../config';
-import { getThreadStateDir } from './thread.service';
+import { getThreadStateDir, addMessage } from './thread.service';
+import { endProcessing } from './processing-state';
 
 /**
  * Auth files that should be synced back to real home after successful authentication.
@@ -721,12 +722,29 @@ function removeAuthSession(ws: WsClient) {
 /**
  * Re-associate an auth session from a previous ws to a new ws on reconnect.
  * Returns true if an existing auth session was migrated.
+ *
+ * @param expectedSession - If provided, only reattach if the auth session matches.
+ *   Prevents claude auth from being reattached to an opencode thread (session desync).
  */
-export function reattachCliAuth(newWs: WsClient, threadId: string): boolean {
+export function reattachCliAuth(newWs: WsClient, threadId: string, expectedSession?: string): boolean {
   const entry = chatAuthByThread.get(threadId);
   if (!entry || !entry.state.proc || entry.state.proc.killed) {
     // No active auth for this thread
     chatAuthByThread.delete(threadId);
+    return false;
+  }
+  // Don't reattach if the auth session doesn't match what the thread expects
+  // (e.g., claude auth orphaned on an opencode thread due to session desync)
+  if (expectedSession && entry.state.session !== expectedSession) {
+    console.log(`[ChatAuth] Refusing reattach: auth session=${entry.state.session} doesn't match thread session=${expectedSession}, cancelling orphaned auth`);
+    clearTimeout(entry.state.timeout);
+    if (entry.state.proc && !entry.state.proc.killed) {
+      try { process.kill(-entry.state.proc.pid!, 'SIGTERM'); } catch {
+        try { entry.state.proc.kill('SIGTERM'); } catch {}
+      }
+    }
+    chatAuthByThread.delete(threadId);
+    chatAuthSessions.delete(entry.wsRef.ws);
     return false;
   }
   const oldWs = entry.wsRef.ws;
@@ -909,17 +927,25 @@ export function startCliAuthInChat(
       sessionState.awaitingResponse = true;
       // Track activeArrowIdx so respondToCliAuthInChat can navigate correctly
       (sessionState as InteractiveState & { threadId?: string | null; lastActiveIdx?: number }).lastActiveIdx = parsed.activeArrowIdx;
+      const promptOptions = parsed.options;
+      const instructions = context || undefined;
+      const selectionType = parsed.selectionType;
+      // Clear thinking/loading spinner before showing the prompt
+      if (threadId) endProcessing(threadId);
+      ws.send(JSON.stringify({ type: 'ack', session, threadId, timestamp: now }));
       ws.send(JSON.stringify({
         type: 'cli_prompt',
         session,
-        context: context || undefined,
-        options: parsed.options,
-        selectionType: parsed.selectionType,
+        context: instructions,
+        options: promptOptions,
+        selectionType,
         activeIndex: parsed.activeArrowIdx,
         inChatAuth: true,
         threadId,
         timestamp: now,
       }));
+      // Auth prompts are transient (sent via WS only, not persisted to DB)
+      // to prevent duplicate auth cards when re-selecting a thread.
       lastFlush = now;
       return;
     }
@@ -1029,6 +1055,16 @@ export function startCliAuthInChat(
         threadId,
         timestamp: Date.now(),
       }));
+      if (threadId) {
+        addMessage(threadId, {
+          type: 'system',
+          content: `${session} authenticated successfully! You can now send messages.`,
+          session,
+          model: null,
+          thinking: null,
+          metadata: null,
+        });
+      }
       return;
     }
 
@@ -1049,15 +1085,21 @@ export function startCliAuthInChat(
         const deviceCode = codeFromFullText?.[1] || codeFromRaw?.[1] || null;
         console.log(`[ChatAuth] Codex device code: ${deviceCode || 'not found'}`);
         // Codex device auth: user enters the code ON THE WEBSITE, not in terminal
-        // CLI auto-detects completion — no input field needed
+        // CLI auto-detects completion — sent as cli_input with deviceCode for proper card UI
+        const codexContent = deviceCode
+          ? `To authenticate **Codex**, open this link and sign in:\n\nThen enter this one-time code on the website:\n\n**${deviceCode}**\n\n_Waiting for authentication to complete..._`
+          : `To authenticate **Codex**, open this link and sign in:\n\n_Waiting for authentication to complete..._`;
         ws.send(JSON.stringify({
-          type: 'output',
-          content: deviceCode
-            ? `To authenticate **Codex**, open this link and sign in:\n\n${authUrl}\n\nThen enter this one-time code on the website:\n\n**${deviceCode}**\n\n_Waiting for authentication to complete..._`
-            : `To authenticate **Codex**, open this link and sign in:\n\n${authUrl}\n\n_Waiting for authentication to complete..._`,
+          type: 'cli_input',
+          session,
+          prompt: codexContent,
+          url: authUrl,
+          deviceCode: deviceCode || undefined,
+          inChatAuth: true,
           threadId,
           timestamp: Date.now(),
         }));
+        // Auth prompts are transient — not persisted to DB
       } else {
         // Claude: user needs to paste a code back → show input field
         sessionState.awaitingResponse = true;
@@ -1090,6 +1132,7 @@ export function startCliAuthInChat(
         threadId,
         timestamp: Date.now(),
       }));
+      // Auth prompts are transient — not persisted to DB
       return;
     }
 
@@ -1125,6 +1168,16 @@ export function startCliAuthInChat(
         threadId,
         timestamp: Date.now(),
       }));
+      if (threadId) {
+        addMessage(threadId, {
+          type: 'system',
+          content: `${session} authenticated successfully! You can now send messages.`,
+          session,
+          model: null,
+          thinking: null,
+          metadata: null,
+        });
+      }
     }
   });
 
@@ -1175,6 +1228,7 @@ function startGeminiApiKeyAuth(ws: WsClient, threadId?: string | null): void {
     threadId,
     timestamp: Date.now(),
   }));
+  // Auth prompts are transient — not persisted to DB
 }
 
 /**
@@ -1197,6 +1251,26 @@ export function saveGeminiApiKey(apiKey: string, _threadId?: string | null): boo
  */
 export function hasCliAuthInChat(ws: WsClient): boolean {
   return chatAuthSessions.has(ws);
+}
+
+/**
+ * Get the thread ID that a ws client's auth session belongs to (if any).
+ */
+export function getCliAuthThreadId(ws: WsClient): string | null {
+  const state = chatAuthSessions.get(ws);
+  return state?.threadId ?? null;
+}
+
+/**
+ * Check if there's an active in-chat auth session for a specific thread.
+ */
+export function hasCliAuthForThread(threadId: string): boolean {
+  const entry = chatAuthByThread.get(threadId);
+  if (!entry || !entry.state.proc || entry.state.proc.killed) {
+    chatAuthByThread.delete(threadId);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -1228,6 +1302,16 @@ export function respondToCliAuthInChat(
         threadId: state.threadId,
         timestamp: Date.now(),
       }));
+      if (state.threadId) {
+        addMessage(state.threadId, {
+          type: 'system',
+          content: 'gemini authenticated successfully! You can now send messages.',
+          session: 'gemini',
+          model: null,
+          thinking: null,
+          metadata: null,
+        });
+      }
     } else {
       ws.send(JSON.stringify({
         type: 'output',
