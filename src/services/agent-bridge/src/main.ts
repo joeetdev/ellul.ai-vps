@@ -128,6 +128,7 @@ import {
   deleteThreadsByProject,
   renameThread,
   updateThreadModel,
+  updateThreadSession,
   clearThreadOpencodeSession,
   addMessage,
   getMessagesSince,
@@ -417,15 +418,10 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
         const prevSession = state.currentSession;
         let requestedSession = msg.session as SessionType;
 
-        // When a thread is active, its session is the source of truth.
-        // The frontend sends switch_session reactively when initialSession prop changes,
-        // but set_thread already sets the correct session from thread.lastSession.
-        // Allowing switch_session to override creates desync (e.g., claude session on opencode thread).
+        // When switching session within an active thread, update the thread's stored session
+        // so the skin stays correct on reconnect / tab switch.
         if (state.currentThreadId) {
-          const thread = getThread(state.currentThreadId);
-          if (thread && VALID_SESSIONS.includes(thread.lastSession as SessionType)) {
-            requestedSession = thread.lastSession as SessionType;
-          }
+          updateThreadSession(state.currentThreadId, requestedSession);
         }
 
         state.currentSession = requestedSession;

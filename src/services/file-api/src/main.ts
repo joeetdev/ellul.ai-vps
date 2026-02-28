@@ -50,6 +50,8 @@ import {
   saveOpenclawChannel,
   startWhatsAppLogin,
   stopWhatsAppLogin,
+  handleWhatsAppQrStream,
+  getWhatsAppQrPageHtml,
   getOpenclawLlmKey,
   saveOpenclawLlmKey,
   removeOpenclawLlmKey,
@@ -1646,6 +1648,22 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // GET /api/openclaw/channels/whatsapp/qr — self-contained QR pairing page (for iframe)
+    if (req.method === 'GET' && pathname === '/api/openclaw/channels/whatsapp/qr') {
+      const project = parsedUrl.query.project as string | undefined;
+      const html = getWhatsAppQrPageHtml(project);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+
+    // GET /api/openclaw/channels/whatsapp/qr-stream — SSE stream of QR data
+    if (req.method === 'GET' && pathname === '/api/openclaw/channels/whatsapp/qr-stream') {
+      const project = parsedUrl.query.project as string | undefined;
+      handleWhatsAppQrStream(res, project);
+      return;
+    }
+
     // POST /api/openclaw/channels/whatsapp/login — start WhatsApp QR pairing
     if (req.method === 'POST' && pathname === '/api/openclaw/channels/whatsapp/login') {
       const project = parsedUrl.query.project as string | undefined;
@@ -1681,7 +1699,8 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'Missing provider or apiKey' }));
         return;
       }
-      const result = saveOpenclawLlmKey(provider, apiKey);
+      const modelId = body.modelId as string | undefined;
+      const result = saveOpenclawLlmKey(provider, apiKey, modelId);
       res.writeHead(result.success ? 200 : 400);
       res.end(JSON.stringify(result));
       return;
