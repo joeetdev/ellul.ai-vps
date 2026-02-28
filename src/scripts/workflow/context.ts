@@ -72,10 +72,11 @@ Do NOT deploy or redeploy unless the user explicitly asks — they may just be i
    - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
-5. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
-6. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
-7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
-8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
+5. **REQUIRED CSS RESET**: ALWAYS create a CSS file (index.css or globals.css) with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { width: 100%; height: 100%; }\\\` and import it in your entry point (main.jsx/main.tsx). NEVER put resets as inline styles on <body> — Vite strips them.
+6. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
+7. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
+8. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
+9. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
 ## Deployment (ONLY when user EXPLICITLY asks — never assume)
 The preview (port 3000) = live source code. The deployed site (port 3001+) = frozen snapshot.
@@ -263,10 +264,11 @@ generate_global_free() {
    - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
-5. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
-6. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
-7. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
-8. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
+5. **REQUIRED CSS RESET**: ALWAYS create a CSS file (index.css or globals.css) with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { width: 100%; height: 100%; }\\\` and import it in your entry point (main.jsx/main.tsx). NEVER put resets as inline styles on <body> — Vite strips them.
+6. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
+7. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
+8. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
+9. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:

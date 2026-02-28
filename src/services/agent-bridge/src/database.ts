@@ -62,6 +62,16 @@ db.exec(`
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS processing_ledger (
+    thread_id TEXT PRIMARY KEY,
+    session TEXT NOT NULL,
+    project TEXT,
+    prompt TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    pid INTEGER NOT NULL,
+    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+  );
 `);
 
 console.log('[vibe-chat] Database initialized at', CHAT_DB_PATH);

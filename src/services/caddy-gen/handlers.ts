@@ -9,14 +9,16 @@
  * DEV_DOMAIN_PLACEHOLDER — callers replace these with actual domains.
  */
 
+import { PORTS } from '../shared/constants';
+
 // ── Constants ──
 
 const CONSOLE_ORIGIN = "https://console.ellul.ai";
-const SHIELD_PORT = 3005;
-const TERM_PROXY_PORT = 7701;
-const FILE_API_PORT = 3002;
-const AGENT_BRIDGE_PORT = 7700;
-const PREVIEW_PORT = 3000;
+const SHIELD_PORT = PORTS.SOVEREIGN_SHIELD;
+const TERM_PROXY_PORT = PORTS.TERM_PROXY;
+const FILE_API_PORT = PORTS.FILE_API;
+const AGENT_BRIDGE_PORT = PORTS.AGENT_BRIDGE;
+const PREVIEW_PORT = PORTS.PREVIEW;
 
 interface CorsConfig {
   methods: string;
@@ -24,12 +26,12 @@ interface CorsConfig {
 }
 
 const SHIELD_CORS: CorsConfig = {
-  methods: "GET, POST, DELETE, OPTIONS",
+  methods: "GET, POST, PUT, DELETE, OPTIONS",
   headers: "Content-Type, Authorization, Cookie, X-Code-Token, X-PoP-Signature, X-PoP-Timestamp, X-PoP-Nonce",
 };
 
 const CODE_CORS: CorsConfig = {
-  methods: "GET, POST, DELETE, OPTIONS",
+  methods: "GET, POST, PUT, DELETE, OPTIONS",
   headers: "Content-Type, Authorization, Cookie, X-Code-Token",
 };
 
@@ -317,6 +319,20 @@ function mainHandler(): Lines {
     lines.push(...shieldAuthRoute(path));
     lines.push("");
   }
+
+  // Bridge endpoint — HMAC-authenticated, no forward_auth needed
+  lines.push(...indent([`handle /_bridge/* {`], 2));
+  lines.push(...corsPreflightBlock("bridgeOptions", {
+    methods: "POST, OPTIONS",
+    headers: "Content-Type",
+  }, 3));
+  lines.push(...corsHeaders({
+    methods: "POST, OPTIONS",
+    headers: "Content-Type",
+  }, 3));
+  lines.push(...indent([`reverse_proxy localhost:${AGENT_BRIDGE_PORT}`], 3));
+  lines.push(...indent([`}`], 2));
+  lines.push("");
 
   for (const route of AUTHED_ROUTES) {
     lines.push(...authedRoute(route));

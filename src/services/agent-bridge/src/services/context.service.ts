@@ -132,6 +132,66 @@ export function loadProjectContext(projectName: string | null): string {
   return loadAppContext(projectName);
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic preview hints — project-aware verification instructions
+// ---------------------------------------------------------------------------
+
+/** Map of UI library trigger → Vite plugin package name */
+const VITE_PLUGIN_MAP: Record<string, string> = {
+  react: '@vitejs/plugin-react',
+  vue: '@vitejs/plugin-vue',
+  svelte: '@sveltejs/vite-plugin-svelte',
+  'solid-js': 'vite-plugin-solid',
+  preact: '@preact/preset-vite',
+};
+
+/**
+ * Build project-specific preview verification hints.
+ * Returns 2-4 lines of targeted instructions based on the actual project stack.
+ */
+function buildPreviewHints(projectName: string | null): string {
+  if (!projectName) return '';
+  const projectPath = path.join(PROJECTS_DIR, projectName);
+  const pkgPath = path.join(projectPath, 'package.json');
+  if (!fs.existsSync(pkgPath)) return '';
+
+  let allDeps: Record<string, string> = {};
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+  } catch { return ''; }
+
+  const isVite = !!allDeps['vite'];
+  if (!isVite) return '';
+
+  // Detect which UI library is in use
+  const uiLib = Object.keys(VITE_PLUGIN_MAP).find((k) => !!allDeps[k]);
+  if (!uiLib) return '';
+
+  const pluginPkg = VITE_PLUGIN_MAP[uiLib]!;
+
+  // Find actual entry file(s) in src/
+  const srcDir = path.join(projectPath, 'src');
+  let entryFile = '';
+  if (fs.existsSync(srcDir)) {
+    const entryExts = ['.tsx', '.jsx', '.vue', '.svelte', '.ts', '.js'];
+    try {
+      const files = fs.readdirSync(srcDir);
+      const main = files.find((f) => {
+        const base = f.replace(/\.[^.]+$/, '');
+        return (base === 'main' || base === 'index' || base === 'App') && entryExts.some((ext) => f.endsWith(ext));
+      });
+      if (main) entryFile = `/src/${main}`;
+    } catch {}
+  }
+
+  const entryCheck = entryFile
+    ? `\`curl -sI localhost:3000${entryFile} | grep content-type\` — must return \`application/javascript\`, NOT \`text/${entryFile.endsWith('.tsx') ? 'tsx' : entryFile.endsWith('.jsx') ? 'jsx' : entryFile.endsWith('.vue') ? 'x-vue' : 'plain'}\`.`
+    : '';
+
+  return `**Project check:** Vite+${uiLib.charAt(0).toUpperCase() + uiLib.slice(1)} detected. Ensure \`${pluginPkg}\` is in devDependencies and configured in vite.config plugins.${entryCheck ? `\nAfter preview starts, run: ${entryCheck}` : ''}\nIf MIME type is wrong, install \`${pluginPkg}\` and add it to vite.config plugins, then restart.`;
+}
+
 // Session → CLI tool info (for system prompt injection)
 const SESSION_CLI_INFO: Record<string, { cli: string; desc: string; cmd: string }> = {
   claude: { cli: 'claude', desc: 'Claude Code (Anthropic)', cmd: "claude 'REQUEST'" },
@@ -181,7 +241,13 @@ process action:poll sessionId:SESSION_ID
 process action:log sessionId:SESSION_ID
 Repeat poll/log until the CLI finishes. If you see meaningful progress in the logs, briefly summarize in 1 sentence.
 
-STEP 4: Tell the user the result. If the CLI created or modified a web app, verify it's working before sharing the preview URL: check \`pm2 list\` shows "online" AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200 AND \`curl -s localhost:3000 | head -5\` shows actual HTML. If not, check \`pm2 logs preview --nostream --lines 20\` and fix before reporting success.
+STEP 4: Tell the user the result. If the CLI created or modified a web app, verify it's working before sharing the preview URL:
+1. \`pm2 list\` shows "online"
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200
+3. \`curl -s localhost:3000 | head -20\` shows actual HTML (<!DOCTYPE or <html>)
+4. \`pm2 logs preview --nostream --lines 20\` — check for any startup errors
+${buildPreviewHints(projectName ?? null) || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite plugin and restart.'}
+If ANY check fails, fix the issue before reporting success.
 
 ## Model Selection (opencode only)
 The CLI uses free models from OpenCode Zen. You can pick the model with the \`-m\` flag:
@@ -195,7 +261,12 @@ If the user asks to change models, use \`opencode models\` to show them what's a
 - ONLY use bash (with pty:true) and process tools. NEVER use write, exec, or read.
 - NEVER create files yourself. NEVER fall back to doing the work if the CLI is slow — wait for it.
 - NEVER output code blocks, plans, or file listings.
-- For non-coding questions (general knowledge, platform questions), just answer directly.`);
+- For non-coding questions (general knowledge, platform questions), just answer directly.
+
+## CSS Reset (REQUIRED for all web apps)
+ALWAYS include a CSS reset in a CSS file (index.css, App.css, etc.) — NEVER rely on inline styles on \`<body>\`. Vite strips inline body styles.
+At minimum: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { width: 100%; height: 100%; }\`
+Import this CSS in the entry point.`);
       }
     }
   } else {
@@ -225,11 +296,18 @@ If the user asks to change models, use \`opencode models\` to show them what's a
 
   // Dev preview — tell agent the actual preview URL so it can share with users
   if (DEV_DOMAIN) {
+    const previewHints = buildPreviewHints(projectName ?? null);
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
 Apps listening on port 3000 are served at this URL via reverse proxy.
 When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
-Before telling the user the preview is live, verify: \`pm2 list\` shows "online" AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200 AND \`curl -s localhost:3000 | head -5\` shows actual HTML (<!DOCTYPE or <html>). If not, check \`pm2 logs preview --nostream --lines 20\` and fix before sharing the URL.`);
+Before telling the user the preview is live, verify ALL of:
+1. \`pm2 list\` shows "online"
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200
+3. \`curl -s localhost:3000 | head -20\` shows actual HTML
+4. \`pm2 logs preview --nostream --lines 20\` — no errors
+${previewHints || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite framework plugin and restart.'}
+If ANY check fails, diagnose and fix before sharing the URL.`);
   }
 
   // CLI auth status — accurate for ALL tools including active session
@@ -267,7 +345,16 @@ export function buildClawSystemPrompt(
 - Be concise and direct. Avoid unnecessary preamble.
 - Write clean, working code. Prefer simplicity over cleverness.
 - When making changes, explain what you did and why in 1-2 sentences.
-- If something is ambiguous, make a reasonable decision and proceed. Pick the most popular/common option rather than asking.`);
+- If something is ambiguous, make a reasonable decision and proceed. Pick the most popular/common option rather than asking.
+
+## CSS Reset (REQUIRED for all web apps)
+ALWAYS include a CSS reset in your main CSS file (index.css, App.css, styles.css, or globals.css) — NEVER rely on inline styles on \`<body>\` or \`<html>\`. Vite's dev server strips inline styles from the body tag.
+At minimum, every web project must have this in its main CSS file:
+\`\`\`css
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { width: 100%; height: 100%; }
+\`\`\`
+Import this CSS file in your entry point (main.jsx/main.tsx).`);
 
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);
@@ -290,11 +377,18 @@ export function buildClawSystemPrompt(
   }
 
   if (DEV_DOMAIN) {
+    const previewHints = buildPreviewHints(projectName ?? null);
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
 Apps listening on port 3000 are served at this URL via reverse proxy.
 When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
-Before telling the user the preview is live, verify: \`pm2 list\` shows "online" AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200 AND \`curl -s localhost:3000 | head -5\` shows actual HTML (<!DOCTYPE or <html>). If not, check \`pm2 logs preview --nostream --lines 20\` and fix before sharing the URL.`);
+Before telling the user the preview is live, verify ALL of:
+1. \`pm2 list\` shows "online"
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200
+3. \`curl -s localhost:3000 | head -20\` shows actual HTML
+4. \`pm2 logs preview --nostream --lines 20\` — no errors
+${previewHints || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite framework plugin and restart.'}
+If ANY check fails, diagnose and fix before sharing the URL.`);
   }
 
   if (globalContext) parts.push(globalContext);

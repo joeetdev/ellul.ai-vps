@@ -120,6 +120,8 @@ Environment=PATH=${svcHome}/.node/bin:${svcHome}/.opencode/bin:${svcHome}/.local
 ExecStart=${svcHome}/.node/bin/node /usr/local/bin/ellulai-agent-bridge
 Restart=on-failure
 RestartSec=5
+KillMode=process
+TimeoutStopSec=90
 
 # Security hardening
 NoNewPrivileges=true

@@ -54,7 +54,7 @@ export function registerLoginRoutes(app: Hono, hostname: string): void {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sovereign Shield</title>
   <script nonce="${nonce}" src="/_auth/static/session-pop.js"></script>
-  <style>
+  <style nonce="${nonce}">
     * { box-sizing: border-box; }
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 20px auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
     h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }

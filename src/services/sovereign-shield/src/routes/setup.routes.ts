@@ -61,7 +61,7 @@ export function registerSetupRoutes(app: Hono, hostname: string): void {
       c.header('Content-Security-Policy', getCspHeader(wn));
       return c.html(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:-apple-system,system-ui,sans-serif;max-width:420px;margin:20px auto;padding:20px;background:#0a0a0a;color:#e0e0e0;text-align:center;}
+<style nonce="${wn}">body{font-family:-apple-system,system-ui,sans-serif;max-width:420px;margin:20px auto;padding:20px;background:#0a0a0a;color:#e0e0e0;text-align:center;}
 .spinner{display:inline-block;width:24px;height:24px;border:3px solid #333;border-top-color:#7c3aed;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:12px;}
 @keyframes spin{to{transform:rotate(360deg)}}</style>
 </head><body>
@@ -81,7 +81,7 @@ sessionStorage.setItem('shield-retry',''+(a+1));setTimeout(function(){location.r
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sovereign Shield Setup</title>
   <script nonce="${nonce}" src="/_auth/static/session-pop.js"></script>
-  <style>
+  <style nonce="${nonce}">
     * { box-sizing: border-box; }
     body { font-family: -apple-system, system-ui, sans-serif; max-width: 420px; margin: 20px auto; padding: 20px; background: #0a0a0a; color: #e0e0e0; }
     h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }

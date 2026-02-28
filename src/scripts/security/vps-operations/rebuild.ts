@@ -89,7 +89,7 @@ if [ "$HTTP_CODE" = "200" ]; then
     fi
     echo ""
     echo "  After rebuild, your server will be in Standard tier."
-    echo "  You can upgrade to SSH Only again if desired."
+    echo "  You can upgrade to Web Locked mode if desired."
     echo ""
     echo "  This SSH connection will be terminated shortly."
     echo ""

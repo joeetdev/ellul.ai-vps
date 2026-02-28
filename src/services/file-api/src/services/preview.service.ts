@@ -9,12 +9,67 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { HOME, ROOT_DIR } from '../config';
+import { PORTS } from '../../../shared/constants';
 
 const PREVIEW_FILE = `${HOME}/.ellulai/preview-app`;
 
 // Request ordering - ensures only the latest request is processed
 let latestRequestId = 0;
-let currentRequestId = 0;
+
+// ---------------------------------------------------------------------------
+// Vite Plugin Registry — declarative mapping from UI library → Vite plugin
+// ---------------------------------------------------------------------------
+
+interface VitePluginSpec {
+  /** Dependency in package.json that triggers this requirement */
+  trigger: string;
+  /** npm package to install */
+  pluginPackage: string;
+  /** Import line to add to vite config */
+  importLine: string;
+  /** Plugin call to add to plugins array */
+  pluginCall: string;
+  /** Strings that indicate plugin is already configured */
+  detectPatterns: string[];
+}
+
+const VITE_PLUGIN_REGISTRY: VitePluginSpec[] = [
+  {
+    trigger: 'react',
+    pluginPackage: '@vitejs/plugin-react',
+    importLine: 'import react from "@vitejs/plugin-react";',
+    pluginCall: 'react()',
+    detectPatterns: ['plugin-react', 'pluginReact'],
+  },
+  {
+    trigger: 'vue',
+    pluginPackage: '@vitejs/plugin-vue',
+    importLine: 'import vue from "@vitejs/plugin-vue";',
+    pluginCall: 'vue()',
+    detectPatterns: ['plugin-vue', 'pluginVue'],
+  },
+  {
+    trigger: 'svelte',
+    pluginPackage: '@sveltejs/vite-plugin-svelte',
+    importLine: 'import { svelte } from "@sveltejs/vite-plugin-svelte";',
+    pluginCall: 'svelte()',
+    detectPatterns: ['vite-plugin-svelte', 'pluginSvelte'],
+  },
+  {
+    trigger: 'solid-js',
+    pluginPackage: 'vite-plugin-solid',
+    importLine: 'import solid from "vite-plugin-solid";',
+    pluginCall: 'solid()',
+    detectPatterns: ['vite-plugin-solid', 'pluginSolid'],
+  },
+  {
+    trigger: 'preact',
+    pluginPackage: '@preact/preset-vite',
+    importLine: 'import preact from "@preact/preset-vite";',
+    pluginCall: 'preact()',
+    detectPatterns: ['preset-vite', '@preact/preset'],
+  },
+];
 
 /**
  * Generate a new request ID and return it.
@@ -35,7 +90,10 @@ function isLatestRequest(requestId: number): boolean {
 
 // Ensure nvm binaries (node, npm, pm2, npx) are in PATH for execSync calls
 const NVM_BIN = `${HOME}/.node/bin`;
-const EXEC_ENV = { ...process.env, PATH: `${NVM_BIN}:${process.env.PATH || ''}` };
+const EXEC_ENV = (() => {
+  const { PORT: _leaked, ...rest } = process.env;
+  return { ...rest, PATH: `${NVM_BIN}:${rest.PATH || ''}` };
+})();
 
 /**
  * Check if npm install is complete — node_modules exists AND expected framework binaries are present.
@@ -169,24 +227,36 @@ function isDescendantOf(childPid: number, ancestorPid: number): boolean {
   return false;
 }
 
+interface ReadyResult {
+  status: 'ready' | 'wrong_process' | 'timeout' | 'module_error';
+  /** Entry points that failed MIME validation */
+  badModules?: Array<{ path: string; contentType: string }>;
+}
+
 /**
  * Wait for preview to be ready with process ownership + content-type verification.
+ * Also validates that module entry points are served with correct MIME types.
  */
-function waitForReady(maxWaitMs: number = 10000): 'ready' | 'wrong_process' | 'timeout' {
+function waitForReady(maxWaitMs: number = 10000): ReadyResult {
   const startTime = Date.now();
   while (Date.now() - startTime < maxWaitMs) {
-    const portPid = getPidOnPort(3000);
+    const portPid = getPidOnPort(PORTS.PREVIEW);
     if (portPid !== null) {
       const previewPid = getPreviewPid();
       if (previewPid !== null && isDescendantOf(portPid, previewPid)) {
         // Ownership confirmed — check content-type
         try {
           const headers = execSync(
-            'curl -sI http://localhost:3000/ 2>/dev/null',
+            `curl -sI http://localhost:${PORTS.PREVIEW}/ 2>/dev/null`,
             { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
           );
           if (/content-type:.*text\/html/i.test(headers)) {
-            return 'ready';
+            // HTML OK — now validate module entry points
+            const badModules = validateModuleEntryPoints();
+            if (badModules.length > 0) {
+              return { status: 'module_error', badModules };
+            }
+            return { status: 'ready' };
           }
         } catch {}
       } else if (portPid !== null && previewPid !== null) {
@@ -196,66 +266,189 @@ function waitForReady(maxWaitMs: number = 10000): 'ready' | 'wrong_process' | 't
     }
     try { execSync('sleep 0.5', { env: EXEC_ENV }); } catch {}
   }
-  return 'timeout';
+  return { status: 'timeout' };
 }
 
 /**
- * Ensure Vite projects have allowedHosts configured so preview works behind reverse proxy.
- * Creates a vite.config.js if none exists, or patches an existing one if allowedHosts is missing.
+ * Parse the index HTML for <script type="module" src="..."> tags and verify
+ * each module src is served with a JavaScript content-type (not text/jsx etc).
  */
-function ensureViteAllowedHosts(appPath: string): void {
-  // Only act on Vite projects - check for vite in devDependencies or dependencies
+function validateModuleEntryPoints(): Array<{ path: string; contentType: string }> {
+  const bad: Array<{ path: string; contentType: string }> = [];
+  try {
+    const html = execSync(
+      `curl -s http://localhost:${PORTS.PREVIEW}/ 2>/dev/null`,
+      { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
+    );
+    // Match <script type="module" src="/src/main.tsx"> and similar
+    const scriptRe = /<script[^>]+type\s*=\s*["']module["'][^>]+src\s*=\s*["']([^"']+)["']/gi;
+    let m: RegExpExecArray | null;
+    while ((m = scriptRe.exec(html)) !== null) {
+      const src = m[1]!;
+      try {
+        const headers = execSync(
+          `curl -sI http://localhost:${PORTS.PREVIEW}${src.startsWith('/') ? '' : '/'}${src} 2>/dev/null`,
+          { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
+        );
+        const ctMatch = headers.match(/content-type:\s*([^\r\n;]+)/i);
+        const ct = ctMatch?.[1]?.trim() || '';
+        // text/jsx, text/tsx, text/x-vue etc are wrong — must be application/javascript or similar
+        if (ct && /^text\/(jsx|tsx|x-vue|x-svelte)/.test(ct)) {
+          bad.push({ path: src, contentType: ct });
+        }
+      } catch {}
+    }
+  } catch {}
+  return bad;
+}
+
+/**
+ * Ensure Vite projects have the correct config: allowedHosts, framework plugins, etc.
+ * Idempotent — safe to call multiple times. Uses VITE_PLUGIN_REGISTRY to handle
+ * all Vite-based frameworks (React, Vue, Svelte, Solid, Preact).
+ */
+function ensureViteConfig(appPath: string): void {
   const pkgPath = path.join(appPath, 'package.json');
   if (!fs.existsSync(pkgPath)) return;
 
+  let allDeps: Record<string, string> = {};
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
     if (!allDeps['vite']) return;
   } catch {
     return;
   }
 
-  const configFiles = ['vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'vite.config.mts'];
-  const existingConfig = configFiles.find((f) => fs.existsSync(path.join(appPath, f)));
+  // Determine which plugins are required based on package.json dependencies
+  const requiredPlugins = VITE_PLUGIN_REGISTRY.filter((spec) => !!allDeps[spec.trigger]);
 
+  const VITE_CONFIG_FILES = ['vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'vite.config.mts'];
+  const existingConfig = VITE_CONFIG_FILES.find((f) => fs.existsSync(path.join(appPath, f)));
+
+  // ── No config exists → generate a complete one ──────────────────────────
   if (!existingConfig) {
-    // No vite config - create one with allowedHosts
+    const imports = ['import { defineConfig } from "vite";'];
+    const pluginCalls: string[] = [];
+    for (const spec of requiredPlugins) {
+      imports.push(spec.importLine);
+      pluginCalls.push(spec.pluginCall);
+      // Install plugin package if missing from node_modules
+      installPluginIfMissing(appPath, spec);
+    }
+    const pluginsLine = pluginCalls.length > 0 ? `\n  plugins: [${pluginCalls.join(', ')}],` : '';
     fs.writeFileSync(
       path.join(appPath, 'vite.config.js'),
-      `import { defineConfig } from "vite";\nexport default defineConfig({\n  server: {\n    host: true,\n    port: 3000,\n    allowedHosts: true,\n  },\n});\n`
+      `${imports.join('\n')}\nexport default defineConfig({${pluginsLine}\n  server: {\n    host: true,\n    port: ${PORTS.PREVIEW},\n    allowedHosts: true,\n  },\n});\n`
     );
     return;
   }
 
-  // Config exists - check if allowedHosts is already set
+  // ── Config exists → patch as needed ─────────────────────────────────────
   const configPath = path.join(appPath, existingConfig);
-  const content = fs.readFileSync(configPath, 'utf8');
-  if (content.includes('allowedHosts')) return;
+  let content = fs.readFileSync(configPath, 'utf8');
 
-  // Patch: inject allowedHosts into existing server config, or add server block
-  if (content.includes('server:') || content.includes('server :')) {
-    // Has server block - add allowedHosts to it
-    const patched = content.replace(
-      /(server\s*:\s*\{)/,
-      '$1\n    allowedHosts: true,'
-    );
-    if (patched !== content) {
-      fs.writeFileSync(configPath, patched);
-      return;
+  // 1. Patch allowedHosts if missing
+  if (!content.includes('allowedHosts')) {
+    if (content.includes('server:') || content.includes('server :')) {
+      content = content.replace(/(server\s*:\s*\{)/, '$1\n    allowedHosts: true,');
+    } else if (content.includes('defineConfig(')) {
+      content = content.replace(
+        /(defineConfig\s*\(\s*\{)/,
+        `$1\n  server: { host: true, port: ${PORTS.PREVIEW}, allowedHosts: true },`
+      );
     }
   }
 
-  // Has defineConfig but no server block - add one
-  if (content.includes('defineConfig(')) {
-    const patched = content.replace(
-      /(defineConfig\s*\(\s*\{)/,
-      '$1\n  server: { host: true, port: 3000, allowedHosts: true },'
-    );
-    if (patched !== content) {
-      fs.writeFileSync(configPath, patched);
-      return;
+  // 2. For each required plugin, install + patch if not already present
+  for (const spec of requiredPlugins) {
+    const alreadyConfigured = spec.detectPatterns.some((p) => content.includes(p));
+    if (alreadyConfigured) continue;
+
+    // Install npm package if missing
+    installPluginIfMissing(appPath, spec);
+
+    // Add import line after existing vite import, or at the top
+    if (/import\s+.*from\s+['"]vite['"]/.test(content)) {
+      content = content.replace(
+        /(import\s+.*from\s+['"]vite['"].*\n)/,
+        `$1${spec.importLine}\n`
+      );
+    } else {
+      content = spec.importLine + '\n' + content;
     }
+
+    // Add plugin call to plugins array, or create plugins array
+    if (content.includes('plugins')) {
+      content = content.replace(/(plugins\s*:\s*\[)/, `$1${spec.pluginCall}, `);
+    } else if (content.includes('defineConfig(')) {
+      content = content.replace(
+        /(defineConfig\s*\(\s*\{)/,
+        `$1\n  plugins: [${spec.pluginCall}],`
+      );
+    }
+  }
+
+  fs.writeFileSync(configPath, content);
+}
+
+/**
+ * Install a Vite plugin npm package if it's not already in node_modules.
+ */
+function installPluginIfMissing(appPath: string, spec: VitePluginSpec): void {
+  // Derive the node_modules subpath from the package name
+  const pluginDir = path.join(appPath, 'node_modules', ...spec.pluginPackage.split('/'));
+  if (fs.existsSync(pluginDir)) return;
+  try {
+    execSync(`npm install -D ${spec.pluginPackage} 2>/dev/null`, {
+      cwd: appPath, encoding: 'utf8', timeout: 60000, env: EXEC_ENV,
+    });
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// CSS Reset Injection — guarantees no white border regardless of LLM output
+// ---------------------------------------------------------------------------
+
+/** Marker attribute to detect if reset was already injected (idempotent) */
+const CSS_RESET_MARKER = 'data-ellulai-reset';
+
+/** Minified CSS reset: removes all default margins/padding, ensures full-viewport coverage */
+const CSS_RESET_STYLE = `<style ${CSS_RESET_MARKER}>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}html,body,#root,#__next,#app{width:100%;height:100%;min-height:100vh}</style>`;
+
+/**
+ * Inject a CSS reset <style> tag into the <head> of index.html.
+ * Idempotent — skips if already injected. Works for all frameworks:
+ * Vite preserves <style> tags in <head> (only strips body inline styles).
+ * Also injects into dist/index.html if it exists (for deployments).
+ */
+function ensureCssReset(appPath: string): void {
+  const htmlFiles = [
+    path.join(appPath, 'index.html'),
+    path.join(appPath, 'dist', 'index.html'),
+    path.join(appPath, 'build', 'index.html'),
+    path.join(appPath, 'out', 'index.html'),
+  ];
+
+  for (const htmlPath of htmlFiles) {
+    if (!fs.existsSync(htmlPath)) continue;
+    try {
+      let html = fs.readFileSync(htmlPath, 'utf8');
+      if (html.includes(CSS_RESET_MARKER)) continue; // Already injected
+      // Inject after <head> opening tag (or after <!DOCTYPE...><html...><head> patterns)
+      if (html.includes('<head>')) {
+        html = html.replace('<head>', `<head>\n${CSS_RESET_STYLE}`);
+      } else if (html.includes('<head ')) {
+        html = html.replace(/<head\s[^>]*>/, `$&\n${CSS_RESET_STYLE}`);
+      } else if (html.includes('<html')) {
+        // No <head> tag — inject after <html...>
+        html = html.replace(/<html[^>]*>/, `$&\n<head>${CSS_RESET_STYLE}</head>`);
+      } else {
+        // Bare HTML — prepend
+        html = `${CSS_RESET_STYLE}\n${html}`;
+      }
+      fs.writeFileSync(htmlPath, html);
+    } catch {}
   }
 }
 
@@ -267,7 +460,9 @@ export interface PreviewStartResult {
   error?: string;
   ready?: boolean;
   alreadyRunning?: boolean;
-  failReason?: 'port_stuck' | 'wrong_process' | 'timeout' | 'no_config' | null;
+  failReason?: 'port_stuck' | 'wrong_process' | 'timeout' | 'module_error' | 'no_config' | null;
+  /** Module scripts that failed MIME validation */
+  diagnostics?: Array<{ path: string; contentType: string }>;
 }
 
 /**
@@ -292,8 +487,8 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
 
   // Robust cleanup: stop PM2 process + ensure port 3000 is actually free
   runPm2('pm2 delete preview 2>/dev/null || true');
-  if (!ensurePortFree(3000)) {
-    return { success: false, error: 'Port 3000 could not be freed', failReason: 'port_stuck' };
+  if (!ensurePortFree(PORTS.PREVIEW)) {
+    return { success: false, error: `Port ${PORTS.PREVIEW} could not be freed`, failReason: 'port_stuck' };
   }
 
   // Clean up stale preview metadata (port 3000 apps) so the dashboard
@@ -304,7 +499,7 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
       for (const f of fs.readdirSync(appsDir).filter(f => f.endsWith('.json'))) {
         try {
           const meta = JSON.parse(fs.readFileSync(`${appsDir}/${f}`, 'utf8'));
-          if (meta.port === 3000 && meta.isPreview !== false) fs.unlinkSync(`${appsDir}/${f}`);
+          if (meta.port === PORTS.PREVIEW && meta.isPreview !== false) fs.unlinkSync(`${appsDir}/${f}`);
         } catch {}
       }
     }
@@ -316,16 +511,18 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   }
 
   // Auto-install dependencies if node_modules is missing or incomplete
+  // Non-blocking: fire-and-forget so the HTTP response returns immediately.
+  // The bash ellulai-preview script's wait_for_install() handles startup after install.
   if (fs.existsSync(packageJsonPath) && !isInstallComplete(appPath)) {
     const lockFile = fs.existsSync(path.join(appPath, 'pnpm-lock.yaml'))
       ? 'pnpm' : fs.existsSync(path.join(appPath, 'yarn.lock'))
       ? 'yarn' : 'npm';
-    runPm2(`cd "${appPath}" && ${lockFile} install`);
-  }
-
-  // Check if superseded after install
-  if (requestId !== undefined && !isLatestRequest(requestId)) {
-    return { success: false, error: 'Superseded by newer request' };
+    try {
+      execSync(`nohup bash -c 'cd "${appPath}" && ${lockFile} install' >/dev/null 2>&1 &`,
+        { timeout: 3000, env: EXEC_ENV });
+    } catch {}
+    // Don't start PM2 yet — deps not ready. Frontend polls until ready.
+    return { success: true, ready: false, failReason: null };
   }
 
   let started = false;
@@ -337,18 +534,22 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   // Without these, reverse-proxied previews get blocked by host checks.
   const frameworkEnv = [
     `export PATH=${pathEnv}`,
+    `export PORT=${PORTS.PREVIEW}`,                  // Explicit preview port for child processes
     'export DANGEROUSLY_DISABLE_HOST_CHECK=true', // CRA
     'export HOST=127.0.0.1',                      // Bind to localhost only (Caddy reverse proxies)
   ].join(' && ');
 
-  // Ensure Vite projects have allowedHosts configured.
-  // Vite blocks requests from unknown hostnames by default - this is the only
-  // reliable way to fix it since env vars don't control this setting.
-  ensureViteAllowedHosts(appPath);
+  // Ensure Vite projects have correct config: allowedHosts + framework plugins.
+  // Without the right plugin, Vite serves .jsx/.tsx/.vue files with wrong MIME types.
+  ensureViteConfig(appPath);
+
+  // Inject CSS reset into index.html to eliminate white border from missing resets.
+  // Infrastructure-level fix — doesn't depend on LLM including CSS resets.
+  ensureCssReset(appPath);
 
   // Try ecosystem.config.js first
   if (fs.existsSync(ecosystemPath)) {
-    const result = runPm2(`cd "${appPath}" && pm2 start ecosystem.config.js --only preview`);
+    const result = runPm2(`cd "${appPath}" && ${frameworkEnv} && pm2 start ecosystem.config.js --only preview`);
     if (result.includes('launched') || result.includes('online')) {
       started = true;
     }
@@ -358,11 +559,11 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   // broken CLI flags written by the AI agent (e.g. `vite -H` instead of `vite --host`).
   if (!started && fs.existsSync(packageJsonPath)) {
     const FRAMEWORK_COMMANDS: Record<string, { bin: string; cmd: string }> = {
-      vite:   { bin: '.bin/vite',           cmd: 'npx vite --host 0.0.0.0 --port 3000' },
-      nextjs: { bin: '.bin/next',           cmd: 'npx next dev -H 0.0.0.0 -p 3000' },
+      vite:   { bin: '.bin/vite',           cmd: `npx vite --host 0.0.0.0 --port ${PORTS.PREVIEW}` },
+      nextjs: { bin: '.bin/next',           cmd: `npx next dev -H 0.0.0.0 -p ${PORTS.PREVIEW}` },
       cra:    { bin: '.bin/react-scripts',  cmd: 'npx react-scripts start' },
-      astro:  { bin: '.bin/astro',          cmd: 'npx astro dev --host 0.0.0.0 --port 3000' },
-      remix:  { bin: '.bin/remix',          cmd: 'npx remix vite:dev --host 0.0.0.0 --port 3000' },
+      astro:  { bin: '.bin/astro',          cmd: `npx astro dev --host 0.0.0.0 --port ${PORTS.PREVIEW}` },
+      remix:  { bin: '.bin/remix',          cmd: `npx remix vite:dev --host 0.0.0.0 --port ${PORTS.PREVIEW}` },
     };
 
     try {
@@ -402,37 +603,26 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
     } catch {}
   }
 
-  // Try static HTML with live-server
-  if (!started) {
-    const indexHtml = path.join(appPath, 'index.html');
-    if (fs.existsSync(indexHtml)) {
-      const result = runPm2(
-        `cd "${appPath}" && pm2 start bash --name preview --cwd "${appPath}" -- -c "${frameworkEnv} && npx -y live-server --port=3000 --no-browser --quiet"`
-      );
-      if (result.includes('launched') || result.includes('online')) {
-        started = true;
-      }
-    }
-  }
-
   if (!started) {
     return { success: false, error: 'No runnable configuration found' };
   }
 
   runPm2('pm2 save');
 
-  // Check if superseded before waiting - don't waste time waiting if superseded
-  if (requestId !== undefined && !isLatestRequest(requestId)) {
-    return { success: true, ready: false, error: 'Superseded - skipped wait' };
-  }
+  // Schedule background health check + auto-repair after response is sent.
+  // Frontend detects readiness via status polling with getPreviewHealth().
+  setTimeout(() => {
+    if (requestId !== undefined && !isLatestRequest(requestId)) return;
+    const result = waitForReady(8000);
+    if (result.status === 'module_error') {
+      console.log('[preview] Module MIME error detected, attempting auto-repair:', result.badModules);
+      ensureViteConfig(appPath);
+      try { fs.rmSync(path.join(appPath, 'node_modules', '.vite'), { recursive: true, force: true }); } catch {}
+      runPm2('pm2 restart preview');
+    }
+  }, 100);
 
-  const readyStatus = waitForReady(10000);
-
-  return {
-    success: true,
-    ready: readyStatus === 'ready',
-    failReason: readyStatus === 'ready' ? null : readyStatus,
-  };
+  return { success: true, ready: false, failReason: null };
 }
 
 /**
@@ -446,14 +636,14 @@ export function stopPreview(): void {
       for (const f of fs.readdirSync(appsDir).filter(f => f.endsWith('.json'))) {
         try {
           const meta = JSON.parse(fs.readFileSync(`${appsDir}/${f}`, 'utf8'));
-          if (meta.port === 3000 && meta.isPreview !== false) fs.unlinkSync(`${appsDir}/${f}`);
+          if (meta.port === PORTS.PREVIEW && meta.isPreview !== false) fs.unlinkSync(`${appsDir}/${f}`);
         } catch {}
       }
     }
   } catch {}
 
   runPm2('pm2 delete preview 2>/dev/null || true');
-  runPm2('fuser -k 3000/tcp 2>/dev/null || true');
+  runPm2(`fuser -k ${PORTS.PREVIEW}/tcp 2>/dev/null || true`);
 }
 
 /**
@@ -479,6 +669,54 @@ export function getPreviewStatus(): {
   } catch {}
 
   return { app: current, running: isRunning };
+}
+
+/**
+ * Get preview health with actual port-level verification.
+ * Returns granular phase info instead of just PM2 process status.
+ * Uses curl -m 1 (1s max) so the status endpoint stays fast.
+ */
+export function getPreviewHealth(): {
+  app: string | null;
+  phase: 'idle' | 'installing' | 'starting' | 'ready' | 'error';
+  active: boolean;
+} {
+  // 1. Read current app
+  let current: string | null = null;
+  if (fs.existsSync(PREVIEW_FILE)) {
+    current = fs.readFileSync(PREVIEW_FILE, 'utf8').trim() || null;
+  }
+
+  if (!current) {
+    return { app: null, phase: 'idle', active: false };
+  }
+
+  // 2. Check if deps are installed
+  const appPath = getAppPath(current);
+  const packageJsonPath = path.join(appPath, 'package.json');
+  if (fs.existsSync(packageJsonPath) && !isInstallComplete(appPath)) {
+    return { app: current, phase: 'installing', active: false };
+  }
+
+  // 3. Check if something is listening on the preview port
+  const pid = getPidOnPort(PORTS.PREVIEW);
+  if (pid === null) {
+    return { app: current, phase: 'starting', active: false };
+  }
+
+  // 4. Check if it's actually serving responses (1s timeout)
+  // Accept any HTTP response (not just text/html) — backend APIs return JSON
+  try {
+    const headers = execSync(
+      `curl -sI -m 1 http://localhost:${PORTS.PREVIEW}/ 2>/dev/null`,
+      { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
+    );
+    if (/^HTTP\/[\d.]+ \d{3}/i.test(headers)) {
+      return { app: current, phase: 'ready', active: true };
+    }
+  } catch {}
+
+  return { app: current, phase: 'starting', active: false };
 }
 
 /**

@@ -337,7 +337,7 @@ else
   echo ""
   echo "Open this link in your browser to register a passkey:"
   echo ""
-  echo "  https://$DOMAIN/_auth/ssh-only-upgrade?token=$TOKEN"
+  echo "  https://$DOMAIN/_auth/setup?token=$TOKEN"
   echo ""
   echo "This link expires in 10 minutes."
   echo ""

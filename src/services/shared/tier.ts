@@ -42,25 +42,10 @@ export function isStandardTier(): boolean {
 }
 
 /**
- * Check if current tier is SSH Only.
- */
-export function isSshOnlyTier(): boolean {
-  return getCurrentTier() === TIERS.SSH_ONLY;
-}
-
-/**
  * Check if current tier is Web Locked.
  */
 export function isWebLockedTier(): boolean {
   return getCurrentTier() === TIERS.WEB_LOCKED;
-}
-
-/**
- * Check if dashboard control is allowed for current tier.
- */
-export function isDashboardControlAllowed(): boolean {
-  const tier = getCurrentTier();
-  return tier !== TIERS.SSH_ONLY;
 }
 
 /**

@@ -70,6 +70,22 @@ function getCfCaBase64(): string {
 }
 
 /**
+ * Check if a port has a healthy HTTP listener.
+ * Returns true for any real HTTP response (100-599), false for connection refused/timeout.
+ */
+function isHttpAlive(port: number): boolean {
+  try {
+    const code = execSync(
+      `curl -s -o /dev/null -w '%{http_code}' -m 3 http://localhost:${port}`,
+      { stdio: 'pipe', timeout: 5000, encoding: 'utf8' },
+    ).trim();
+    return /^[1-5]\d{2}$/.test(code);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Ensure the app process is running on the correct port via pm2.
  * Handles port conflict resolution, process lifecycle, and health checks.
  */
@@ -83,10 +99,7 @@ function ensureAppProcess(
   // skip PM2 entirely. This prevents the destructive delete-and-restart cycle when
   // preview hands off a running process, while ensuring we don't accept a stale app.
   try {
-    execSync(`curl -sf -o /dev/null http://localhost:${requestedPort}`, {
-      stdio: 'pipe',
-      timeout: 2000,
-    });
+    if (!isHttpAlive(requestedPort)) throw new Error('not alive');
     // Verify the listener actually belongs to this project via /proc/{pid}/cwd
     const pid = execSync(
       `ss -tlnpH sport = :${requestedPort} 2>/dev/null | grep -oP 'pid=\\K\\d+' | head -1`,
@@ -95,6 +108,7 @@ function ensureAppProcess(
     if (pid && fs.existsSync(`/proc/${pid}/cwd`)) {
       const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
       if (cwd === projectPath) {
+        console.log(`[shield] Fast-path: reusing healthy process on port ${requestedPort} (pid ${pid})`);
         return { port: requestedPort };
       }
     }
@@ -139,6 +153,7 @@ function ensureAppProcess(
             stdio: 'pipe',
             timeout: 3000,
           });
+          console.log(`[shield] Reusing existing PM2 process "${existing.name}" on port ${existingPort}`);
           return { port: existingPort };
         } catch {
           // Port not listening or owned by different process — fall through to restart
@@ -146,6 +161,7 @@ function ensureAppProcess(
       }
     }
     // Stale or wrong cwd — remove it
+    console.log(`[shield] Cleaning up stale PM2 process "${existing.name}" (status: ${existing.pm2_env?.status})`);
     try {
       execSync(`bash -lc 'pm2 delete ${JSON.stringify(existing.name)} 2>/dev/null'`, {
         stdio: 'pipe',
@@ -187,6 +203,7 @@ function ensureAppProcess(
     } catch {}
 
     if (!occupiedBySame) {
+      console.log(`[shield] Port ${port} occupied by another project, finding alternative...`);
       // Find next free port
       let candidate = port + 1;
       while (candidate <= 65535) {
@@ -223,11 +240,23 @@ function ensureAppProcess(
     }
   } catch {}
 
+  // For built projects (Vite, CRA, etc.), serve from the build output directory
+  // instead of the project root. The root index.html references raw source files
+  // (e.g. /src/main.jsx) which static servers can't transform.
+  let servePath = projectPath;
+  for (const outDir of ['dist', 'build', 'out', '.output/public']) {
+    const candidate = `${projectPath}/${outDir}`;
+    if (fs.existsSync(`${candidate}/index.html`)) {
+      servePath = candidate;
+      break;
+    }
+  }
+
   // Determine if this is a static HTML site that needs a file server.
   // If the start script just runs a plain node file (no framework server)
   // and index.html exists, use npx serve instead — the node script likely
   // won't bind to the right port or serve static files correctly.
-  const hasIndexHtml = fs.existsSync(`${projectPath}/index.html`);
+  const hasIndexHtml = fs.existsSync(`${servePath}/index.html`);
   const isStaticSite = hasIndexHtml && (
     !hasStartScript ||
     /^node\s+\S+\.js$/.test(startScriptValue.trim())
@@ -235,14 +264,14 @@ function ensureAppProcess(
 
   let startCmd: string;
   if (isStaticSite) {
-    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
+    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(servePath)}`;
   } else if (hasStartScript) {
-    startCmd = `PORT=${port} pm2 start npm --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)} -- start`;
+    startCmd = `pm2 start bash --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)} -- -c "export PORT=${port} && npm start"`;
   } else {
-    // Set PORT env var so ensureAppProcess can detect the port on subsequent calls
-    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)}`;
+    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(servePath)}`;
   }
 
+  console.log(`[shield] Starting "${name}" on port ${port} (${isStaticSite ? 'static' : hasStartScript ? 'npm start' : 'serve fallback'})`);
   execSync(`bash -lc '${startCmd}'`, {
     stdio: 'pipe',
     timeout: 30000,
@@ -256,25 +285,66 @@ function ensureAppProcess(
   } catch {}
 
   // E. Health check — wait up to 8 seconds
+  // Accept ANY HTTP response (not just 200) so backend APIs that return 404 on / still pass
   const maxWait = 8000;
   const interval = 500;
   let waited = 0;
   let healthy = false;
 
   while (waited < maxWait) {
-    try {
-      execSync(`curl -sf -o /dev/null http://localhost:${port}`, {
-        stdio: 'pipe',
-        timeout: 2000,
-      });
+    if (isHttpAlive(port)) {
+      console.log(`[shield] Health check passed for "${name}" on port ${port} (after ${waited}ms)`);
       healthy = true;
       break;
-    } catch {}
-    execSync(`sleep 0.5`, { stdio: 'pipe' });
+    }
+
+    // After 1.5s of failures, check if PM2 process crashed — no point polling a dead process
+    if (waited >= 1500 && waited % 1500 === 0) {
+      try {
+        const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
+          stdio: 'pipe', timeout: 5000, encoding: 'utf8',
+        });
+        const list = JSON.parse(raw);
+        const proc = list.find((p: any) => p.name === name);
+        if (proc?.pm2_env?.status === 'errored' || proc?.pm2_env?.status === 'stopped') {
+          console.error(`[shield] App "${name}" crashed during startup (PM2 status: ${proc.pm2_env.status})`);
+          break;
+        }
+      } catch {}
+    }
+
+    execSync('sleep 0.5', { stdio: 'pipe' });
     waited += interval;
   }
 
   if (!healthy) {
+    // Collect diagnostic info before cleanup
+    let diagnosis = '';
+    try {
+      const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
+        stdio: 'pipe', timeout: 5000, encoding: 'utf8',
+      });
+      const list = JSON.parse(raw);
+      const proc = list.find((p: any) => p.name === name);
+      const status = proc?.pm2_env?.status;
+
+      if (status === 'errored') {
+        diagnosis = ' — process crashed';
+        try {
+          const logs = execSync(
+            `bash -lc 'pm2 logs ${JSON.stringify(name)} --lines 5 --nostream --err 2>/dev/null'`,
+            { stdio: 'pipe', timeout: 5000, encoding: 'utf8' }
+          ).trim();
+          const lastLine = logs.split('\n').filter(l => l.trim()).pop() || '';
+          if (lastLine) diagnosis += `: ${lastLine.replace(/^\d+\|[^|]+\|\s*/, '')}`;
+        } catch {}
+      } else if (status === 'online') {
+        diagnosis = ' — process running but not listening on expected port';
+      } else if (status) {
+        diagnosis = ` — PM2 status: ${status}`;
+      }
+    } catch {}
+
     // Clean up
     try {
       execSync(`bash -lc 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
@@ -282,7 +352,10 @@ function ensureAppProcess(
         timeout: 5000,
       });
     } catch {}
-    throw new Error(`App failed to start on port ${port} (health check timed out after ${maxWait / 1000}s)`);
+
+    throw new Error(
+      `App failed to start on port ${port} (health check timed out after ${maxWait / 1000}s${diagnosis})`
+    );
   }
 
   return { port };
@@ -431,12 +504,50 @@ export function registerWorkflowRoutes(app: Hono): void {
               stdio: 'pipe', timeout: 60000,
             });
           } catch {}
+
+          // Strip hardcoded PORT=XXXX from start script — the deployment
+          // infrastructure provides PORT via environment variable, and a
+          // hardcoded value in the script prefix would override it.
+          try {
+            const pkgPath = `${deploymentPath}/package.json`;
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+            if (pkg.scripts?.start && /\bPORT=\d+/.test(pkg.scripts.start)) {
+              pkg.scripts.start = pkg.scripts.start.replace(/\bPORT=\d+\s*/g, '').trim();
+              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+            }
+          } catch {}
         }
 
         servingPath = deploymentPath;
         console.log(`[shield] Created deployment snapshot: ${deploymentPath}`);
       } catch (e) {
         console.error(`[shield] Snapshot failed, serving from source: ${(e as Error).message}`);
+      }
+    }
+
+    // ── Inject CSS reset into deployment HTML (eliminates white border) ──
+    // Infrastructure-level fix: injects a <style data-ellulai-reset> tag into
+    // all index.html files. Idempotent — skips if already present.
+    if (servingPath) {
+      const CSS_RESET_MARKER = 'data-ellulai-reset';
+      const CSS_RESET_STYLE = `<style ${CSS_RESET_MARKER}>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}html,body,#root,#__next,#app{width:100%;height:100%;min-height:100vh}</style>`;
+      for (const htmlLoc of [servingPath, `${servingPath}/dist`, `${servingPath}/build`, `${servingPath}/out`]) {
+        const htmlPath = `${htmlLoc}/index.html`;
+        if (!fs.existsSync(htmlPath)) continue;
+        try {
+          let html = fs.readFileSync(htmlPath, 'utf8');
+          if (html.includes(CSS_RESET_MARKER)) continue;
+          if (html.includes('<head>')) {
+            html = html.replace('<head>', `<head>\n${CSS_RESET_STYLE}`);
+          } else if (/<head\s/.test(html)) {
+            html = html.replace(/<head\s[^>]*>/, `$&\n${CSS_RESET_STYLE}`);
+          } else if (html.includes('<html')) {
+            html = html.replace(/<html[^>]*>/, `$&\n<head>${CSS_RESET_STYLE}</head>`);
+          } else {
+            html = `${CSS_RESET_STYLE}\n${html}`;
+          }
+          fs.writeFileSync(htmlPath, html);
+        } catch {}
       }
     }
 

@@ -51,6 +51,7 @@ export const PORTS = {
   FILE_API: 3002,
   AGENT_BRIDGE: 7700,
   TERM_PROXY: 7701,
+  PREVIEW: 3000,
 } as const;
 
 // Session/Token TTLs
@@ -64,7 +65,7 @@ export const AGENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours for agent t
 
 // Ports reserved for ellul.ai internal services — never assign to user apps
 export const RESERVED_PORTS = new Set([
-  22, 80, 443, 2019, 3002, 3005, 3006,
+  22, 80, 443, 2019, 3000, 3002, 3005, 3006,
   7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689, 7690, 7700, 7701,
 ]);
 

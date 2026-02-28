@@ -34,22 +34,22 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import {
   PORT,
   PROJECTS_DIR,
   DEFAULT_SESSION,
   VALID_SESSIONS,
   CONTEXT_CACHE_MS,
-  DEV_DOMAIN,
   type SessionType,
 } from './config';
 import { startZenModelRefresh, getZenModelList } from './services/zen-models.service';
-import { validateAgentToken, extractAgentToken } from './auth';
+import { validateAgentToken, extractAgentToken, verifyPopChallenge } from './auth';
+import * as crypto from 'crypto';
 import {
   loadCliEnv,
   saveCliKey,
   removeCliKey,
-  syncOpenRouterKey,
   CLI_KEY_MAP,
 } from './services/cli-env.service';
 import {
@@ -110,10 +110,16 @@ import {
   subscribe as subscribeProcessing,
   unsubscribe as unsubscribeProcessing,
   unsubscribeAll as unsubscribeAllProcessing,
+  setProcessingDb,
+  getActiveProcessingThreadIds,
 } from './services/processing-state';
 
 // Initialize chat database (must import before thread service)
-import './database';
+import { db } from './database';
+
+// Inject database into processing state for persistent ledger
+setProcessingDb(db);
+
 import {
   createThread,
   listThreads,
@@ -136,7 +142,7 @@ import {
 interface WsClient {
   readyState: number;
   send(data: string): void;
-  close(): void;
+  close(code?: number, reason?: string): void;
   on(event: string, listener: (...args: unknown[]) => void): void;
 }
 
@@ -151,6 +157,9 @@ interface ConnectionState {
   currentProject: string | null;
   currentThreadId: string | null;
 }
+
+// In-flight request tracking for graceful shutdown drain
+const inflightRequests = new Set<Promise<void>>();
 
 /**
  * Try to send a JSON message over WebSocket. Silently swallows errors
@@ -199,21 +208,84 @@ function getWelcomeMessage(session: SessionType): string {
   return `${model} ready.`;
 }
 
+// BYOK model IDs per provider (used in openclaw.json config)
+const BYOK_MODEL_IDS: Record<string, string> = {
+  anthropic: 'anthropic/claude-sonnet-4-20250514',
+  openai: 'openai/gpt-4o',
+  openrouter: 'openrouter/anthropic/claude-sonnet-4-20250514',
+  google: 'google/gemini-2.5-flash',
+};
+
 /**
- * Get the first-thread welcome message.
- * Only shown once — when the user's very first thread is created for a project.
+ * ENV_VAR_MAP: provider → env var name OpenClaw expects for built-in providers.
  */
-function getFirstThreadWelcome(): string {
-  const previewLine = DEV_DOMAIN
-    ? `\n\nYour dev preview is live at **https://${DEV_DOMAIN}** — anything you build will be instantly accessible there.`
-    : '';
+const BYOK_ENV_VARS: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  google: 'GOOGLE_API_KEY',
+};
 
-  return `Welcome to **ellul.ai**! I'm your AI coding assistant — I can help you build websites, apps, APIs, and anything else you need.
+/**
+ * Update ~/.openclaw/openclaw.json with BYOK provider config.
+ *
+ * OpenClaw has built-in support for Anthropic/OpenAI/Google/OpenRouter —
+ * just set model reference (e.g. "anthropic/claude-sonnet-4-20250514") and
+ * provide the API key via the config's `env` block. No custom provider entry
+ * needed, no PM2 restart needed — OpenClaw reads env block at runtime.
+ */
+function updateOpenclawConfig(
+  provider: string | null,
+  envVarName: string | null,
+  apiKey: string | null,
+): void {
+  const configDir = path.join(os.homedir(), '.openclaw');
+  const configPath = path.join(configDir, 'openclaw.json');
 
-Type below to get started. For example:
-- "Create a hello world app"
-- "Build a React landing page"
-- "Set up an Express API"${previewLine}`;
+  let config: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+  } catch {
+    // Corrupt config — start fresh but preserve what we can
+  }
+
+  // Ensure nested structures exist
+  if (!config.agents || typeof config.agents !== 'object') config.agents = {};
+  const agents = config.agents as Record<string, unknown>;
+  if (!agents.defaults || typeof agents.defaults !== 'object') agents.defaults = {};
+  const defaults = agents.defaults as Record<string, unknown>;
+  if (!config.env || typeof config.env !== 'object') config.env = {};
+  const env = config.env as Record<string, unknown>;
+
+  if (provider && envVarName && apiKey) {
+    // Clear any previous BYOK env vars
+    for (const varName of Object.values(BYOK_ENV_VARS)) {
+      delete env[varName];
+    }
+    // Set the new provider's API key in the env block
+    env[envVarName] = apiKey;
+
+    // Set model to BYOK provider with fallback to ellulai/default
+    const modelId = BYOK_MODEL_IDS[provider];
+    if (modelId) {
+      defaults.model = {
+        primary: modelId,
+        fallbacks: ['ellulai/default'],
+      };
+    }
+  } else {
+    // Remove: clear all BYOK env vars and revert model
+    for (const varName of Object.values(BYOK_ENV_VARS)) {
+      delete env[varName];
+    }
+    if (Object.keys(env).length === 0) delete config.env;
+    defaults.model = { primary: 'ellulai/default' };
+  }
+
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
 // Create HTTP server with health endpoint
@@ -259,6 +331,112 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // CORS preflight for /_bridge/*
+  if (req.method === 'OPTIONS' && url.pathname.startsWith('/_bridge/')) {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': 'https://console.ellul.ai',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
+
+  // POST /_bridge/llm-key — Zero-knowledge BYOK key storage
+  if (req.method === 'POST' && url.pathname === '/_bridge/llm-key') {
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': 'https://console.ellul.ai',
+      'Content-Type': 'application/json',
+    };
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => (body += chunk.toString()));
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body) as {
+          apiKey?: string;
+          provider?: string;
+          nonce?: string;
+          ts?: string;
+          hmac?: string;
+          serverId?: string;
+          remove?: boolean;
+        };
+
+        // Verify HMAC
+        const { nonce, ts, hmac, serverId } = data;
+        if (!nonce || !ts || !hmac || !serverId) {
+          res.writeHead(401, corsHeaders);
+          res.end(JSON.stringify({ error: 'Missing auth fields' }));
+          return;
+        }
+
+        // Reject expired timestamps (5 min window)
+        const tsNum = parseInt(ts, 10);
+        if (isNaN(tsNum) || Math.abs(Date.now() - tsNum) > 5 * 60 * 1000) {
+          res.writeHead(401, corsHeaders);
+          res.end(JSON.stringify({ error: 'Expired timestamp' }));
+          return;
+        }
+
+        // Read AI proxy token and compute its SHA-256 hash as HMAC key
+        let tokenHash: string;
+        try {
+          const token = fs.readFileSync('/etc/ellulai/ai-proxy-token', 'utf8').trim();
+          tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+        } catch {
+          res.writeHead(500, corsHeaders);
+          res.end(JSON.stringify({ error: 'Server not configured' }));
+          return;
+        }
+
+        // Verify HMAC
+        const payload = `${nonce}:${ts}:${serverId}`;
+        const expected = crypto.createHmac('sha256', tokenHash).update(payload).digest('hex');
+        const expectedBuf = Buffer.from(expected, 'hex');
+        const receivedBuf = Buffer.from(hmac, 'hex');
+        if (expectedBuf.length !== receivedBuf.length || !crypto.timingSafeEqual(expectedBuf, receivedBuf)) {
+          res.writeHead(401, corsHeaders);
+          res.end(JSON.stringify({ error: 'Invalid HMAC' }));
+          return;
+        }
+
+        if (data.remove) {
+          updateOpenclawConfig(null, null, null);
+          console.log('[Bridge] LLM key removed via bridge');
+          res.writeHead(200, corsHeaders);
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        // Save key
+        const { apiKey, provider } = data;
+        if (!apiKey || !provider) {
+          res.writeHead(400, corsHeaders);
+          res.end(JSON.stringify({ error: 'Missing apiKey or provider' }));
+          return;
+        }
+
+        const envVarName = BYOK_ENV_VARS[provider];
+        if (!envVarName) {
+          res.writeHead(400, corsHeaders);
+          res.end(JSON.stringify({ error: 'Unknown provider' }));
+          return;
+        }
+
+        updateOpenclawConfig(provider, envVarName, apiKey);
+        console.log(`[Bridge] LLM key saved via bridge: ${provider}`);
+        res.writeHead(200, corsHeaders);
+        res.end(JSON.stringify({ ok: true }));
+      } catch (err) {
+        res.writeHead(500, corsHeaders);
+        res.end(JSON.stringify({ error: (err as Error).message }));
+      }
+    });
+    return;
+  }
+
   // Not found
   res.writeHead(404);
   res.end();
@@ -270,7 +448,7 @@ const WebSocketModule = require('ws');
 const wss: WsServer = new WebSocketModule.WebSocketServer({
   server: httpServer,
   verifyClient: async (
-    info: { req: { url?: string } },
+    info: { req: { url?: string; _shieldSessionId?: string } },
     cb: (result: boolean, code?: number, message?: string) => void
   ) => {
     // UNIFIED AUTH: Valid token = authorized (sovereign-shield enforced tier at issuance)
@@ -280,11 +458,15 @@ const wss: WsServer = new WebSocketModule.WebSocketServer({
       cb(false, 401, 'Agent token required');
       return;
     }
-    const valid = await validateAgentToken(agentToken);
-    if (!valid) {
+    const result = await validateAgentToken(agentToken);
+    if (!result.valid) {
       console.log('[Bridge] Agent token validation failed');
       cb(false, 401, 'Invalid agent token');
       return;
+    }
+    // Store sessionId on request for PoP challenge-response
+    if (result.sessionId) {
+      info.req._shieldSessionId = result.sessionId;
     }
     console.log('[Bridge] Agent token validated');
     cb(true);
@@ -303,12 +485,15 @@ function extractProjectFromUrl(url?: string): string | null {
   }
 }
 
-wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
+wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: string }) => {
   console.log('[Bridge] Connection URL:', req?.url);
 
   // Extract project from URL for per-connection state
   const urlProject = extractProjectFromUrl(req?.url);
   console.log('[Bridge] Extracted project from URL:', urlProject);
+
+  // Shield session ID for PoP challenge-response
+  const shieldSessionId = req?._shieldSessionId || null;
 
   // Per-connection state (project is scoped to this connection, not shared globally)
   const state: ConnectionState = {
@@ -318,6 +503,46 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
   };
 
   console.log('[Bridge] New connection (authenticated), project:', state.currentProject);
+
+  // Absolute timeout: force re-authentication after 24 hours (matches shield session max)
+  const ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+  const absoluteTimer = setTimeout(() => {
+    console.log('[Bridge] Absolute timeout (24h) — closing connection');
+    ws.close(4004, 'Session expired');
+  }, ABSOLUTE_TIMEOUT_MS);
+
+  // PoP challenge-response: verify session liveness every 5 minutes
+  // Mirrors SSH's per-packet authentication — server challenges, client proves key possession
+  let popFailCount = 0;
+  let pendingChallenge: string | null = null;
+  let challengeTimer: ReturnType<typeof setTimeout> | null = null;
+  const POP_CHALLENGE_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  const POP_RESPONSE_TIMEOUT_MS = 30 * 1000; // 30 seconds to respond
+  const POP_MAX_FAILURES = 2;
+
+  function sendPopChallenge() {
+    if (!shieldSessionId || ws.readyState !== 1) return;
+    pendingChallenge = crypto.randomBytes(32).toString('base64');
+    try {
+      ws.send('POP_CHALLENGE:' + pendingChallenge);
+    } catch {
+      return; // Connection closing
+    }
+    // Timeout if no response within 30s
+    challengeTimer = setTimeout(() => {
+      popFailCount++;
+      console.log(`[Bridge] PoP challenge timeout (failures: ${popFailCount}/${POP_MAX_FAILURES})`);
+      pendingChallenge = null;
+      if (popFailCount >= POP_MAX_FAILURES) {
+        console.log('[Bridge] PoP max failures — closing connection');
+        ws.close(4003, 'PoP challenge failed');
+      }
+    }, POP_RESPONSE_TIMEOUT_MS);
+  }
+
+  const popInterval = shieldSessionId
+    ? setInterval(sendPopChallenge, POP_CHALLENGE_INTERVAL_MS)
+    : null;
 
   // Heartbeat to keep connection alive through Cloudflare (100s timeout)
   // Send ping every 30 seconds
@@ -342,8 +567,36 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
   );
 
   ws.on('message', (async (data: Buffer | string) => {
+    const raw = data.toString();
+
+    // Intercept PoP challenge responses (raw text, not JSON)
+    if (raw.startsWith('POP_RESPONSE:') && pendingChallenge) {
+      const signature = raw.slice('POP_RESPONSE:'.length);
+      if (challengeTimer) {
+        clearTimeout(challengeTimer);
+        challengeTimer = null;
+      }
+      const challenge = pendingChallenge;
+      pendingChallenge = null;
+
+      if (shieldSessionId) {
+        const valid = await verifyPopChallenge(shieldSessionId, challenge, signature);
+        if (valid) {
+          popFailCount = 0; // Reset on success
+        } else {
+          popFailCount++;
+          console.log(`[Bridge] PoP challenge failed (failures: ${popFailCount}/${POP_MAX_FAILURES})`);
+          if (popFailCount >= POP_MAX_FAILURES) {
+            console.log('[Bridge] PoP max failures — closing connection');
+            ws.close(4003, 'PoP challenge failed');
+          }
+        }
+      }
+      return;
+    }
+
     try {
-      const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+      const msg = JSON.parse(raw) as Record<string, unknown>;
       const msgType = msg.type as string;
 
       // ============ Session Management ============
@@ -611,7 +864,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
 
         // Track processing state so reconnecting clients can catch up on thinking steps
         if (commandThreadId) {
-          startProcessing(commandThreadId, commandSession);
+          startProcessing(commandThreadId, commandSession, commandProject ?? undefined, (msg.content as string));
           // Ensure the sending ws receives thinking_step updates (belt-and-suspenders:
           // also subscribed on create_thread and set_thread, but this covers edge cases)
           subscribeProcessing(commandThreadId, ws);
@@ -623,7 +876,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         const saveUserMessage = (content: string) => {
           if (!commandThreadId) return;
           try {
-            addMessage(commandThreadId, {
+            const saved = addMessage(commandThreadId, {
               type: 'user',
               content,
               session: commandSession,
@@ -631,6 +884,8 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               thinking: null,
               metadata: null,
             });
+            // Broadcast so client can replace its optimistic local- message with server ID
+            sendToThread(ws, commandThreadId, { type: 'message_added', message: saved, timestamp: Date.now() });
             console.log(`[Bridge] Saved user message to thread ${commandThreadId.substring(0, 8)}...`);
           } catch (err) {
             console.error('[Bridge] Failed to save user message:', (err as Error).message);
@@ -642,7 +897,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         const saveAssistantMessage = (content: string, thinking?: string[]) => {
           if (!commandThreadId) return;
           try {
-            addMessage(commandThreadId, {
+            const saved = addMessage(commandThreadId, {
               type: 'assistant',
               content,
               session: commandSession,
@@ -650,6 +905,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
               thinking: thinking || null,
               metadata: null,
             });
+            // Broadcast message_added so the client can replace its streaming
+            // placeholder with the server-generated ID (prevents doubling on sync)
+            sendToThread(ws, commandThreadId, { type: 'message_added', message: saved, timestamp: Date.now() });
             console.log(`[Bridge] Saved assistant message to thread ${commandThreadId.substring(0, 8)}...`);
           } catch (err) {
             console.error('[Bridge] Failed to save assistant message:', (err as Error).message);
@@ -659,6 +917,8 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         // Save user message to DB immediately (survives WS drops during long CLI responses)
         saveUserMessage(msg.content as string);
 
+        // Wrap the entire CLI dispatch in a tracked promise for graceful drain
+        const requestPromise = (async () => {
         try {
           const project = (msg.project as string) || commandProject;
 
@@ -700,9 +960,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             );
 
             const output = openclawResponse.text.trim() || 'Done';
-            // Save to DB first (source of truth), then broadcast to all subscribers
+            // Save to DB first (source of truth) — message_added broadcast replaces streaming placeholder
             saveAssistantMessage(output, openclawResponse.reasoning);
-            sendToThread(ws, commandThreadId, { type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() });
+            // No redundant output send — message_added already has the final content
             sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           } else {
           // Auth pre-flight: check if CLI needs setup before invoking
@@ -748,9 +1008,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           const output = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
             || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
 
-          // Save to DB first (source of truth), then broadcast to all subscribers
+          // Save to DB first (source of truth) — message_added broadcast replaces streaming placeholder
           saveAssistantMessage(output, cliResponse.reasoning);
-          sendToThread(ws, commandThreadId, { type: 'output', content: output, threadId: commandThreadId, timestamp: Date.now() });
+          // No redundant output send — message_added already has the final content
           sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           }
         } catch (err) {
@@ -791,6 +1051,9 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
             endProcessing(commandThreadId, getLastSeq(commandThreadId));
           }
         }
+        })();
+        inflightRequests.add(requestPromise);
+        requestPromise.finally(() => inflightRequests.delete(requestPromise));
         return;
       }
 
@@ -799,10 +1062,6 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
         try {
           // Use session from message if provided, otherwise use current session
           const session = (msg.session as SessionType) || state.currentSession;
-
-          // Check if this is the user's first thread for this project (BEFORE creating)
-          const existingThreads = listThreads(state.currentProject);
-          const isFirstThread = existingThreads.length === 0;
 
           // Scope thread to current project (per-connection, not global)
           const thread = createThread(msg.title as string | undefined, session, state.currentProject);
@@ -813,20 +1072,7 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
           subscribeProcessing(thread.id, ws);
           // Also switch connection to that session
           state.currentSession = session;
-          console.log(`[Bridge] Created thread ${thread.id.substring(0, 8)}... for project ${state.currentProject}, session ${session}, firstThread=${isFirstThread}`);
-
-          // Inject welcome message on first-ever thread for this project
-          if (isFirstThread) {
-            addMessage(thread.id, {
-              type: 'assistant',
-              content: getFirstThreadWelcome(),
-              session,
-              model: null,
-              thinking: null,
-              metadata: { synthetic: true },
-            });
-            console.log(`[Bridge] Injected welcome message into first thread ${thread.id.substring(0, 8)}`);
-          }
+          console.log(`[Bridge] Created thread ${thread.id.substring(0, 8)}... for project ${state.currentProject}, session ${session}`);
 
           ws.send(JSON.stringify({ type: 'thread_created', thread, timestamp: Date.now() }));
 
@@ -1011,7 +1257,10 @@ wss.on('connection', ((ws: WsClient, req: { url?: string }) => {
   }) as (...args: unknown[]) => void);
 
   ws.on('close', () => {
+    clearTimeout(absoluteTimer);
     clearInterval(heartbeatInterval);
+    if (popInterval) clearInterval(popInterval);
+    if (challengeTimer) clearTimeout(challengeTimer);
     killInteractiveSession(ws);
     // Don't cancel auth — detach so it survives reconnection
     detachCliAuth(ws);
@@ -1040,31 +1289,137 @@ httpServer.listen(PORT, '127.0.0.1', async () => {
     console.error('[Bridge] OpenCode server startup error:', (err as Error).message);
   });
 
-  // Sync OpenRouter key from platform on startup, then every 5 minutes
-  syncOpenRouterKey().then(() => {
-    console.log('[Bridge] Initial OpenRouter key sync done');
-  }).catch(() => {});
-  setInterval(() => {
-    syncOpenRouterKey().catch(() => {});
-  }, 5 * 60 * 1000);
-
   console.log('[Bridge] Ready');
+
+  // Recover any interrupted requests from the processing ledger (crash recovery)
+  recoverInterruptedRequests().catch(err => console.error('[Bridge] Recovery error:', (err as Error).message));
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('[Bridge] Shutting down...');
-  wss.close();
-  httpServer.close();
-  process.exit(0);
-});
+// ============ Crash Recovery ============
 
-process.on('SIGINT', () => {
-  console.log('[Bridge] Shutting down...');
+/**
+ * Recover interrupted requests from the processing ledger.
+ * Called on startup — re-dispatches prompts that were in-flight when the bridge died.
+ */
+async function recoverInterruptedRequests(): Promise<void> {
+  const orphans = db.prepare(
+    'SELECT thread_id, session, project, prompt FROM processing_ledger'
+  ).all() as Array<{ thread_id: string; session: string; project: string | null; prompt: string }>;
+  if (orphans.length === 0) return;
+
+  console.log(`[Bridge] Recovering ${orphans.length} interrupted request(s)`);
+  db.prepare('DELETE FROM processing_ledger').run();
+
+  for (const orphan of orphans) {
+    // Skip if thread already has a response (e.g. drain completed before crash)
+    const lastMsg = db.prepare(
+      'SELECT type FROM messages WHERE thread_id = ? ORDER BY seq DESC LIMIT 1'
+    ).get(orphan.thread_id) as { type: string } | undefined;
+    if (lastMsg && lastMsg.type !== 'user') continue;
+
+    addMessage(orphan.thread_id, {
+      type: 'system',
+      content: 'Retrying your last request after a service restart...',
+      session: null, model: null, thinking: null,
+      metadata: { recovery: true },
+    });
+
+    retryPrompt(orphan.thread_id, orphan.session as SessionType, orphan.project, orphan.prompt);
+  }
+}
+
+/**
+ * Retry a prompt for a specific thread. Dispatches to the correct CLI
+ * based on the session type stored in the ledger.
+ */
+async function retryPrompt(threadId: string, session: SessionType, project: string | null, prompt: string): Promise<void> {
+  // Noop WS for recovery — no active frontend connection, results saved to DB
+  const noopWs = { readyState: 0, send() {} } as any;
+  startProcessing(threadId, session, project ?? undefined, prompt);
+
+  const requestPromise = (async () => {
+    try {
+      let cliResponse: CliResponse;
+      const proj = project || '';
+
+      if (session === 'claw') {
+        if (proj) await ensureProjectAgent(proj);
+        const globalCtx = refreshGlobalContext();
+        const projectCtx = loadProjectContext(proj);
+        const systemPrompt = buildClawSystemPrompt(globalCtx, projectCtx, proj);
+        const openclawResponse = await sendToOpenClaw(threadId, prompt, 'claw', () => {}, null, proj, systemPrompt);
+        cliResponse = { reasoning: openclawResponse.reasoning || [], text: [openclawResponse.text || ''], tools: [] };
+      } else {
+        switch (session) {
+          case 'claude': cliResponse = await sendToClaudeStreaming(prompt, noopWs, true, threadId, proj); break;
+          case 'codex': cliResponse = await sendToCodexStreaming(prompt, noopWs, true, threadId, proj); break;
+          case 'gemini': cliResponse = await sendToGeminiStreaming(prompt, noopWs, true, threadId, proj); break;
+          default: cliResponse = await sendToOpencodeStreaming(prompt, noopWs, threadId, proj); break;
+        }
+      }
+
+      const output = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
+        || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
+      addMessage(threadId, {
+        type: 'assistant', content: output, session, model: null,
+        thinking: cliResponse.reasoning || null,
+        metadata: { recovered: true },
+      });
+      console.log(`[Bridge] Recovery complete: thread=${threadId.substring(0, 8)}, session=${session}`);
+    } catch (err) {
+      console.error(`[Bridge] Recovery failed: thread=${threadId.substring(0, 8)}: ${(err as Error).message}`);
+      addMessage(threadId, {
+        type: 'system',
+        content: 'Could not complete your previous request after a service restart. Please try again.',
+        session: null, model: null, thinking: null,
+        metadata: { recoveryFailed: true },
+      });
+    } finally {
+      endProcessing(threadId, getLastSeq(threadId));
+    }
+  })();
+  inflightRequests.add(requestPromise);
+  requestPromise.finally(() => inflightRequests.delete(requestPromise));
+}
+
+// Graceful shutdown with drain for in-flight requests
+let shuttingDown = false;
+
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Bridge] ${signal}: draining ${inflightRequests.size} in-flight request(s)...`);
   wss.close();
+
+  if (inflightRequests.size > 0) {
+    const DRAIN_TIMEOUT = 60_000;
+    await Promise.race([
+      Promise.allSettled([...inflightRequests]),
+      new Promise(r => setTimeout(r, DRAIN_TIMEOUT)),
+    ]);
+    console.log(`[Bridge] Drain complete, ${inflightRequests.size} remaining`);
+  }
+
+  // Add interruption messages for any still-processing threads
+  for (const threadId of getActiveProcessingThreadIds()) {
+    try {
+      addMessage(threadId, {
+        type: 'system',
+        content: 'Your request was interrupted by a service restart. It will be retried automatically.',
+        session: null,
+        model: null,
+        thinking: null,
+        metadata: { interrupted: true, interruptedAt: Date.now() },
+      });
+    } catch {}
+  }
+
   httpServer.close();
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 process.on('uncaughtException', (err) => {
   console.error('[Bridge] Uncaught exception:', err.message);

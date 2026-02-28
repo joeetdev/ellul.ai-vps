@@ -1,8 +1,8 @@
 /**
- * VPS Operations - SSH Only tier terminal scripts
+ * VPS Operations - CLI scripts installed on each VPS.
  *
- * Each script calls the platform API with the AI proxy token,
- * proving SSH access for operations that are blocked via the web dashboard.
+ * Each script calls the platform API with the AI proxy token.
+ * Standard and Web Locked tiers are directed to use the dashboard instead.
  */
 export { getDeleteScript } from "./delete";
 export { getRebuildScript } from "./rebuild";

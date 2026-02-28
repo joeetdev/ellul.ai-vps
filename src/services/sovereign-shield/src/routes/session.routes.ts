@@ -76,7 +76,7 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
 
     // Terminal gate: term-proxy handles actual auth, but we require credential presence.
     // Requests must have either _term_token (initial page load) or _term_auth cookie (subsequent).
-    // SSH-only tier is blocked above (never reaches here).
+    // Non-web-locked tier handling is above (never reaches here without valid session).
     // Also covers /terminal/ paths (sessions list, session close) for browser direct calls with _term_token
     if (forwardedUri.startsWith('/term/') || forwardedUri.startsWith('/ttyd/') || forwardedUri.startsWith('/terminal/')) {
       let hasTermToken = false;
@@ -198,41 +198,14 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       );
     }
 
-    // Standard tier: JWT-based authentication (for .ellul.ai domains only)
-    if (tier === 'standard') {
-      const jwtPayload = verifyJwtToken(c.req);
-      if (!jwtPayload) {
-        // Allow browser navigation to landing page without JWT (standard tier has
-        // no VPS-side login page — the landing page is just a "privately managed" placeholder).
-        // API/XHR requests still require JWT.
-        // NOTE: Terminal/vibe/code/dev paths are handled by earlier checks and never reach here.
-        const isNav = isNavigationRequest(c);
-        if (isNav) {
-          c.header('X-Auth-User', 'anonymous');
-          c.header('X-Auth-Tier', 'standard');
-          c.header('X-Auth-Session', 'none');
-          return c.json({ authenticated: true, tier: 'standard', anonymous: true }, 200);
-        }
-        return c.json({ error: 'Authentication required' }, 401);
-      }
-      // Set auth headers for downstream services
-      c.header('X-Auth-User', jwtPayload.sub || 'user');
-      c.header('X-Auth-Tier', 'standard');
-      c.header('X-Auth-Session', jwtPayload.jti || 'jwt');
-      return c.json({ authenticated: true, tier: 'standard' }, 200);
-    }
-
-    // Web Locked tier: Passkey + PoP authentication
-
-    // Check if this is a code subdomain request
+    // Code subdomain: Check for code_session, X-Code-Token, or JWT (tier-agnostic)
+    // This runs BEFORE the tier split so both standard and web_locked can use code sessions.
     const isCodeSubdomain = forwardedHost.includes('-code.') || forwardedHost.startsWith('code.');
 
-    // For code subdomain: Check for code_session OR X-Code-Token header
     if (isCodeSubdomain) {
       // First check for X-Code-Token header (used by dashboard's fetchWithCodeToken)
       const codeTokenHeader = c.req.header('x-code-token');
       if (codeTokenHeader) {
-        // Validate the code token using existing endpoint
         try {
           const validateRes = await fetch('http://127.0.0.1:3005/_auth/code/validate', {
             method: 'POST',
@@ -243,20 +216,19 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
 
           if (validateData.valid) {
             c.header('X-Auth-User', validateData.sessionId || 'code-user');
-            c.header('X-Auth-Tier', validateData.tier || 'web_locked');
+            c.header('X-Auth-Tier', validateData.tier || tier);
             c.header('X-Auth-Session', 'code-token');
-            return c.json({ authenticated: true, tier: validateData.tier || 'web_locked' }, 200);
+            return c.json({ authenticated: true, tier: validateData.tier || tier }, 200);
           }
         } catch (e) {
           console.log('[shield] Code token validation error:', (e as Error).message);
         }
-        // If token invalid, fall through to check code_session
       }
 
+      // Check code_session cookie or URL param
       let codeSessionId = cookies['__Host-code_session'] || cookies.code_session;
       let codeSessionFromUrl = false;
 
-      // Check URL param for initial code session setup
       if (!codeSessionId) {
         try {
           const uriParams = new URLSearchParams(forwardedUri.split('?')[1] || '');
@@ -269,7 +241,6 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       }
 
       if (codeSessionId) {
-        // Validate code session via internal endpoint
         try {
           const validateRes = await fetch('http://127.0.0.1:3005/_auth/code/session/validate', {
             method: 'POST',
@@ -279,40 +250,43 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
           const validateData = await validateRes.json() as { valid?: boolean; credentialId?: string; tier?: string };
 
           if (validateData.valid) {
-            // Code session is valid - set cookie if from URL
             if (codeSessionFromUrl) {
-              // Set cookie for code subdomain
               c.header('Set-Cookie', `__Host-code_session=${codeSessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=1800`);
 
-              // For API requests, don't redirect - just allow the request through
-              // The cookie is now set for future requests
               const acceptHeader = c.req.header('accept') || '';
               const isApiRequest = acceptHeader.includes('application/json') ||
                 c.req.header('x-requested-with') === 'XMLHttpRequest' ||
                 forwardedUri.startsWith('/api/');
 
               if (!isApiRequest) {
-                // Redirect browser navigation to clean URL without _code_session param
                 const urlObj = new URL(originalUrl);
                 urlObj.searchParams.delete('_code_session');
                 return c.redirect(urlObj.toString(), 302);
               }
-              // For API requests, fall through to allow the request
             }
 
-            // Code session valid - allow request
             c.header('X-Auth-User', validateData.credentialId || 'code-user');
-            c.header('X-Auth-Tier', validateData.tier || 'web_locked');
+            c.header('X-Auth-Tier', validateData.tier || tier);
             c.header('X-Auth-Session', codeSessionId);
-            return c.json({ authenticated: true, tier: validateData.tier || 'web_locked' }, 200);
+            return c.json({ authenticated: true, tier: validateData.tier || tier }, 200);
           }
         } catch (e) {
           console.log('[shield] Code session validation error:', (e as Error).message);
         }
       }
 
-      // No valid code session - redirect to get one
-      // The dashboard should get a code session via bridge before accessing code subdomain
+      // Standard tier fallback: try JWT (terminal_token cookie set on .ellul.ai)
+      if (tier === 'standard') {
+        const jwtPayload = verifyJwtToken(c.req);
+        if (jwtPayload) {
+          c.header('X-Auth-User', jwtPayload.sub || 'user');
+          c.header('X-Auth-Tier', 'standard');
+          c.header('X-Auth-Session', jwtPayload.jti || 'jwt');
+          return c.json({ authenticated: true, tier: 'standard' }, 200);
+        }
+      }
+
+      // No valid credentials — return error or redirect
       const codeAuthUrl = `https://${hostname}/_auth/code/redirect?target=${encodeURIComponent(originalUrl)}`;
 
       const acceptHeader = c.req.header('accept') || '';
@@ -336,6 +310,30 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
       }
       return c.redirect(codeAuthUrl, 302);
     }
+
+    // Standard tier: JWT-based authentication (for .ellul.ai main domain)
+    if (tier === 'standard') {
+      const jwtPayload = verifyJwtToken(c.req);
+      if (!jwtPayload) {
+        // Allow browser navigation to landing page without JWT (standard tier has
+        // no VPS-side login page — the landing page is just a "privately managed" placeholder).
+        // API/XHR requests still require JWT.
+        const isNav = isNavigationRequest(c);
+        if (isNav) {
+          c.header('X-Auth-User', 'anonymous');
+          c.header('X-Auth-Tier', 'standard');
+          c.header('X-Auth-Session', 'none');
+          return c.json({ authenticated: true, tier: 'standard', anonymous: true }, 200);
+        }
+        return c.json({ error: 'Authentication required' }, 401);
+      }
+      c.header('X-Auth-User', jwtPayload.sub || 'user');
+      c.header('X-Auth-Tier', 'standard');
+      c.header('X-Auth-Session', jwtPayload.jti || 'jwt');
+      return c.json({ authenticated: true, tier: 'standard' }, 200);
+    }
+
+    // Web Locked tier: Passkey + PoP authentication
 
     // Main domain: Standard passkey + PoP flow
     let sessionId = cookies.shield_session;
@@ -406,6 +404,10 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
           }, 401);
         }
         // For navigation, allow the page load - PoP binding happens via session-pop.js
+        // Still set X-Auth-User so downstream services (file-api) can identify the request
+        c.header('X-Auth-User', result.session?.credential_id || 'passkey-user');
+        c.header('X-Auth-Tier', 'web_locked');
+        c.header('X-Auth-Session', sessionId);
         return c.json({ authenticated: true }, 200);
       }
 
@@ -758,7 +760,8 @@ export function registerSessionRoutes(app: Hono, hostname: string): void {
     // Inject nonce into script tags
     const html = TERMINAL_WRAPPER_HTML
       .replace(/<script src="/g, `<script nonce="${twNonce}" src="`)
-      .replace(/<script>/g, `<script nonce="${twNonce}">`);
+      .replace(/<script>/g, `<script nonce="${twNonce}">`)
+      .replace(/<style>/g, `<style nonce="${twNonce}">`);
     return c.body(html);
   });
 

@@ -2,6 +2,8 @@ import { startAuthentication, startRegistration } from '/_auth/static/simpleweba
 
 const DASHBOARD_ORIGINS = ['https://console.ellul.ai', 'https://ellul.ai'];
 let session = null;
+let sessionCheckedAt = 0; // Timestamp of last successful session check
+const SESSION_CHECK_TTL = 60000; // Don't re-check within 60s of a successful check
 let pendingAuth = null;
 let pendingSessionCheck = null;
 let popReady = false;
@@ -182,6 +184,7 @@ async function handleMessage(type, data) {
       }
       // Step 3: Clear local session state
       session = null;
+      sessionCheckedAt = 0;
       popReady = false;
       // Step 4: Do fresh passkey auth (creates new session)
       await doPasskeyAuth();
@@ -252,6 +255,10 @@ async function handleMessage(type, data) {
 }
 
 async function checkSession() {
+  // Return cached result if recently validated (prevents hammering /_auth/bridge/session)
+  if (session && sessionCheckedAt && (Date.now() - sessionCheckedAt < SESSION_CHECK_TTL)) {
+    return true;
+  }
   // Deduplicate concurrent calls — share a single in-flight request
   if (pendingSessionCheck) return pendingSessionCheck;
   pendingSessionCheck = (async () => {
@@ -259,10 +266,12 @@ async function checkSession() {
       const res = await fetch('/_auth/bridge/session', { credentials: 'include' });
       if (res.ok) {
         session = await res.json();
+        sessionCheckedAt = Date.now();
         return true;
       }
     } catch {}
     session = null;
+    sessionCheckedAt = 0;
     return false;
   })();
   try { return await pendingSessionCheck; } finally { pendingSessionCheck = null; }

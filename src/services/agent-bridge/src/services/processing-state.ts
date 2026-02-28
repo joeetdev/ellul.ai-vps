@@ -6,7 +6,20 @@
  * so that clients reconnecting mid-processing can catch up.
  *
  * Subscribers receive forwarded thinking_step messages in real-time.
+ *
+ * Processing Ledger (SQLite):
+ * Persists in-flight {thread_id, session, project, prompt} for crash recovery.
+ * On startup, the bridge re-dispatches interrupted prompts from the ledger.
  */
+
+import type Database from 'better-sqlite3';
+
+// Database handle for persistent ledger (injected from main.ts)
+let processingDb: Database | null = null;
+
+export function setProcessingDb(database: Database): void {
+  processingDb = database;
+}
 
 // WebSocket interface (minimal, matches both ws and native WebSocket)
 interface WsClient {
@@ -31,18 +44,30 @@ const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Initialize processing state when a command starts.
+ * Optionally persists to the processing ledger for crash recovery.
  */
-export function startProcessing(threadId: string, session: string): void {
+export function startProcessing(threadId: string, session: string, project?: string, prompt?: string): void {
   const existing = processingStore.get(threadId);
+  const now = Date.now();
   const entry: ProcessingEntry = {
     isProcessing: true,
     thinkingSteps: [],
     streamedText: '',
-    startedAt: Date.now(),
+    startedAt: now,
     session,
     subscribers: existing?.subscribers ?? new Set(),
   };
   processingStore.set(threadId, entry);
+
+  // Persist to ledger for crash recovery
+  if (processingDb && prompt) {
+    try {
+      processingDb.prepare(
+        'INSERT OR REPLACE INTO processing_ledger (thread_id, session, project, prompt, started_at, pid) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(threadId, session, project ?? null, prompt, now, process.pid);
+    } catch {}
+  }
+
   console.log(`[ProcessingState] Started processing for thread ${threadId.substring(0, 8)}...`);
 }
 
@@ -112,6 +137,11 @@ export function updateStreamedText(threadId: string, text: string): void {
 export function endProcessing(threadId: string, lastSeq?: number): void {
   const entry = processingStore.get(threadId);
   if (!entry) return;
+
+  // Remove from persistent ledger (crash recovery no longer needed for this request)
+  if (processingDb) {
+    try { processingDb.prepare('DELETE FROM processing_ledger WHERE thread_id = ?').run(threadId); } catch {}
+  }
 
   // Notify subscribers that processing ended (with lastSeq for gap detection)
   const message = JSON.stringify({
@@ -206,6 +236,18 @@ export function unsubscribeAll(ws: WsClient): void {
   }
 }
 
+/**
+ * Get thread IDs that are currently being processed (in-memory).
+ * Used by graceful shutdown to add interruption messages.
+ */
+export function getActiveProcessingThreadIds(): string[] {
+  const ids: string[] = [];
+  for (const [threadId, entry] of processingStore) {
+    if (entry.isProcessing) ids.push(threadId);
+  }
+  return ids;
+}
+
 // Periodic cleanup of stale entries (safety net for crashed processes)
 setInterval(() => {
   const now = Date.now();
@@ -213,6 +255,10 @@ setInterval(() => {
     if (entry.isProcessing && now - entry.startedAt > STALE_TIMEOUT_MS) {
       console.warn(`[ProcessingState] Cleaning up stale entry for thread ${threadId.substring(0, 8)}... (${Math.round((now - entry.startedAt) / 1000)}s old)`);
       processingStore.delete(threadId);
+      // Also clean ledger
+      if (processingDb) {
+        try { processingDb.prepare('DELETE FROM processing_ledger WHERE thread_id = ?').run(threadId); } catch {}
+      }
     }
   }
 }, 60 * 1000); // Check every minute

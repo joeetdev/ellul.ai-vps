@@ -15,7 +15,7 @@
 
 import fs from 'fs';
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
+
 import { serve } from '@hono/node-server';
 import { PORT, RP_NAME, DOMAIN_FILE, API_URL_FILE, SVC_HOME } from './config';
 import { registerAllRoutes } from './routes';
@@ -40,23 +40,9 @@ try {
 
 const app = new Hono();
 
-// CORS middleware for cross-origin iframe communication
-app.use('*', cors({
-  origin: (origin) => {
-    // Allow dashboard origins
-    if (!origin) return origin;
-    if (origin === 'https://ellul.ai') return origin;
-    if (origin === 'https://console.ellul.ai') return origin;
-    if (/^https:\/\/[a-zA-Z0-9-]+\.ellul\.(ai|app)$/.test(origin)) return origin;
-    // Allow same-origin
-    if (origin === `https://${hostname}`) return origin;
-    return null;
-  },
-  credentials: true,
-  allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'X-PoP-Signature', 'X-PoP-Timestamp', 'X-PoP-Nonce'],
-  exposeHeaders: ['Set-Cookie'],
-}));
+// NOTE: No Hono CORS middleware here — Caddy handles all CORS headers for external
+// requests. Adding CORS at both layers causes duplicate Access-Control-Allow-Origin
+// headers, which browsers reject (breaking cookie-based auth flows).
 
 // Register all routes
 registerAllRoutes(app, {

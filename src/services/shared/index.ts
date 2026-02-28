@@ -17,9 +17,7 @@ export {
   getCurrentTier,
   setTier,
   isStandardTier,
-  isSshOnlyTier,
   isWebLockedTier,
-  isDashboardControlAllowed,
   isPasskeyRequired,
 } from './tier';
 

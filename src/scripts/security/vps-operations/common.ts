@@ -1,7 +1,7 @@
 /**
  * Shared bash preamble for VPS operation scripts.
  *
- * Every SSH Only script needs:
+ * Every VPS operation script needs:
  * - Color codes
  * - Root check
  * - Server ID, API URL, token loading
@@ -38,7 +38,7 @@ export function getScriptPreamble(opts: PreambleOptions): string {
 
   return `#!/bin/bash
 #
-# ${opts.scriptName} - For SSH Only tier servers
+# ${opts.scriptName} - VPS operation script
 #
 # Usage: ${usage}
 #

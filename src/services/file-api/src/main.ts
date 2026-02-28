@@ -25,7 +25,7 @@ import {
   type UploadedFile,
 } from './services/files.service';
 import { detectApps } from './services/apps.service';
-import { getPreviewStatus, setPreviewApp, startPreview, stopPreview } from './services/preview.service';
+import { getPreviewStatus, getPreviewHealth, setPreviewApp, startPreview, stopPreview } from './services/preview.service';
 import {
   listContextFiles,
   getContextFile,
@@ -36,6 +36,7 @@ import { getCurrentTier as getTierFromService } from './services/tier.service';
 import { killProcessesOnPorts, restartServices } from './services/processes.service';
 import {
   setupWebSocket,
+  broadcast,
   initWatchers,
   initServerStatusWatcher,
   initPreviewStatusWatcher,
@@ -47,6 +48,8 @@ import {
   saveOpenclawWorkspaceFile,
   getOpenclawChannels,
   saveOpenclawChannel,
+  startWhatsAppLogin,
+  stopWhatsAppLogin,
 } from './services/openclaw.service';
 import codeBrowserHtml from '@ellul.ai/vps-ui/code-browser';
 
@@ -265,9 +268,26 @@ const server = http.createServer(async (req, res) => {
     // ============================================
 
     if (pathname === '/browser') {
+      // NOTE: Nonce-based CSP is NOT compatible with pre-built SPA bundles because
+      // bundled JS contains string literals like innerHTML="<script>" which regex
+      // nonce injection corrupts. Use 'unsafe-inline' — real protection is
+      // frame-ancestors + auth cookies + sovereign-shield.
+      const csp = [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self' data:",
+        "connect-src 'self' wss:",
+        "frame-ancestors 'self' https://console.ellul.ai",
+        "base-uri 'self'",
+        "form-action 'none'",
+        "object-src 'none'",
+      ].join('; ');
+
       res.writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Security-Policy': "frame-ancestors 'self' https://console.ellul.ai",
+        'Content-Security-Policy': csp,
         'Cache-Control': 'no-store',
       });
       res.end(codeBrowserHtml);
@@ -1020,29 +1040,23 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Handle preview based on app type
-      let previewStatus: { app: string | null; running: boolean; failReason?: string | null } = { app: null, running: false };
+      let previewRunning = false;
       let previewActivated = false;
 
       if (app.previewable) {
-        // Check if preview is already running for this app — avoid killing it
-        const currentPreview = getPreviewStatus();
-        if (currentPreview.app === app.directory && currentPreview.running) {
-          // Preview already running for this app — reuse it
-          previewStatus = { app: app.directory, running: true };
+        // Use port-level health check to see if preview is actually serving
+        const health = getPreviewHealth();
+        if (health.app === app.directory && health.active) {
+          // Already running and healthy — reuse
+          previewRunning = true;
         } else {
-          // Need to start/switch preview
-          const result = setPreviewApp(app.directory);
+          // Start/switch — non-blocking (returns immediately)
+          setPreviewApp(app.directory);
           previewActivated = true;
-          previewStatus = {
-            app: app.directory,
-            running: result.preview?.ready ?? false,
-            failReason: result.preview?.failReason ?? null,
-          };
         }
       } else {
         // Stop preview for non-previewable apps
         stopPreview();
-        previewStatus = { app: null, running: false };
       }
 
       // Persist as active project (survives browser refresh)
@@ -1059,11 +1073,11 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({
         app,
         preview: {
-          active: previewStatus.running,
-          app: previewStatus.app,
+          active: previewRunning,
+          app: app.previewable ? app.directory : null,
           activated: previewActivated,
-          port: 3000, // Default preview port
-          failReason: previewStatus.failReason ?? null,
+          port: 3000,
+          failReason: null,
         },
         context: {
           hasProjectContext,
@@ -1174,15 +1188,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const previewStatus = getPreviewStatus();
-      const isActivePreview = previewStatus.app === resolvedDir;
+      const health = getPreviewHealth();
+      const isActivePreview = health.app === resolvedDir;
 
       res.writeHead(200);
       res.end(JSON.stringify({
         directory: resolvedDir,
         preview: {
-          active: isActivePreview && previewStatus.running,
+          active: isActivePreview && health.active,
           isCurrentApp: isActivePreview,
+          phase: isActivePreview ? health.phase : 'idle',
           port: 3000,
         },
       }));
@@ -1206,9 +1221,10 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // Check preview is running
-      const previewStatus = getPreviewStatus();
-      if (!previewStatus.running || previewStatus.app !== resolvedDir) {
+      // Check preview is running (use port-level health check, not PM2 status,
+      // because the preview may be started by the ellulai-preview bash script directly)
+      const previewHealth = getPreviewHealth();
+      if (!previewHealth.active || previewHealth.app !== resolvedDir) {
         res.writeHead(200);
         res.end(JSON.stringify({ found: false, reason: 'Preview not running for this app' }));
         return;
@@ -1492,19 +1508,20 @@ const server = http.createServer(async (req, res) => {
     // GET/POST /api/preview
     if (pathname === '/api/preview') {
       if (req.method === 'GET') {
-        const status = getPreviewStatus();
+        const health = getPreviewHealth();
         let autoStarted = false;
 
-        if (status.app && !status.running) {
-          const result = startPreview(status.app);
+        // Only auto-start if port-level check shows nothing running
+        // (avoids killing preview started by the ellulai-preview bash script)
+        if (health.app && !health.active) {
+          const result = startPreview(health.app);
           if (result.success) {
-            status.running = true;
             autoStarted = true;
           }
         }
 
         res.writeHead(200);
-        res.end(JSON.stringify({ ...status, autoStarted }));
+        res.end(JSON.stringify({ app: health.app, running: health.active, autoStarted }));
         return;
       }
 
@@ -1603,7 +1620,8 @@ const server = http.createServer(async (req, res) => {
 
     // GET /api/openclaw/channels
     if (req.method === 'GET' && pathname === '/api/openclaw/channels') {
-      const channels = getOpenclawChannels();
+      const project = parsedUrl.query.project as string | undefined;
+      const channels = getOpenclawChannels(project);
       res.writeHead(200);
       res.end(JSON.stringify({ channels }));
       return;
@@ -1617,10 +1635,28 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'Missing channel' }));
         return;
       }
+      const project = parsedUrl.query.project as string | undefined;
       const body = await parseBody(req);
-      const result = saveOpenclawChannel(channel, body as Record<string, unknown>);
+      const result = saveOpenclawChannel(channel, body as Record<string, unknown>, project);
       res.writeHead(result.success ? 200 : 400);
       res.end(JSON.stringify(result));
+      return;
+    }
+
+    // POST /api/openclaw/channels/whatsapp/login — start WhatsApp QR pairing
+    if (req.method === 'POST' && pathname === '/api/openclaw/channels/whatsapp/login') {
+      const project = parsedUrl.query.project as string | undefined;
+      const result = startWhatsAppLogin(project, broadcast);
+      res.writeHead(result.success ? 200 : 500);
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // DELETE /api/openclaw/channels/whatsapp/login — stop WhatsApp QR pairing
+    if (req.method === 'DELETE' && pathname === '/api/openclaw/channels/whatsapp/login') {
+      stopWhatsAppLogin();
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true }));
       return;
     }
 

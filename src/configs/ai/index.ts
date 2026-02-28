@@ -20,11 +20,81 @@
 export interface WaterfallModelConfig {
   id: string;
   name: string;
-  provider: "opencode" | "deepseek" | "openrouter";
+  provider: "opencode" | "deepseek" | "openrouter" | "anthropic" | "openai" | "google";
   modelId: string;
   baseUrl: string;
   isPaid: boolean;
   description: string;
+  format?: "anthropic";
+}
+
+// ─── BYOK Provider Detection & Configs ──────────────────────────────
+
+export type ByokProvider = "anthropic" | "openai" | "openrouter" | "google";
+
+export interface ByokProviderConfig {
+  name: string;
+  baseUrl: string;
+  modelId: string;
+  modelName: string;
+  format: "openai" | "anthropic";
+  authHeader: "bearer" | "x-api-key";
+  extraHeaders?: Record<string, string>;
+}
+
+export const BYOK_PROVIDER_CONFIGS: Record<ByokProvider, ByokProviderConfig> = {
+  anthropic: {
+    name: "Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    modelId: "claude-sonnet-4-20250514",
+    modelName: "Claude Sonnet 4",
+    format: "anthropic",
+    authHeader: "x-api-key",
+    extraHeaders: { "anthropic-version": "2023-06-01" },
+  },
+  openai: {
+    name: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    modelId: "gpt-4o",
+    modelName: "GPT-4o",
+    format: "openai",
+    authHeader: "bearer",
+  },
+  openrouter: {
+    name: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    modelId: "anthropic/claude-sonnet-4-20250514",
+    modelName: "Claude Sonnet 4",
+    format: "openai",
+    authHeader: "bearer",
+  },
+  google: {
+    name: "Google",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    modelId: "gemini-2.5-flash",
+    modelName: "Gemini 2.5 Flash",
+    format: "openai",
+    authHeader: "bearer",
+  },
+};
+
+/**
+ * Auto-detect BYOK provider from API key prefix.
+ * Rejects empty/short keys with an error.
+ */
+export function detectKeyProvider(key: string): ByokProvider {
+  const trimmed = key.trim();
+  if (!trimmed || trimmed.length < 10) {
+    throw new Error("API key must be at least 10 characters");
+  }
+
+  if (trimmed.startsWith("sk-ant-")) return "anthropic";
+  if (trimmed.startsWith("sk-or-")) return "openrouter";
+  if (trimmed.startsWith("sk-")) return "openai";
+  if (trimmed.startsWith("AIza")) return "google";
+
+  // Default fallback — OpenRouter accepts any model ID
+  return "openrouter";
 }
 
 /**
@@ -48,7 +118,7 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 /**
  * Get the API key for a given provider
  */
-export function getProviderApiKey(provider: "opencode" | "deepseek" | "openrouter"): string | undefined {
+export function getProviderApiKey(provider: string): string | undefined {
   if (provider === "deepseek") {
     return process.env.DEEPSEEK_API_KEY;
   }

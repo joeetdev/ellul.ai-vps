@@ -21,7 +21,7 @@ import { db } from '../database';
 import { getCurrentTier } from '../services/tier.service';
 import { verifyJwtToken } from '../auth/jwt';
 import { getClientIp } from '../auth/fingerprint';
-import { verifyRequestPoP } from '../auth/pop';
+import { verifyRequestPoP, verifyPopSignature } from '../auth/pop';
 import { checkApiRateLimit } from '../services/rate-limiter';
 import { parseCookies } from '../utils/cookie';
 import { generateCspNonce, getCspHeader } from '../utils/csp';
@@ -687,6 +687,39 @@ export function registerTokenRoutes(app: Hono): void {
   });
 
   /**
+   * Verify a WebSocket PoP challenge-response (called by agent-bridge / file-api).
+   * Internal-only (localhost). Verifies ECDSA signature over 'challenge|' + challenge.
+   */
+  app.post('/_auth/pop/verify-challenge', async (c) => {
+    const body = await c.req.json() as { sessionId?: string; challenge?: string; signature?: string };
+    const { sessionId, challenge, signature } = body;
+
+    if (!sessionId || !challenge || !signature) {
+      return c.json({ valid: false, reason: 'missing_params' }, 400);
+    }
+
+    const session = db.prepare('SELECT pop_public_key FROM sessions WHERE id = ?')
+      .get(sessionId) as { pop_public_key: string | null } | undefined;
+
+    if (!session) {
+      return c.json({ valid: false, reason: 'session_not_found' });
+    }
+
+    if (!session.pop_public_key) {
+      return c.json({ valid: false, reason: 'no_pop_key' });
+    }
+
+    const payload = 'challenge|' + challenge;
+    const valid = await verifyPopSignature(session.pop_public_key, payload, signature);
+
+    if (!valid) {
+      return c.json({ valid: false, reason: 'signature_invalid' });
+    }
+
+    return c.json({ valid: true });
+  });
+
+  /**
    * Code redirect page - helps users get a code session via passkey+PoP
    * This page loads the bridge, authenticates, gets a code session, and redirects
    */
@@ -700,7 +733,7 @@ export function registerTokenRoutes(app: Hono): void {
 <head>
   <title>Authenticating...</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
+  <style nonce="${nonce}">
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: system-ui, -apple-system, sans-serif;

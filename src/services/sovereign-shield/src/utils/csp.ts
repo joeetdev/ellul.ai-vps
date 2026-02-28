@@ -22,8 +22,9 @@ export function getCspHeader(nonce: string): string {
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}'`,
-    "style-src 'self' 'unsafe-inline'",
+    `style-src 'self' 'unsafe-inline'`,
     "img-src 'self' data:",
+    "font-src 'self' data:",
     "connect-src 'self'",
     "frame-ancestors 'self' https://console.ellul.ai",
     "base-uri 'self'",

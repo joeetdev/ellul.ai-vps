@@ -9,7 +9,6 @@ import fs from 'fs';
 import {
   SETUP_TOKEN_FILE,
   SETUP_EXPIRY_FILE,
-  SSH_TRANSITION_MARKER,
   ATTESTATION_POLICY_FILE,
   TRUSTED_AAGUIDS,
 } from '../config';
@@ -69,7 +68,6 @@ export function validateSetupToken(token: string | undefined | null): boolean {
         // Token expired - clean up
         try { fs.unlinkSync(SETUP_TOKEN_FILE); } catch {}
         try { fs.unlinkSync(SETUP_EXPIRY_FILE); } catch {}
-        try { fs.unlinkSync(SSH_TRANSITION_MARKER); } catch {}
         return false;
       }
     }
@@ -86,5 +84,4 @@ export function validateSetupToken(token: string | undefined | null): boolean {
 export function cleanupSetupToken(): void {
   try { fs.unlinkSync(SETUP_TOKEN_FILE); } catch {}
   try { fs.unlinkSync(SETUP_EXPIRY_FILE); } catch {}
-  try { fs.unlinkSync(SSH_TRANSITION_MARKER); } catch {}
 }

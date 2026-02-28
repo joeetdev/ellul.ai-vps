@@ -394,17 +394,55 @@ export function setupWebSocket(server: import('http').Server): WsServer {
     }
   }, PING_INTERVAL_MS);
 
-  wss.on('connection', ((ws: WsClient) => {
+  wss.on('connection', ((ws: WsClient, req: { headers?: Record<string, string | string[] | undefined> }) => {
     // UNIFIED AUTH: If client has valid code token, they're authorized
     // Tier enforcement happens at token issuance in sovereign-shield
     clients.add(ws);
     console.log(`[WS] Client connected. Total: ${clients.size}`);
+
+    // Extract code_session from upgrade request cookies for periodic validation
+    let codeSessionId: string | null = null;
+    try {
+      const cookieHeader = req?.headers?.cookie;
+      if (typeof cookieHeader === 'string') {
+        const match = cookieHeader.match(/(?:^|;\s*)__Host-code_session=([^;]+)/);
+        if (match?.[1]) codeSessionId = match[1];
+      }
+    } catch { /* ignore parse errors */ }
 
     // Send initial state
     ws.send(JSON.stringify({ type: 'connected', timestamp: Date.now() }));
 
     // Immediate initial data push
     setTimeout(() => computeAndBroadcast(), 100);
+
+    // Absolute timeout: force re-authentication after 24 hours (matches shield session max)
+    const ABSOLUTE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+    const absoluteTimer = setTimeout(() => {
+      console.log('[WS] Absolute timeout (24h) — closing connection');
+      ws.close();
+    }, ABSOLUTE_TIMEOUT_MS);
+
+    // Periodic session validation: verify code_session is still valid every 5 minutes
+    // Catches revoked sessions without requiring PoP (different origin, no PoP key)
+    const SESSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+    const sessionCheckInterval = codeSessionId ? setInterval(async () => {
+      if (ws.readyState !== WS_OPEN) return;
+      try {
+        const res = await fetch('http://127.0.0.1:3005/_auth/code/session/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ codeSessionId }),
+        });
+        const data = (await res.json()) as { valid?: boolean };
+        if (!data.valid) {
+          console.log('[WS] Code session no longer valid — closing connection');
+          ws.close();
+        }
+      } catch {
+        // Shield temporarily unavailable — don't close, retry next interval
+      }
+    }, SESSION_CHECK_INTERVAL_MS) : null;
 
     // Track liveness via pong responses
     let isAlive = true;
@@ -420,7 +458,9 @@ export function setupWebSocket(server: import('http').Server): WsServer {
     }, PING_INTERVAL_MS);
 
     ws.on('close', () => {
+      clearTimeout(absoluteTimer);
       clearInterval(aliveCheck);
+      if (sessionCheckInterval) clearInterval(sessionCheckInterval);
       clients.delete(ws);
       console.log(`[WS] Client disconnected. Total: ${clients.size}`);
     });
@@ -429,6 +469,7 @@ export function setupWebSocket(server: import('http').Server): WsServer {
       const error = err as Error;
       console.error('[WS] Error:', error.message);
       clearInterval(aliveCheck);
+      if (sessionCheckInterval) clearInterval(sessionCheckInterval);
       clients.delete(ws);
     });
   }) as (...args: unknown[]) => void);

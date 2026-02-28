@@ -29,7 +29,6 @@ export const AUTH_SECRETS_FILE = `${SHIELD_DATA_DIR}/auth-secrets.json`;
 export const PENDING_SSH_BLOCK_FILE = `${SHIELD_DATA_DIR}/.pending-ssh-block`;
 export const SOVEREIGN_KEYS_FILE = `${SHIELD_DATA_DIR}/.sovereign-keys`;
 export const DOMAIN_FILE = '/etc/ellulai/domain';
-export const SSH_TRANSITION_MARKER = `${SHIELD_DATA_DIR}/.ssh-only-to-web-locked`;
 export const SETUP_EXPIRY_FILE = `${SHIELD_DATA_DIR}/.sovereign-setup-expiry`;
 export const TERMINAL_DISABLED_FILE = `${SHIELD_DATA_DIR}/.terminal-disabled`;
 export const TIER_FILE = '/etc/ellulai/security-tier';
