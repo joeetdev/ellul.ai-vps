@@ -134,11 +134,43 @@ app.get("/openapi.json", (req, res) => res.json(openapiSpec));
 
 The spec MUST include: all endpoints with methods, path/query parameters, request body schemas with property types and descriptions, response schemas for each status code, and reusable model definitions in components/schemas. Do NOT create a minimal/empty spec — include full details for every endpoint so the dashboard renders complete documentation.
 
-## Dev Server Config (CRITICAL)
-Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
-Next.js: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
-Other: bind to 0.0.0.0:3000
-Preview URL: https://$DEV_DOMAIN
+## Framework Setup Checklist (CRITICAL — preview won't work without this)
+The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
+
+**Vite + React/Vue/Svelte:**
+- \\\`index.html\\\` at project root with \\\`<script type="module" src="/src/main.tsx">\\\` (or .jsx/.vue)
+- \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
+- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
+- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+
+**Next.js (App Router):**
+- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`tsconfig.json\\\` (REQUIRED for TypeScript — Next.js auto-creates it, but verify it exists)
+- \\\`next.config.mjs\\\` (recommended)
+- Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
+
+**Next.js (Pages Router):**
+- \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
+- \\\`tsconfig.json\\\` for TypeScript
+- Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
+
+**Astro:**
+- \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
+- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
+
+**Nuxt:**
+- \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
+- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
+
+**CRA (Create React App):**
+- \\\`public/index.html\\\` and \\\`src/index.tsx\\\` (or .jsx)
+- Dev server uses PORT env var automatically
+
+**Remix:**
+- \\\`app/root.tsx\\\` and route files in \\\`app/routes/\\\`
+- Vite config with Remix plugin
+
+**General rule:** bind to 0.0.0.0:3000. Preview URL: https://$DEV_DOMAIN
 
 ## MANDATORY: Pre-Completion Verification Protocol
 You MUST complete ALL of these checks before reporting ANY task as done.
@@ -157,6 +189,9 @@ STEP 3 — HTTP check (with retry):
   If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
 
 STEP 4 — Content check:
+  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:3000\\\` → must return 200
+  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
+  If 500: check \\\`pm2 logs preview --nostream --lines 30\\\` for compilation errors
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
 STEP 5 — Report to user:
@@ -282,11 +317,43 @@ ALWAYS create a \\\`ellulai.json\\\` file in the project root:
 ## Backend Apps — OpenAPI Spec (REQUIRED)
 When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
 
-## Dev Server Config (CRITICAL)
-Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
-Next.js: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
-Other: bind to 0.0.0.0:3000
-Preview URL: https://$DEV_DOMAIN
+## Framework Setup Checklist (CRITICAL — preview won't work without this)
+The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
+
+**Vite + React/Vue/Svelte:**
+- \\\`index.html\\\` at project root with \\\`<script type="module" src="/src/main.tsx">\\\` (or .jsx/.vue)
+- \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
+- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
+- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+
+**Next.js (App Router):**
+- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`tsconfig.json\\\` (REQUIRED for TypeScript — Next.js auto-creates it, but verify it exists)
+- \\\`next.config.mjs\\\` (recommended)
+- Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
+
+**Next.js (Pages Router):**
+- \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
+- \\\`tsconfig.json\\\` for TypeScript
+- Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
+
+**Astro:**
+- \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
+- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
+
+**Nuxt:**
+- \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
+- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
+
+**CRA (Create React App):**
+- \\\`public/index.html\\\` and \\\`src/index.tsx\\\` (or .jsx)
+- Dev server uses PORT env var automatically
+
+**Remix:**
+- \\\`app/root.tsx\\\` and route files in \\\`app/routes/\\\`
+- Vite config with Remix plugin
+
+**General rule:** bind to 0.0.0.0:3000. Preview URL: https://$DEV_DOMAIN
 
 ## MANDATORY: Pre-Completion Verification Protocol
 You MUST complete ALL of these checks before reporting ANY task as done.
@@ -305,6 +372,9 @@ STEP 3 — HTTP check (with retry):
   If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
 
 STEP 4 — Content check:
+  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:3000\\\` → must return 200
+  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
+  If 500: check \\\`pm2 logs preview --nostream --lines 30\\\` for compilation errors
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
 STEP 5 — Report to user:
@@ -517,10 +587,37 @@ $APP_NAME_LINE
 ## Backend Apps — OpenAPI Spec (REQUIRED)
 When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
 
-## Dev Server Config (CRITICAL — preview won't work without this)
-Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
-Next.js: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
-Other: bind to 0.0.0.0:3000
+## Framework Setup Checklist (CRITICAL — preview won't work without this)
+The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
+
+**Vite + React/Vue/Svelte:**
+- \\\`index.html\\\` at project root with \\\`<script type=\\"module\\" src=\\"/src/main.tsx\\">\\\` (or .jsx/.vue)
+- \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
+- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
+- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+
+**Next.js (App Router):**
+- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`tsconfig.json\\\` (REQUIRED for TypeScript)
+- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
+
+**Next.js (Pages Router):**
+- \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
+- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
+
+**Astro:**
+- \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
+- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
+
+**Nuxt:**
+- \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
+- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
+
+**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` — PORT env var used automatically
+
+**Remix:** \\\`app/root.tsx\\\` + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
+
+**General rule:** bind to 0.0.0.0:3000
 
 ## MANDATORY: Pre-Completion Verification Protocol
 You MUST complete ALL of these checks before reporting ANY task as done.
@@ -539,6 +636,9 @@ STEP 3 — HTTP check (with retry):
   If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
 
 STEP 4 — Content check:
+  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:3000\\\` → must return 200
+  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
+  If 500: check \\\`pm2 logs preview --nostream --lines 30\\\` for compilation errors
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
 STEP 5 — Report to user:
@@ -614,10 +714,37 @@ $DEPLOYMENT_SECTION
 ## Backend Apps — OpenAPI Spec (REQUIRED)
 When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
 
-## Dev Server Config (CRITICAL — preview won't work without this)
-Vite: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\`
-Next.js: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
-Other: bind to 0.0.0.0:3000
+## Framework Setup Checklist (CRITICAL — preview won't work without this)
+The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
+
+**Vite + React/Vue/Svelte:**
+- \\\`index.html\\\` at project root with \\\`<script type=\\"module\\" src=\\"/src/main.tsx\\">\\\` (or .jsx/.vue)
+- \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
+- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
+- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+
+**Next.js (App Router):**
+- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`tsconfig.json\\\` (REQUIRED for TypeScript)
+- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
+
+**Next.js (Pages Router):**
+- \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
+- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
+
+**Astro:**
+- \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
+- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
+
+**Nuxt:**
+- \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
+- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
+
+**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` — PORT env var used automatically
+
+**Remix:** \\\`app/root.tsx\\\` + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
+
+**General rule:** bind to 0.0.0.0:3000
 
 ## MANDATORY: Pre-Completion Verification Protocol
 You MUST complete ALL of these checks before reporting ANY task as done.
@@ -636,6 +763,9 @@ STEP 3 — HTTP check (with retry):
   If still not 200 after 5 attempts: \\\`pm2 logs preview --nostream --lines 30\\\` → diagnose → fix → restart
 
 STEP 4 — Content check:
+  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:3000\\\` → must return 200
+  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
+  If 500: check \\\`pm2 logs preview --nostream --lines 30\\\` for compilation errors
   \\\`curl -s localhost:3000 | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
 
 STEP 5 — Report to user:

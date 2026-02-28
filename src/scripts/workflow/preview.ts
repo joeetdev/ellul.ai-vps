@@ -115,6 +115,76 @@ for (const htmlPath of locations) {
   } catch (e) { console.error('CSS reset failed for ' + htmlPath + ': ' + e.message); }
 }`;
 
+  const SCAFFOLD_READINESS_CHECKER = String.raw`const fs = require('fs'), path = require('path'), { glob } = { glob: (pattern, dir) => {
+  const exts = ['.tsx', '.jsx', '.ts', '.js', '.astro', '.vue', '.svelte'];
+  try {
+    const files = fs.readdirSync(path.join(dir, path.dirname(pattern)));
+    const base = path.basename(pattern).replace('.*', '');
+    return files.some(f => { const n = f.replace(/\.[^.]+$/, ''); return n === base && exts.some(e => f.endsWith(e)); });
+  } catch { return false; }
+}};
+const dir = process.env.SCAFFOLD_DIR;
+const fw = process.env.SCAFFOLD_FW;
+const checks = {
+  next: () => ['app/page', 'pages/index', 'src/app/page', 'src/pages/index'].some(p => glob(p + '.*', dir)),
+  vite: () => fs.existsSync(path.join(dir, 'index.html')),
+  svelte: () => fs.existsSync(path.join(dir, 'index.html')),
+  cra: () => fs.existsSync(path.join(dir, 'public/index.html')) && ['src/index', 'src/App'].some(p => glob(p + '.*', dir)),
+  astro: () => glob('src/pages/index.*', dir),
+  nuxt: () => fs.existsSync(path.join(dir, 'app.vue')) || glob('pages/index.*', dir),
+  remix: () => glob('app/root.*', dir),
+  gatsby: () => glob('src/pages/index.*', dir),
+};
+const check = checks[fw];
+if (!check) { process.exit(0); }
+process.exit(check() ? 0 : 1);`;
+
+  const FRAMEWORK_CONFIG_FIXER = String.raw`const fs = require('fs'), path = require('path');
+const dir = process.env.FW_FIX_DIR;
+const fw = process.env.FW_FIX_FW;
+const port = process.env.FW_FIX_PORT || '3000';
+try { JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { process.exit(0); }
+
+if (fw === 'next') {
+  // Ensure tsconfig.json if TypeScript files exist
+  const hasTs = (() => {
+    try {
+      const check = (d) => {
+        for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+          if (f.name === 'node_modules' || f.name === '.next') continue;
+          const full = path.join(d, f.name);
+          if (f.isDirectory()) { if (check(full)) return true; }
+          else if (f.name.endsWith('.tsx') || f.name.endsWith('.ts')) return true;
+        }
+        return false;
+      };
+      return check(dir);
+    } catch { return false; }
+  })();
+  if (hasTs && !fs.existsSync(path.join(dir, 'tsconfig.json'))) {
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: "es5", lib: ["dom", "dom.iterable", "esnext"], allowJs: true, skipLibCheck: true, strict: false, noEmit: true, esModuleInterop: true, module: "esnext", moduleResolution: "bundler", resolveJsonModule: true, isolatedModules: true, jsx: "preserve", incremental: true, plugins: [{ name: "next" }], paths: { "@/*": ["./*"] } }, include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"], exclude: ["node_modules"] }, null, 2));
+    console.log('Created tsconfig.json for Next.js TypeScript');
+  }
+  // Ensure next.config exists
+  const cfgFiles = ['next.config.js', 'next.config.mjs', 'next.config.ts'];
+  if (!cfgFiles.some(f => fs.existsSync(path.join(dir, f)))) {
+    fs.writeFileSync(path.join(dir, 'next.config.mjs'), '/** @type {import("next").NextConfig} */\nconst nextConfig = {};\nexport default nextConfig;\n');
+    console.log('Created next.config.mjs');
+  }
+} else if (fw === 'astro') {
+  const cfgFiles = ['astro.config.mjs', 'astro.config.ts', 'astro.config.js'];
+  if (!cfgFiles.some(f => fs.existsSync(path.join(dir, f)))) {
+    fs.writeFileSync(path.join(dir, 'astro.config.mjs'), 'import { defineConfig } from "astro/config";\nexport default defineConfig({\n  server: { host: "0.0.0.0", port: ' + port + ' },\n});\n');
+    console.log('Created astro.config.mjs');
+  }
+} else if (fw === 'nuxt') {
+  const cfgFiles = ['nuxt.config.ts', 'nuxt.config.js'];
+  if (!cfgFiles.some(f => fs.existsSync(path.join(dir, f)))) {
+    fs.writeFileSync(path.join(dir, 'nuxt.config.ts'), 'export default defineNuxtConfig({\n  devServer: { host: "0.0.0.0", port: ' + port + ' },\n});\n');
+    console.log('Created nuxt.config.ts');
+  }
+}`;
+
   return `#!/bin/bash
 # Preview Server — serves user-selected app on port 3000.
 # Reads ~/.ellulai/preview-app to determine which project to serve.
@@ -169,7 +239,7 @@ detect_framework() {
 get_dev_command() {
   local framework="$1"
   case "$framework" in
-    next)     echo "npx next dev -p $PORT" ;;
+    next)     echo "npx next dev -H 0.0.0.0 -p $PORT" ;;
     nuxt)     echo "npx nuxi dev --port $PORT" ;;
     vite)     echo "npx vite --port $PORT --host 0.0.0.0" ;;
     vue)      echo "npx vue-cli-service serve --port $PORT" ;;
@@ -191,6 +261,13 @@ kill_tree() {
     kill_tree $child
   done
   kill $pid 2>/dev/null
+  # Wait up to 1s, then SIGKILL if still alive
+  local waited=0
+  while [ $waited -lt 10 ] && kill -0 $pid 2>/dev/null; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  kill -0 $pid 2>/dev/null && kill -9 $pid 2>/dev/null
 }
 
 port_in_use_by_other() {
@@ -280,6 +357,58 @@ ${CSS_RESET_INJECTOR}
 CSSRESET_EOF
 }
 
+# ── Scaffold readiness gate ───────────────────────────────────────────
+# Waits for framework-specific route/entry files before starting dev server.
+# Prevents starting a framework server before the project is scaffolded.
+wait_for_scaffold() {
+  local dir="$1"
+  local framework="$2"
+  [ ! -f "$dir/package.json" ] && return 0
+  case "$framework" in
+    next|vite|svelte|cra|astro|nuxt|remix|gatsby) ;;
+    *) return 0 ;;
+  esac
+
+  # Quick check — already ready?
+  if SCAFFOLD_DIR="$dir" SCAFFOLD_FW="$framework" node << 'SCAFFOLD_EOF'
+${SCAFFOLD_READINESS_CHECKER}
+SCAFFOLD_EOF
+  then
+    return 0
+  fi
+
+  log "Waiting for scaffold readiness ($framework)..."
+  local waited=0
+  while [ $waited -lt 30 ]; do
+    if SCAFFOLD_DIR="$dir" SCAFFOLD_FW="$framework" node << 'SCAFFOLD_EOF2'
+${SCAFFOLD_READINESS_CHECKER}
+SCAFFOLD_EOF2
+    then
+      log "Scaffold ready ($framework)"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  log "WARNING: Scaffold readiness timeout after 30s, starting anyway"
+  return 0
+}
+
+# ── Framework config fixup ────────────────────────────────────────────
+# Ensures framework-specific config files exist (tsconfig, next.config, astro.config, etc.)
+ensure_framework_config() {
+  local dir="$1"
+  local framework="$2"
+  [ ! -f "$dir/package.json" ] && return
+  case "$framework" in
+    next|astro|nuxt) ;;
+    *) return ;;
+  esac
+  FW_FIX_DIR="$dir" FW_FIX_FW="$framework" FW_FIX_PORT="$PORT" node << 'FWCFG_EOF'
+${FRAMEWORK_CONFIG_FIXER}
+FWCFG_EOF
+}
+
 # ── Install missing Vite plugin packages ─────────────────────────────────
 ensure_vite_plugins_installed() {
   local dir="$1"
@@ -294,6 +423,30 @@ VITEPKG_EOF
 # Returns 0 if healthy, 1 if unhealthy.
 health_check() {
   local dir="$1"
+  local framework="$CURRENT_FRAMEWORK"
+
+  # Check HTTP status code
+  local status
+  status=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$PORT/ 2>/dev/null)
+
+  # Framework-specific HTTP status checks
+  case "$framework" in
+    next|astro|nuxt)
+      # 404 = no routes compiled / missing route files
+      if [ "$status" = "404" ]; then
+        log "HEALTH FAIL: $framework returned 404 (missing route files)"
+        return 1
+      fi
+      ;;
+    nuxt)
+      # Nuxt may also 500 on startup issues
+      if [ "$status" = "500" ]; then
+        log "HEALTH FAIL: nuxt returned 500"
+        return 1
+      fi
+      ;;
+  esac
+
   # Check port is responding with HTML
   local ct
   ct=$(curl -sI http://localhost:$PORT/ 2>/dev/null | grep -i "^content-type:" | head -1)
@@ -401,7 +554,7 @@ while true; do
         log "Framework changed: $CURRENT_FRAMEWORK -> $NEW_FRAMEWORK, restarting"
         kill_tree $DEV_PID
         sleep 1
-        rm -rf "$PROJECT_DIR/node_modules/.vite" 2>/dev/null
+        rm -rf "$PROJECT_DIR/node_modules/.vite" "$PROJECT_DIR/.next" "$PROJECT_DIR/.nuxt" "$PROJECT_DIR/.astro" 2>/dev/null
         DEV_PID=""
         CURRENT_FRAMEWORK=""
         HEALTH_CHECKED=false
@@ -420,9 +573,10 @@ while true; do
         log "Health check FAILED — restarting with cache clear"
         kill_tree $DEV_PID
         sleep 1
-        rm -rf "$PROJECT_DIR/node_modules/.vite" 2>/dev/null
+        rm -rf "$PROJECT_DIR/node_modules/.vite" "$PROJECT_DIR/.next" "$PROJECT_DIR/.nuxt" "$PROJECT_DIR/.astro" 2>/dev/null
         ensure_vite_config "$PROJECT_DIR"
         ensure_vite_plugins_installed "$PROJECT_DIR"
+        ensure_framework_config "$PROJECT_DIR" "$CURRENT_FRAMEWORK"
         DEV_PID=""
         CURRENT_FRAMEWORK=""
         # Don't set HEALTH_CHECKED — will re-check after restart
@@ -474,12 +628,18 @@ while true; do
         fi
       fi
 
-      # Vite-specific: ensure config is correct and clear stale cache
+      # Universal: wait for scaffold readiness + ensure config
+      wait_for_scaffold "$PROJECT_DIR" "$FRAMEWORK"
+      ensure_framework_config "$PROJECT_DIR" "$FRAMEWORK"
+
+      # Clear stale caches before starting
+      rm -rf "$PROJECT_DIR/.next" "$PROJECT_DIR/.nuxt" "$PROJECT_DIR/.astro" "$PROJECT_DIR/node_modules/.vite" 2>/dev/null
+
+      # Vite-specific: ensure config is correct
       case "$FRAMEWORK" in
         vite|svelte|remix)
           ensure_vite_config "$PROJECT_DIR"
           ensure_vite_plugins_installed "$PROJECT_DIR"
-          rm -rf "$PROJECT_DIR/node_modules/.vite" 2>/dev/null
           ;;
       esac
 
@@ -491,6 +651,7 @@ while true; do
     fi
 
     # Set environment for framework compatibility
+    export NODE_ENV=development
     export DANGEROUSLY_DISABLE_HOST_CHECK=true
     export HOST=0.0.0.0
     export BROWSER=none

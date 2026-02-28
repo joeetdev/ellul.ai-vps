@@ -457,8 +457,9 @@ export function removeOpenclawLlmKey(): { success: boolean } {
 }
 
 /**
- * Save a channel for a specific project using the openclaw CLI.
- * Sets up multi-account channel + agent binding.
+ * Save a channel for a specific project.
+ * Writes multi-account config directly to openclaw.json (the CLI `channels add`
+ * doesn't support all channel names), then uses the CLI only for agent binding.
  */
 function saveProjectChannel(
   channel: string,
@@ -473,54 +474,56 @@ function saveProjectChannel(
     return { success: false, error: `Missing token field (${tokenKey})` };
   }
 
-  // Write token to temp file to avoid exposing it in process args
-  const tmpFile = `/tmp/openclaw-token-${project}-${channel}-${Date.now()}`;
   try {
-    fs.writeFileSync(tmpFile, token, { mode: 0o600 });
-
-    // 1. Add channel account
-    runOpenclawCli([
-      'channels', 'add',
-      '--channel', channel,
-      '--token-file', tmpFile,
-      '--account', project,
-    ]);
-
-    // 2. Configure channel policies
-    runOpenclawCli([
-      'config', 'set',
-      `channels.${channel}.accounts.${project}.dmPolicy`,
-      'open',
-    ]);
-    runOpenclawCli([
-      'config', 'set',
-      `channels.${channel}.accounts.${project}.allowFrom`,
-      '["*"]',
-    ]);
-
-    // 3. For Slack, also save appToken if provided
-    if (channel === 'slack' && channelConfig.appToken) {
-      runOpenclawCli([
-        'config', 'set',
-        `channels.${channel}.accounts.${project}.appToken`,
-        channelConfig.appToken as string,
-      ]);
+    // 1. Write channel account config directly to openclaw.json
+    let config: Record<string, unknown> = {};
+    if (fs.existsSync(CONFIG_FILE)) {
+      try {
+        config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      } catch { /* start fresh */ }
     }
 
-    // 4. Bind agent to channel account
-    const agentId = `dev-${project}`;
-    runOpenclawCli([
-      'agents', 'bind',
-      '--agent', agentId,
-      '--bind', `${channel}:${project}`,
-    ]);
+    if (!config.channels || typeof config.channels !== 'object') config.channels = {};
+    const channels = config.channels as Record<string, unknown>;
+    if (!channels[channel] || typeof channels[channel] !== 'object') channels[channel] = {};
+    const ch = channels[channel] as Record<string, unknown>;
+    if (!ch.accounts || typeof ch.accounts !== 'object') ch.accounts = {};
+    const accounts = ch.accounts as Record<string, unknown>;
+
+    // Build the account config
+    const acct: Record<string, unknown> = {
+      [tokenKey]: token,
+      dmPolicy: 'open',
+      allowFrom: ['*'],
+    };
+
+    // For Slack, also save appToken if provided
+    if (channel === 'slack' && channelConfig.appToken) {
+      acct.appToken = channelConfig.appToken;
+    }
+
+    accounts[project] = acct;
+
+    fs.mkdirSync(OPENCLAW_DIR, { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+
+    // 2. Bind agent to channel account (fire-and-forget, don't fail the whole save)
+    try {
+      const agentId = `dev-${project}`;
+      runOpenclawCli([
+        'agents', 'bind',
+        '--agent', agentId,
+        '--bind', `${channel}:${project}`,
+      ]);
+    } catch (bindErr: unknown) {
+      // Agent binding can fail if agent doesn't exist yet — not fatal
+      const msg = bindErr instanceof Error ? bindErr.message : String(bindErr);
+      console.warn(`[openclaw] Agent bind failed for ${channel}:${project}: ${msg}`);
+    }
 
     return { success: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, error: `CLI error: ${msg}` };
-  } finally {
-    // Clean up temp file
-    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    return { success: false, error: msg };
   }
 }

@@ -228,28 +228,37 @@ function isDescendantOf(childPid: number, ancestorPid: number): boolean {
 }
 
 interface ReadyResult {
-  status: 'ready' | 'wrong_process' | 'timeout' | 'module_error';
+  status: 'ready' | 'wrong_process' | 'timeout' | 'module_error' | 'http_error';
   /** Entry points that failed MIME validation */
   badModules?: Array<{ path: string; contentType: string }>;
+  /** HTTP status code if error */
+  httpStatus?: number;
 }
 
 /**
  * Wait for preview to be ready with process ownership + content-type verification.
  * Also validates that module entry points are served with correct MIME types.
+ * Increased timeout to 12s for cold starts (Next.js compiles on first request).
  */
-function waitForReady(maxWaitMs: number = 10000): ReadyResult {
+function waitForReady(maxWaitMs: number = 12000): ReadyResult {
   const startTime = Date.now();
   while (Date.now() - startTime < maxWaitMs) {
     const portPid = getPidOnPort(PORTS.PREVIEW);
     if (portPid !== null) {
       const previewPid = getPreviewPid();
       if (previewPid !== null && isDescendantOf(portPid, previewPid)) {
-        // Ownership confirmed — check content-type
+        // Ownership confirmed — check content-type and HTTP status
         try {
           const headers = execSync(
             `curl -sI http://localhost:${PORTS.PREVIEW}/ 2>/dev/null`,
             { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
           );
+          // Check HTTP status — 404 means routes are missing
+          const statusMatch = headers.match(/^HTTP\/[\d.]+ (\d{3})/i);
+          const httpStatus = statusMatch ? parseInt(statusMatch[1]!, 10) : 0;
+          if (httpStatus === 404) {
+            return { status: 'http_error', httpStatus: 404 };
+          }
           if (/content-type:.*text\/html/i.test(headers)) {
             // HTML OK — now validate module entry points
             const badModules = validateModuleEntryPoints();
@@ -407,6 +416,85 @@ function installPluginIfMissing(appPath: string, spec: VitePluginSpec): void {
 }
 
 // ---------------------------------------------------------------------------
+// Framework Config Fixer — ensures tsconfig, next.config, astro.config, etc.
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect if any .ts/.tsx files exist in a directory (recursively, skipping node_modules).
+ */
+function hasTypescriptFiles(dir: string): boolean {
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.next' || entry.name === '.git') continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (hasTypescriptFiles(full)) return true;
+      } else if (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts')) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Ensure framework-specific config files exist.
+ * Covers Next.js (tsconfig.json, next.config.mjs), Astro (astro.config.mjs), Nuxt (nuxt.config.ts).
+ */
+function ensureFrameworkConfig(appPath: string): void {
+  const pkgPath = path.join(appPath, 'package.json');
+  if (!fs.existsSync(pkgPath)) return;
+
+  let allDeps: Record<string, string> = {};
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+  } catch { return; }
+
+  // Next.js
+  if (allDeps['next']) {
+    // Ensure tsconfig.json for TypeScript projects
+    if (hasTypescriptFiles(appPath) && !fs.existsSync(path.join(appPath, 'tsconfig.json'))) {
+      fs.writeFileSync(path.join(appPath, 'tsconfig.json'), JSON.stringify({
+        compilerOptions: {
+          target: "es5", lib: ["dom", "dom.iterable", "esnext"], allowJs: true,
+          skipLibCheck: true, strict: false, noEmit: true, esModuleInterop: true,
+          module: "esnext", moduleResolution: "bundler", resolveJsonModule: true,
+          isolatedModules: true, jsx: "preserve", incremental: true,
+          plugins: [{ name: "next" }], paths: { "@/*": ["./*"] }
+        },
+        include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+        exclude: ["node_modules"]
+      }, null, 2));
+    }
+    // Ensure next.config exists
+    const nextConfigs = ['next.config.js', 'next.config.mjs', 'next.config.ts'];
+    if (!nextConfigs.some(f => fs.existsSync(path.join(appPath, f)))) {
+      fs.writeFileSync(path.join(appPath, 'next.config.mjs'),
+        '/** @type {import("next").NextConfig} */\nconst nextConfig = {};\nexport default nextConfig;\n');
+    }
+  }
+
+  // Astro
+  if (allDeps['astro']) {
+    const astroConfigs = ['astro.config.mjs', 'astro.config.ts', 'astro.config.js'];
+    if (!astroConfigs.some(f => fs.existsSync(path.join(appPath, f)))) {
+      fs.writeFileSync(path.join(appPath, 'astro.config.mjs'),
+        `import { defineConfig } from "astro/config";\nexport default defineConfig({\n  server: { host: "0.0.0.0", port: ${PORTS.PREVIEW} },\n});\n`);
+    }
+  }
+
+  // Nuxt
+  if (allDeps['nuxt']) {
+    const nuxtConfigs = ['nuxt.config.ts', 'nuxt.config.js'];
+    if (!nuxtConfigs.some(f => fs.existsSync(path.join(appPath, f)))) {
+      fs.writeFileSync(path.join(appPath, 'nuxt.config.ts'),
+        `export default defineNuxtConfig({\n  devServer: { host: "0.0.0.0", port: ${PORTS.PREVIEW} },\n});\n`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CSS Reset Injection — guarantees no white border regardless of LLM output
 // ---------------------------------------------------------------------------
 
@@ -449,6 +537,39 @@ function ensureCssReset(appPath: string): void {
       }
       fs.writeFileSync(htmlPath, html);
     } catch {}
+  }
+}
+
+/**
+ * Check if the project has the minimum route/entry files for the detected framework.
+ * Returns true if routes exist or framework doesn't need route files.
+ */
+function hasRouteFiles(appPath: string, framework: string | undefined): boolean {
+  if (!framework) return true;
+
+  const globMatch = (base: string): boolean => {
+    const dir = path.join(appPath, path.dirname(base));
+    const name = path.basename(base).replace('.*', '');
+    const exts = ['.tsx', '.jsx', '.ts', '.js', '.astro', '.vue', '.svelte'];
+    try {
+      return fs.readdirSync(dir).some(f => {
+        const n = f.replace(/\.[^.]+$/, '');
+        return n === name && exts.some(e => f.endsWith(e));
+      });
+    } catch { return false; }
+  };
+
+  switch (framework) {
+    case 'nextjs':
+      return ['app/page', 'pages/index', 'src/app/page', 'src/pages/index'].some(p => globMatch(p + '.*'));
+    case 'vite':
+      return fs.existsSync(path.join(appPath, 'index.html'));
+    case 'cra':
+      return fs.existsSync(path.join(appPath, 'public/index.html'));
+    case 'astro':
+      return globMatch('src/pages/index.*');
+    default:
+      return true; // Unknown frameworks — don't block
   }
 }
 
@@ -525,6 +646,20 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
     return { success: true, ready: false, failReason: null };
   }
 
+  // Check if framework route files exist — if not, let the bash daemon handle startup
+  // after the agent finishes scaffolding.
+  if (fs.existsSync(packageJsonPath)) {
+    try {
+      const { detectApps } = require('./apps.service');
+      const apps = detectApps();
+      const app = apps.find((a: { directory: string }) => a.directory === appDirectory);
+      const fw = app?.framework as string | undefined;
+      if (fw && !hasRouteFiles(appPath, fw)) {
+        return { success: true, ready: false, failReason: null };
+      }
+    } catch {}
+  }
+
   let started = false;
 
   // Ensure child processes spawned by pm2 also have the correct PATH
@@ -535,6 +670,7 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   const frameworkEnv = [
     `export PATH=${pathEnv}`,
     `export PORT=${PORTS.PREVIEW}`,                  // Explicit preview port for child processes
+    'export NODE_ENV=development',                // Eliminates non-standard NODE_ENV warnings
     'export DANGEROUSLY_DISABLE_HOST_CHECK=true', // CRA
     'export HOST=127.0.0.1',                      // Bind to localhost only (Caddy reverse proxies)
   ].join(' && ');
@@ -542,6 +678,9 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   // Ensure Vite projects have correct config: allowedHosts + framework plugins.
   // Without the right plugin, Vite serves .jsx/.tsx/.vue files with wrong MIME types.
   ensureViteConfig(appPath);
+
+  // Ensure framework-specific configs (tsconfig, next.config, astro.config, etc.)
+  ensureFrameworkConfig(appPath);
 
   // Inject CSS reset into index.html to eliminate white border from missing resets.
   // Infrastructure-level fix — doesn't depend on LLM including CSS resets.
@@ -613,11 +752,20 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
   // Frontend detects readiness via status polling with getPreviewHealth().
   setTimeout(() => {
     if (requestId !== undefined && !isLatestRequest(requestId)) return;
-    const result = waitForReady(8000);
+    const result = waitForReady(12000);
     if (result.status === 'module_error') {
       console.log('[preview] Module MIME error detected, attempting auto-repair:', result.badModules);
       ensureViteConfig(appPath);
       try { fs.rmSync(path.join(appPath, 'node_modules', '.vite'), { recursive: true, force: true }); } catch {}
+      runPm2('pm2 restart preview');
+    } else if (result.status === 'http_error' || result.status === 'timeout') {
+      console.log(`[preview] ${result.status} (HTTP ${result.httpStatus ?? 'n/a'}), attempting auto-repair`);
+      // Clear all framework caches
+      for (const cacheDir of ['.next', '.nuxt', '.astro', 'node_modules/.vite']) {
+        try { fs.rmSync(path.join(appPath, cacheDir), { recursive: true, force: true }); } catch {}
+      }
+      ensureFrameworkConfig(appPath);
+      ensureViteConfig(appPath);
       runPm2('pm2 restart preview');
     }
   }, 100);

@@ -147,7 +147,8 @@ const VITE_PLUGIN_MAP: Record<string, string> = {
 
 /**
  * Build project-specific preview verification hints.
- * Returns 2-4 lines of targeted instructions based on the actual project stack.
+ * Returns targeted instructions based on the actual project stack.
+ * Covers Vite, Next.js, Astro, Nuxt, CRA, Remix, and Gatsby.
  */
 function buildPreviewHints(projectName: string | null): string {
   if (!projectName) return '';
@@ -161,35 +162,120 @@ function buildPreviewHints(projectName: string | null): string {
     allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
   } catch { return ''; }
 
-  const isVite = !!allDeps['vite'];
-  if (!isVite) return '';
-
-  // Detect which UI library is in use
-  const uiLib = Object.keys(VITE_PLUGIN_MAP).find((k) => !!allDeps[k]);
-  if (!uiLib) return '';
-
-  const pluginPkg = VITE_PLUGIN_MAP[uiLib]!;
-
-  // Find actual entry file(s) in src/
-  const srcDir = path.join(projectPath, 'src');
-  let entryFile = '';
-  if (fs.existsSync(srcDir)) {
-    const entryExts = ['.tsx', '.jsx', '.vue', '.svelte', '.ts', '.js'];
+  // Check for TypeScript files
+  const hasTs = (() => {
     try {
-      const files = fs.readdirSync(srcDir);
-      const main = files.find((f) => {
-        const base = f.replace(/\.[^.]+$/, '');
-        return (base === 'main' || base === 'index' || base === 'App') && entryExts.some((ext) => f.endsWith(ext));
-      });
-      if (main) entryFile = `/src/${main}`;
+      const srcDir = path.join(projectPath, 'src');
+      if (fs.existsSync(srcDir)) {
+        return fs.readdirSync(srcDir).some(f => f.endsWith('.tsx') || f.endsWith('.ts'));
+      }
+      const appDir = path.join(projectPath, 'app');
+      if (fs.existsSync(appDir)) {
+        return fs.readdirSync(appDir).some(f => f.endsWith('.tsx') || f.endsWith('.ts'));
+      }
     } catch {}
+    return false;
+  })();
+
+  // --- Vite projects (existing logic, preserved) ---
+  const isVite = !!allDeps['vite'];
+  if (isVite) {
+    const uiLib = Object.keys(VITE_PLUGIN_MAP).find((k) => !!allDeps[k]);
+    if (uiLib) {
+      const pluginPkg = VITE_PLUGIN_MAP[uiLib]!;
+      const srcDir = path.join(projectPath, 'src');
+      let entryFile = '';
+      if (fs.existsSync(srcDir)) {
+        const entryExts = ['.tsx', '.jsx', '.vue', '.svelte', '.ts', '.js'];
+        try {
+          const files = fs.readdirSync(srcDir);
+          const main = files.find((f) => {
+            const base = f.replace(/\.[^.]+$/, '');
+            return (base === 'main' || base === 'index' || base === 'App') && entryExts.some((ext) => f.endsWith(ext));
+          });
+          if (main) entryFile = `/src/${main}`;
+        } catch {}
+      }
+      const entryCheck = entryFile
+        ? `\`curl -sI localhost:3000${entryFile} | grep content-type\` — must return \`application/javascript\`, NOT \`text/${entryFile.endsWith('.tsx') ? 'tsx' : entryFile.endsWith('.jsx') ? 'jsx' : entryFile.endsWith('.vue') ? 'x-vue' : 'plain'}\`.`
+        : '';
+      return `**Project check:** Vite+${uiLib.charAt(0).toUpperCase() + uiLib.slice(1)} detected. Ensure \`${pluginPkg}\` is in devDependencies and configured in vite.config plugins.${entryCheck ? `\nAfter preview starts, run: ${entryCheck}` : ''}\nIf MIME type is wrong, install \`${pluginPkg}\` and add it to vite.config plugins, then restart.`;
+    }
   }
 
-  const entryCheck = entryFile
-    ? `\`curl -sI localhost:3000${entryFile} | grep content-type\` — must return \`application/javascript\`, NOT \`text/${entryFile.endsWith('.tsx') ? 'tsx' : entryFile.endsWith('.jsx') ? 'jsx' : entryFile.endsWith('.vue') ? 'x-vue' : 'plain'}\`.`
-    : '';
+  // --- Next.js ---
+  if (allDeps['next']) {
+    const hasAppDir = fs.existsSync(path.join(projectPath, 'app'));
+    const hasSrcAppDir = fs.existsSync(path.join(projectPath, 'src', 'app'));
+    const hasPagesDir = fs.existsSync(path.join(projectPath, 'pages'));
+    const hasSrcPagesDir = fs.existsSync(path.join(projectPath, 'src', 'pages'));
+    const hasTsconfig = fs.existsSync(path.join(projectPath, 'tsconfig.json'));
+    const hints: string[] = [];
+    hints.push(`**Project check:** Next.js detected.`);
+    if (!hasAppDir && !hasSrcAppDir && !hasPagesDir && !hasSrcPagesDir) {
+      hints.push(`WARNING: No app/ or pages/ directory found. Create app/layout.tsx and app/page.tsx for App Router, or pages/index.tsx for Pages Router.`);
+    }
+    if (!hasTsconfig && hasTs) {
+      hints.push(`WARNING: No tsconfig.json found. Run \`npx next dev\` once to auto-generate it, or create one manually.`);
+    }
+    hints.push(`Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` must return 200, NOT 404.`);
+    return hints.join('\n');
+  }
 
-  return `**Project check:** Vite+${uiLib.charAt(0).toUpperCase() + uiLib.slice(1)} detected. Ensure \`${pluginPkg}\` is in devDependencies and configured in vite.config plugins.${entryCheck ? `\nAfter preview starts, run: ${entryCheck}` : ''}\nIf MIME type is wrong, install \`${pluginPkg}\` and add it to vite.config plugins, then restart.`;
+  // --- Astro ---
+  if (allDeps['astro']) {
+    const hasPagesDir = fs.existsSync(path.join(projectPath, 'src', 'pages'));
+    if (!hasPagesDir) {
+      return `**Project check:** Astro detected but src/pages/ missing. Create src/pages/index.astro as the home page.`;
+    }
+    return `**Project check:** Astro detected. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200.`;
+  }
+
+  // --- Nuxt ---
+  if (allDeps['nuxt']) {
+    const hasAppVue = fs.existsSync(path.join(projectPath, 'app.vue'));
+    const hasPagesDir = fs.existsSync(path.join(projectPath, 'pages'));
+    if (!hasAppVue && !hasPagesDir) {
+      return `**Project check:** Nuxt detected but no app.vue or pages/ found. Create app.vue or pages/index.vue.`;
+    }
+    return `**Project check:** Nuxt detected. Ensure app.vue or pages/index.vue exists. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200.`;
+  }
+
+  // --- CRA ---
+  if (allDeps['react-scripts']) {
+    const hasPublicHtml = fs.existsSync(path.join(projectPath, 'public', 'index.html'));
+    if (!hasPublicHtml) {
+      return `**Project check:** CRA detected but public/index.html missing. Create public/index.html and src/index.tsx.`;
+    }
+    return `**Project check:** CRA detected. Ensure public/index.html and src/index.tsx exist.`;
+  }
+
+  // --- Remix ---
+  if (allDeps['@remix-run/react']) {
+    const hasRoot = fs.existsSync(path.join(projectPath, 'app', 'root.tsx')) || fs.existsSync(path.join(projectPath, 'app', 'root.jsx'));
+    if (!hasRoot) {
+      return `**Project check:** Remix detected but app/root.tsx missing. Create app/root.tsx with route files in app/routes/.`;
+    }
+    return `**Project check:** Remix detected. Ensure app/root.tsx exists with route files in app/routes/.`;
+  }
+
+  // --- Gatsby ---
+  if (allDeps['gatsby']) {
+    const hasIndexPage = (() => {
+      try {
+        const pagesDir = path.join(projectPath, 'src', 'pages');
+        if (!fs.existsSync(pagesDir)) return false;
+        return fs.readdirSync(pagesDir).some(f => f.startsWith('index.'));
+      } catch { return false; }
+    })();
+    if (!hasIndexPage) {
+      return `**Project check:** Gatsby detected but src/pages/index.tsx missing. Create src/pages/index.tsx as the home page.`;
+    }
+    return `**Project check:** Gatsby detected. Ensure src/pages/index.tsx exists.`;
+  }
+
+  // Generic fallback
+  return '';
 }
 
 // Session → CLI tool info (for system prompt injection)
