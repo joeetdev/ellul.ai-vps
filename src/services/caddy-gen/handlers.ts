@@ -320,19 +320,6 @@ function mainHandler(): Lines {
     lines.push("");
   }
 
-  // Bridge endpoint — HMAC-authenticated, no forward_auth needed
-  lines.push(...indent([`handle /_bridge/* {`], 2));
-  lines.push(...corsPreflightBlock("bridgeOptions", {
-    methods: "POST, OPTIONS",
-    headers: "Content-Type",
-  }, 3));
-  lines.push(...corsHeaders({
-    methods: "POST, OPTIONS",
-    headers: "Content-Type",
-  }, 3));
-  lines.push(...indent([`reverse_proxy localhost:${AGENT_BRIDGE_PORT}`], 3));
-  lines.push(...indent([`}`], 2));
-  lines.push("");
 
   for (const route of AUTHED_ROUTES) {
     lines.push(...authedRoute(route));

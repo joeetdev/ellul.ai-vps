@@ -324,6 +324,138 @@ export function stopWhatsAppLogin(): void {
   }
 }
 
+// ── BYOK LLM Key Management ──
+
+// BYOK model IDs per provider (used in openclaw.json config)
+const BYOK_MODEL_IDS: Record<string, string> = {
+  anthropic: 'anthropic/claude-sonnet-4-20250514',
+  openai: 'openai/gpt-4o',
+  openrouter: 'openrouter/anthropic/claude-sonnet-4-20250514',
+  google: 'google/gemini-2.5-flash',
+};
+
+// ENV_VAR_MAP: provider → env var name OpenClaw expects for built-in providers.
+const BYOK_ENV_VARS: Record<string, string> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  google: 'GOOGLE_API_KEY',
+};
+
+/**
+ * Get the current BYOK LLM key status.
+ * Returns whether a key is configured and which provider it's for.
+ */
+export function getOpenclawLlmKey(): { hasKey: boolean; provider: string | null } {
+  if (!fs.existsSync(CONFIG_FILE)) {
+    return { hasKey: false, provider: null };
+  }
+
+  try {
+    const raw = fs.readFileSync(CONFIG_FILE, 'utf8');
+    const config = JSON.parse(raw);
+    const env = config.env as Record<string, unknown> | undefined;
+    if (!env || typeof env !== 'object') {
+      return { hasKey: false, provider: null };
+    }
+
+    // Check which BYOK env var is set
+    for (const [provider, varName] of Object.entries(BYOK_ENV_VARS)) {
+      if (env[varName]) {
+        return { hasKey: true, provider };
+      }
+    }
+
+    return { hasKey: false, provider: null };
+  } catch {
+    return { hasKey: false, provider: null };
+  }
+}
+
+/**
+ * Save a BYOK LLM key for the given provider.
+ * Clears any existing BYOK keys, sets the new one, and updates model config.
+ */
+export function saveOpenclawLlmKey(
+  provider: string,
+  apiKey: string,
+): { success: boolean; error?: string } {
+  const validProviders = Object.keys(BYOK_MODEL_IDS);
+  if (!validProviders.includes(provider)) {
+    return { success: false, error: `Invalid provider. Must be one of: ${validProviders.join(', ')}` };
+  }
+
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    } catch {
+      // Corrupt config — start fresh
+    }
+  }
+
+  // Ensure nested structures
+  if (!config.agents || typeof config.agents !== 'object') config.agents = {};
+  const agents = config.agents as Record<string, unknown>;
+  if (!agents.defaults || typeof agents.defaults !== 'object') agents.defaults = {};
+  const defaults = agents.defaults as Record<string, unknown>;
+  if (!config.env || typeof config.env !== 'object') config.env = {};
+  const env = config.env as Record<string, unknown>;
+
+  // Clear any previous BYOK env vars
+  for (const varName of Object.values(BYOK_ENV_VARS)) {
+    delete env[varName];
+  }
+
+  // Set the new provider's API key
+  env[BYOK_ENV_VARS[provider]!] = apiKey;
+
+  // Set model to BYOK provider with fallback
+  defaults.model = {
+    primary: BYOK_MODEL_IDS[provider],
+    fallbacks: ['ellulai/default'],
+  };
+
+  fs.mkdirSync(OPENCLAW_DIR, { recursive: true });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  return { success: true };
+}
+
+/**
+ * Remove the BYOK LLM key and revert to default model.
+ */
+export function removeOpenclawLlmKey(): { success: boolean } {
+  if (!fs.existsSync(CONFIG_FILE)) {
+    return { success: true };
+  }
+
+  let config: Record<string, unknown> = {};
+  try {
+    config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  } catch {
+    return { success: true };
+  }
+
+  // Clear all BYOK env vars
+  if (config.env && typeof config.env === 'object') {
+    const env = config.env as Record<string, unknown>;
+    for (const varName of Object.values(BYOK_ENV_VARS)) {
+      delete env[varName];
+    }
+    if (Object.keys(env).length === 0) delete config.env;
+  }
+
+  // Revert model to default
+  if (!config.agents || typeof config.agents !== 'object') config.agents = {};
+  const agents = config.agents as Record<string, unknown>;
+  if (!agents.defaults || typeof agents.defaults !== 'object') agents.defaults = {};
+  const defaults = agents.defaults as Record<string, unknown>;
+  defaults.model = { primary: 'ellulai/default' };
+
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  return { success: true };
+}
+
 /**
  * Save a channel for a specific project using the openclaw CLI.
  * Sets up multi-account channel + agent binding.

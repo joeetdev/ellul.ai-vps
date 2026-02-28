@@ -34,7 +34,6 @@
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import {
   PORT,
   PROJECTS_DIR,
@@ -208,86 +207,6 @@ function getWelcomeMessage(session: SessionType): string {
   return `${model} ready.`;
 }
 
-// BYOK model IDs per provider (used in openclaw.json config)
-const BYOK_MODEL_IDS: Record<string, string> = {
-  anthropic: 'anthropic/claude-sonnet-4-20250514',
-  openai: 'openai/gpt-4o',
-  openrouter: 'openrouter/anthropic/claude-sonnet-4-20250514',
-  google: 'google/gemini-2.5-flash',
-};
-
-/**
- * ENV_VAR_MAP: provider → env var name OpenClaw expects for built-in providers.
- */
-const BYOK_ENV_VARS: Record<string, string> = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-  google: 'GOOGLE_API_KEY',
-};
-
-/**
- * Update ~/.openclaw/openclaw.json with BYOK provider config.
- *
- * OpenClaw has built-in support for Anthropic/OpenAI/Google/OpenRouter —
- * just set model reference (e.g. "anthropic/claude-sonnet-4-20250514") and
- * provide the API key via the config's `env` block. No custom provider entry
- * needed, no PM2 restart needed — OpenClaw reads env block at runtime.
- */
-function updateOpenclawConfig(
-  provider: string | null,
-  envVarName: string | null,
-  apiKey: string | null,
-): void {
-  const configDir = path.join(os.homedir(), '.openclaw');
-  const configPath = path.join(configDir, 'openclaw.json');
-
-  let config: Record<string, unknown> = {};
-  try {
-    if (fs.existsSync(configPath)) {
-      config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    }
-  } catch {
-    // Corrupt config — start fresh but preserve what we can
-  }
-
-  // Ensure nested structures exist
-  if (!config.agents || typeof config.agents !== 'object') config.agents = {};
-  const agents = config.agents as Record<string, unknown>;
-  if (!agents.defaults || typeof agents.defaults !== 'object') agents.defaults = {};
-  const defaults = agents.defaults as Record<string, unknown>;
-  if (!config.env || typeof config.env !== 'object') config.env = {};
-  const env = config.env as Record<string, unknown>;
-
-  if (provider && envVarName && apiKey) {
-    // Clear any previous BYOK env vars
-    for (const varName of Object.values(BYOK_ENV_VARS)) {
-      delete env[varName];
-    }
-    // Set the new provider's API key in the env block
-    env[envVarName] = apiKey;
-
-    // Set model to BYOK provider with fallback to ellulai/default
-    const modelId = BYOK_MODEL_IDS[provider];
-    if (modelId) {
-      defaults.model = {
-        primary: modelId,
-        fallbacks: ['ellulai/default'],
-      };
-    }
-  } else {
-    // Remove: clear all BYOK env vars and revert model
-    for (const varName of Object.values(BYOK_ENV_VARS)) {
-      delete env[varName];
-    }
-    if (Object.keys(env).length === 0) delete config.env;
-    defaults.model = { primary: 'ellulai/default' };
-  }
-
-  fs.mkdirSync(configDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-}
-
 // Create HTTP server with health endpoint
 const httpServer = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost`);
@@ -326,112 +245,6 @@ const httpServer = http.createServer(async (req, res) => {
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: (err as Error).message }));
-      }
-    });
-    return;
-  }
-
-  // CORS preflight for /_bridge/*
-  if (req.method === 'OPTIONS' && url.pathname.startsWith('/_bridge/')) {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': 'https://console.ellul.ai',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-      'Access-Control-Max-Age': '86400',
-    });
-    res.end();
-    return;
-  }
-
-  // POST /_bridge/llm-key — Zero-knowledge BYOK key storage
-  if (req.method === 'POST' && url.pathname === '/_bridge/llm-key') {
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': 'https://console.ellul.ai',
-      'Content-Type': 'application/json',
-    };
-
-    let body = '';
-    req.on('data', (chunk: Buffer) => (body += chunk.toString()));
-    req.on('end', async () => {
-      try {
-        const data = JSON.parse(body) as {
-          apiKey?: string;
-          provider?: string;
-          nonce?: string;
-          ts?: string;
-          hmac?: string;
-          serverId?: string;
-          remove?: boolean;
-        };
-
-        // Verify HMAC
-        const { nonce, ts, hmac, serverId } = data;
-        if (!nonce || !ts || !hmac || !serverId) {
-          res.writeHead(401, corsHeaders);
-          res.end(JSON.stringify({ error: 'Missing auth fields' }));
-          return;
-        }
-
-        // Reject expired timestamps (5 min window)
-        const tsNum = parseInt(ts, 10);
-        if (isNaN(tsNum) || Math.abs(Date.now() - tsNum) > 5 * 60 * 1000) {
-          res.writeHead(401, corsHeaders);
-          res.end(JSON.stringify({ error: 'Expired timestamp' }));
-          return;
-        }
-
-        // Read AI proxy token and compute its SHA-256 hash as HMAC key
-        let tokenHash: string;
-        try {
-          const token = fs.readFileSync('/etc/ellulai/ai-proxy-token', 'utf8').trim();
-          tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-        } catch {
-          res.writeHead(500, corsHeaders);
-          res.end(JSON.stringify({ error: 'Server not configured' }));
-          return;
-        }
-
-        // Verify HMAC
-        const payload = `${nonce}:${ts}:${serverId}`;
-        const expected = crypto.createHmac('sha256', tokenHash).update(payload).digest('hex');
-        const expectedBuf = Buffer.from(expected, 'hex');
-        const receivedBuf = Buffer.from(hmac, 'hex');
-        if (expectedBuf.length !== receivedBuf.length || !crypto.timingSafeEqual(expectedBuf, receivedBuf)) {
-          res.writeHead(401, corsHeaders);
-          res.end(JSON.stringify({ error: 'Invalid HMAC' }));
-          return;
-        }
-
-        if (data.remove) {
-          updateOpenclawConfig(null, null, null);
-          console.log('[Bridge] LLM key removed via bridge');
-          res.writeHead(200, corsHeaders);
-          res.end(JSON.stringify({ ok: true }));
-          return;
-        }
-
-        // Save key
-        const { apiKey, provider } = data;
-        if (!apiKey || !provider) {
-          res.writeHead(400, corsHeaders);
-          res.end(JSON.stringify({ error: 'Missing apiKey or provider' }));
-          return;
-        }
-
-        const envVarName = BYOK_ENV_VARS[provider];
-        if (!envVarName) {
-          res.writeHead(400, corsHeaders);
-          res.end(JSON.stringify({ error: 'Unknown provider' }));
-          return;
-        }
-
-        updateOpenclawConfig(provider, envVarName, apiKey);
-        console.log(`[Bridge] LLM key saved via bridge: ${provider}`);
-        res.writeHead(200, corsHeaders);
-        res.end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        res.writeHead(500, corsHeaders);
-        res.end(JSON.stringify({ error: (err as Error).message }));
       }
     });
     return;

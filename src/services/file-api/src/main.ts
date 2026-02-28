@@ -50,6 +50,9 @@ import {
   saveOpenclawChannel,
   startWhatsAppLogin,
   stopWhatsAppLogin,
+  getOpenclawLlmKey,
+  saveOpenclawLlmKey,
+  removeOpenclawLlmKey,
 } from './services/openclaw.service';
 import codeBrowserHtml from '@ellul.ai/vps-ui/code-browser';
 
@@ -1657,6 +1660,38 @@ const server = http.createServer(async (req, res) => {
       stopWhatsAppLogin();
       res.writeHead(200);
       res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
+    // GET /api/openclaw/llm-key — check BYOK key status
+    if (req.method === 'GET' && pathname === '/api/openclaw/llm-key') {
+      const result = getOpenclawLlmKey();
+      res.writeHead(200);
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // PUT /api/openclaw/llm-key — save BYOK key
+    if (req.method === 'PUT' && pathname === '/api/openclaw/llm-key') {
+      const body = await parseBody(req);
+      const provider = body.provider as string | undefined;
+      const apiKey = body.apiKey as string | undefined;
+      if (!provider || !apiKey) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Missing provider or apiKey' }));
+        return;
+      }
+      const result = saveOpenclawLlmKey(provider, apiKey);
+      res.writeHead(result.success ? 200 : 400);
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // DELETE /api/openclaw/llm-key — remove BYOK key
+    if (req.method === 'DELETE' && pathname === '/api/openclaw/llm-key') {
+      const result = removeOpenclawLlmKey();
+      res.writeHead(200);
+      res.end(JSON.stringify(result));
       return;
     }
 
