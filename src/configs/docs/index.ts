@@ -20,7 +20,7 @@ Quick Start: npx create-next-app my-app && cd my-app && npm run dev`;
  * Welcome project ecosystem.config.js.
  */
 export function getWelcomeEcosystem(svcHome: string = '/home/dev'): string {
-  return `module.exports={apps:[{name:'prod',script:'npm',args:'start',cwd:'${svcHome}/projects/welcome',env:{NODE_ENV:'production',PORT:3001}},{name:'preview',script:'npm',args:'run dev',cwd:'${svcHome}/projects/welcome',env:{NODE_ENV:'development',PORT:3000}}]};`;
+  return `module.exports={apps:[{name:'prod',script:'npm',args:'start',cwd:'${svcHome}/projects/welcome',env:{NODE_ENV:'production',PORT:3001}},{name:'preview-welcome',script:'npm',args:'run dev',cwd:'${svcHome}/projects/welcome',env:{NODE_ENV:'development',PORT:4000}}]};`;
 }
 
 /**
@@ -43,17 +43,17 @@ NEVER touch: /etc/ellulai/*, /etc/warden/*, /var/lib/sovereign-shield/*
 Tampering with security files = PERMANENT LOCKOUT with no recovery.
 
 ## Preview Your Work
-Preview URL: https://${devDomain} (port 3000)
+Preview URL: https://${devDomain} (preview port from ~/.ellulai/preview-ports.json)
 Start your dev server → it's live immediately at the preview URL.
 
 ## Key Commands
-- pm2 start npm --name preview -- run dev — Start dev server
+- pm2 start npm --name preview-{project} -- run dev — Start dev server
 - pm2 logs NAME — View logs
 - pm2 restart NAME — Restart app
-- curl localhost:3000 — Verify internally, then preview is live at https://${devDomain}
+- curl localhost:{port} — Verify internally, then preview is live at https://${devDomain}
 
 ## Sandbox Boundaries
-- Preview only (port 3000) — no external deployment
+- Preview only (assigned port) — no external deployment
 - Git: clone and pull only — outbound push is blocked
 - No database servers — use SQLite or in-memory stores
 - No SSH access — use the web terminal
@@ -98,7 +98,7 @@ This will build and deploy with auto-SSL.
 3. pm2 delete <app-name> 2>/dev/null
 4. pm2 start npm --name <app-name> -- start -- -p 3000
 5. sleep 3
-6. Verify before sharing URL: \`pm2 list\` → online AND \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` → 200 AND \`curl -s localhost:3000 | head -5\` → actual HTML
+6. Verify before sharing URL: \`pm2 list\` → online AND \`curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}\` → 200 AND \`curl -s localhost:{PREVIEW_PORT} | head -5\` → actual HTML
 7. sudo ellulai-expose <app-name> 3000
 
 ## Key Commands
@@ -150,21 +150,22 @@ NEVER touch these files - tampering causes PERMANENT LOCKOUT:
 - systemd services: sovereign-shield, warden
 
 ## Dev Server (CRITICAL)
-Vite: server: { host: true, port: 3000, allowedHosts: true }
-Next.js: "dev": "next dev -H 0.0.0.0 -p 3000"
+Vite: server: { host: true, port: {PREVIEW_PORT}, allowedHosts: true }
+Next.js: "dev": "next dev -H 0.0.0.0 -p {PREVIEW_PORT}"
+Preview port is read from ~/.ellulai/preview-ports.json (range 4000-4099).
 
 ## After changes: verify preview
 ALWAYS npm install before starting any server — framework CLIs sometimes skip deps.
-pm2 delete preview 2>/dev/null → npm install → pm2 start npm --name preview -- run dev → sleep 3
+pm2 delete preview-{project} 2>/dev/null → npm install → pm2 start npm --name preview-{project} -- run dev → sleep 3
 Then verify ALL 4 steps:
 1. \`ls node_modules/.bin/ | head -5\` → must show binaries
 2. \`pm2 list\` → app must be "online"
-3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-4. \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+4. \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
 ALL 4 must pass before telling user "it's live" at: https://${devDomain}
 
 ## Sandbox Boundaries
-- Preview only (port 3000) — no external deployment
+- Preview only (assigned port) — no external deployment
 - Git: clone and pull only — outbound push is blocked
 - No database servers — use SQLite or in-memory stores
 - No SSH access — use the web terminal
@@ -181,7 +182,7 @@ pm2 start|logs|restart|delete NAME`;
 ## IMPORTANT: You are running ON the ellul.ai server
 This is a cloud VPS at ${domain}
 
-Preview: https://${devDomain} (port 3000)
+Preview: https://${devDomain} (per-project port from ~/.ellulai/preview-ports.json)
 Apps: https://${shortId}-<app-name>.ellul.app | Custom domains: ellulai-expose NAME PORT mydomain.com
 
 ## Available Tools
@@ -197,17 +198,18 @@ NEVER touch these files - tampering causes PERMANENT LOCKOUT:
 - systemd services: sovereign-shield, sshd
 
 ## Dev Server (CRITICAL)
-Vite: server: { host: true, port: 3000, allowedHosts: true }
-Next.js: "dev": "next dev -H 0.0.0.0 -p 3000"
+Vite: server: { host: true, port: {PREVIEW_PORT}, allowedHosts: true }
+Next.js: "dev": "next dev -H 0.0.0.0 -p {PREVIEW_PORT}"
+Preview port is read from ~/.ellulai/preview-ports.json (range 4000-4099).
 
 ## After changes: verify preview
 ALWAYS npm install before starting any server — framework CLIs sometimes skip deps.
-pm2 delete preview 2>/dev/null → npm install → pm2 start npm --name preview -- run dev → sleep 3
+pm2 delete preview-{project} 2>/dev/null → npm install → pm2 start npm --name preview-{project} -- run dev → sleep 3
 Then verify ALL 4 steps:
 1. \`ls node_modules/.bin/ | head -5\` → must show binaries
 2. \`pm2 list\` → app must be "online"
-3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-4. \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+4. \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
 ALL 4 must pass before telling user "it's live" at: https://${devDomain}
 
 ## Deploy
@@ -249,7 +251,7 @@ export function getProjectsClaudeMd(tier?: string, domain?: string): string {
 
 ## Dev Preview
 Preview URL: https://${devDomain}
-Apps on port 3000 are automatically served at this URL. Always tell the user their preview URL after starting a dev server.
+Apps on the assigned preview port are automatically served at this URL. Always tell the user their preview URL after starting a dev server.
 
 ## Within Your Project
 1. Create/edit project files
@@ -258,7 +260,7 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
 3. **MANDATORY FIRST**: ALWAYS run \`npm install\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip deps.
    - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
    - For static HTML without a framework: use \`npx -y serve -l 3000\`
-4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000
+4. **REQUIRED**: Configure dev server to bind 0.0.0.0:{PREVIEW_PORT}
 5. **REQUIRED CSS RESET**: Create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
    Import location depends on framework:
    - Vite: src/index.css → import in src/main.tsx
@@ -268,8 +270,8 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
    - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
    - CRA: src/index.css → import in src/index.tsx
    NEVER use inline styles on <body> for resets — some bundlers strip them.
-6. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
-7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview -- run dev\`)
+6. ALWAYS \`pm2 delete preview-{project} 2>/dev/null\` before starting a new preview
+7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview-{project} -- run dev\`)
 8. Wait for startup: \`sleep 3\`
 9. Run the FULL verification protocol below — ALL 4 steps must pass
 10. Tell the user: preview is live at https://${devDomain}
@@ -280,13 +282,13 @@ Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
 
 ## MANDATORY: Pre-Completion Verification Protocol
 STEP 1 — \`ls node_modules/.bin/ | head -5\` → must show binaries. If empty: \`npm install\` and retry
-STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview --nostream --lines 20\` → fix → restart
-STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-STEP 4 — \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview-{project} --nostream --lines 20\` → fix → restart
+STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+STEP 4 — \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
 ALL 4 must pass. Do NOT tell user "it's live" until they do.
 
 ## Sandbox Boundaries
-- Preview only (port 3000) — no external deployment
+- Preview only (assigned port) — no external deployment
 - Git: clone and pull only — push is blocked
 - No database servers — use SQLite or in-memory stores
 
@@ -310,7 +312,7 @@ pm2 start|logs|restart|delete NAME`;
 
 ## Dev Preview
 Preview URL: https://${devDomain}
-Apps on port 3000 are automatically served at this URL. Always tell the user their preview URL after starting a dev server.
+Apps on the assigned preview port are automatically served at this URL. Always tell the user their preview URL after starting a dev server.
 
 ## Within Your Project
 1. Create/edit project files
@@ -319,7 +321,7 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
 3. **MANDATORY FIRST**: ALWAYS run \`npm install\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip deps.
    - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
    - For static HTML without a framework: use \`npx -y serve -l 3000\`
-4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000
+4. **REQUIRED**: Configure dev server to bind 0.0.0.0:{PREVIEW_PORT}
 5. **REQUIRED CSS RESET**: Create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
    Import location depends on framework:
    - Vite: src/index.css → import in src/main.tsx
@@ -329,7 +331,7 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
    - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
    - CRA: src/index.css → import in src/index.tsx
    NEVER use inline styles on <body> for resets — some bundlers strip them.
-6. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
+6. ALWAYS \`pm2 delete preview-{project} 2>/dev/null\` before starting a new preview
 7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\`)
 8. Wait for startup: \`sleep 3\`
 9. Run the FULL verification protocol below — ALL 4 steps must pass
@@ -341,9 +343,9 @@ Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
 
 ## MANDATORY: Pre-Completion Verification Protocol
 STEP 1 — \`ls node_modules/.bin/ | head -5\` → must show binaries. If empty: \`npm install\` and retry
-STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview --nostream --lines 20\` → fix → restart
-STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:3000); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-STEP 4 — \`curl -s localhost:3000 | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
+STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview-{project} --nostream --lines 20\` → fix → restart
+STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
+STEP 4 — \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
 ALL 4 must pass. Do NOT tell user "it's live" until they do.
 
 ## Commands

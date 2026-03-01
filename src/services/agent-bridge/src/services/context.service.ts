@@ -8,6 +8,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PROJECTS_DIR, CONTEXT_DIR, CONTEXT_CACHE_MS, DEV_DOMAIN } from '../config';
 import { checkCliNeedsSetup } from './interactive.service';
+import { PREVIEW_PORT_MIN } from '../../../shared/constants';
+
+/**
+ * Get the preview port for a project from the port registry.
+ */
+function getProjectPreviewPort(projectName: string | null): number {
+  if (!projectName) return PREVIEW_PORT_MIN;
+  try {
+    const registryPath = path.join(path.dirname(PROJECTS_DIR), '.ellulai', 'preview-ports.json');
+    const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    return registry[projectName] || PREVIEW_PORT_MIN;
+  } catch {
+    return PREVIEW_PORT_MIN;
+  }
+}
 
 // Context cache
 let cachedGlobalContext = '';
@@ -150,8 +165,9 @@ const VITE_PLUGIN_MAP: Record<string, string> = {
  * Returns targeted instructions based on the actual project stack.
  * Covers Vite, Next.js, Astro, Nuxt, CRA, Remix, and Gatsby.
  */
-function buildPreviewHints(projectName: string | null): string {
+function buildPreviewHints(projectName: string | null, previewPort?: number): string {
   if (!projectName) return '';
+  const port = previewPort ?? getProjectPreviewPort(projectName);
   const projectPath = path.join(PROJECTS_DIR, projectName);
   const pkgPath = path.join(projectPath, 'package.json');
   if (!fs.existsSync(pkgPath)) return '';
@@ -197,7 +213,7 @@ function buildPreviewHints(projectName: string | null): string {
         } catch {}
       }
       const entryCheck = entryFile
-        ? `\`curl -sI localhost:3000${entryFile} | grep content-type\` — must return \`application/javascript\`, NOT \`text/${entryFile.endsWith('.tsx') ? 'tsx' : entryFile.endsWith('.jsx') ? 'jsx' : entryFile.endsWith('.vue') ? 'x-vue' : 'plain'}\`.`
+        ? `\`curl -sI localhost:${port}${entryFile} | grep content-type\` — must return \`application/javascript\`, NOT \`text/${entryFile.endsWith('.tsx') ? 'tsx' : entryFile.endsWith('.jsx') ? 'jsx' : entryFile.endsWith('.vue') ? 'x-vue' : 'plain'}\`.`
         : '';
       return `**Project check:** Vite+${uiLib.charAt(0).toUpperCase() + uiLib.slice(1)} detected. Ensure \`${pluginPkg}\` is in devDependencies and configured in vite.config plugins.${entryCheck ? `\nAfter preview starts, run: ${entryCheck}` : ''}\nIf MIME type is wrong, install \`${pluginPkg}\` and add it to vite.config plugins, then restart.`;
     }
@@ -218,7 +234,7 @@ function buildPreviewHints(projectName: string | null): string {
     if (!hasTsconfig && hasTs) {
       hints.push(`WARNING: No tsconfig.json found. Run \`npx next dev\` once to auto-generate it, or create one manually.`);
     }
-    hints.push(`Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` must return 200, NOT 404.`);
+    hints.push(`Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:${port}\` must return 200, NOT 404.`);
     return hints.join('\n');
   }
 
@@ -228,7 +244,7 @@ function buildPreviewHints(projectName: string | null): string {
     if (!hasPagesDir) {
       return `**Project check:** Astro detected but src/pages/ missing. Create src/pages/index.astro as the home page.`;
     }
-    return `**Project check:** Astro detected. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200.`;
+    return `**Project check:** Astro detected. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:${port}\` returns 200.`;
   }
 
   // --- Nuxt ---
@@ -238,7 +254,7 @@ function buildPreviewHints(projectName: string | null): string {
     if (!hasAppVue && !hasPagesDir) {
       return `**Project check:** Nuxt detected but no app.vue or pages/ found. Create app.vue or pages/index.vue.`;
     }
-    return `**Project check:** Nuxt detected. Ensure app.vue or pages/index.vue exists. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200.`;
+    return `**Project check:** Nuxt detected. Ensure app.vue or pages/index.vue exists. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:${port}\` returns 200.`;
   }
 
   // --- CRA ---
@@ -298,6 +314,8 @@ export function buildSystemPrompt(
   session?: string | null,
 ): string {
   const parts: string[] = [];
+  const previewPort = getProjectPreviewPort(projectName ?? null);
+  const pm2PreviewName = `preview-${projectName || 'app'}`;
 
   // Core identity + exact command template. The model gets a concrete, mechanical
   // pattern to follow — no skill file reading or command construction needed.
@@ -329,16 +347,18 @@ Repeat poll/log until the CLI finishes. If you see meaningful progress in the lo
 
 STEP 4: Tell the user the result. If the CLI created or modified a web app, verify it's working before sharing the preview URL:
 1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` → MUST return 200 (not 404, not 500)
-3. \`curl -s localhost:3000 | head -20\` → must show actual HTML content (not error pages, not stack traces)
-4. \`pm2 logs preview --nostream --lines 20\` → must have no errors
-${buildPreviewHints(projectName ?? null) || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite plugin and restart.'}
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` → MUST return 200 (not 404, not 500)
+3. \`curl -s localhost:${previewPort} | head -20\` → must show actual HTML content (not error pages, not stack traces)
+4. \`pm2 logs preview-${projectName} --nostream --lines 20\` → must have no errors
+${buildPreviewHints(projectName ?? null, previewPort) || `Check for module script errors: \`curl -sI localhost:${previewPort}/src/main.jsx 2>/dev/null | grep content-type\` — must return \`application/javascript\`, not \`text/jsx\`. If wrong, install the missing Vite plugin and restart.`}
 
 If ANY check fails:
   a. Read the error from pm2 logs or curl output
   b. Launch the CLI again to fix: "${info.cmd}" with "Fix this error: [paste the actual error]"
   c. Wait for fix to complete, then re-verify ALL checks
   d. Repeat up to 3 times
+
+Your project's preview port is **${previewPort}** and PM2 process name is **${pm2PreviewName}**.
 
 NEVER tell the user "it's live" until ALL checks pass.
 If after 3 fix attempts it still fails, tell the user what's wrong and ask for guidance.
@@ -357,18 +377,23 @@ If the user asks to change models, use \`opencode models\` to show them what's a
 - NEVER output code blocks, plans, or file listings.
 - For non-coding questions (general knowledge, platform questions), just answer directly.
 
-## CSS Reset (REQUIRED for all web apps)
-ALWAYS create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
-Where to put it depends on your framework:
-- Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
+## Styling (REQUIRED for all web apps)
+ALWAYS use **Tailwind CSS** for styling. Install and configure it during project setup:
+- Vite (React/Vue/Svelte): \`npm install tailwindcss @tailwindcss/vite\` → add \`@tailwindcss/vite\` plugin to vite.config → CSS: \`@import "tailwindcss";\`
+- Next.js: \`npm install tailwindcss @tailwindcss/postcss\` → create postcss.config.mjs exporting \`{ plugins: { "@tailwindcss/postcss": {} } }\` → CSS: \`@import "tailwindcss";\`
+- Astro: \`npx astro add tailwind\` (auto-configures)
+- Nuxt: \`npx nuxi module add @nuxtjs/tailwindcss\`
+- Remix: \`npm install tailwindcss @tailwindcss/vite\` → add plugin to vite.config → CSS: \`@import "tailwindcss";\`
+- Plain HTML: include \`<script src="https://cdn.tailwindcss.com"></script>\` in <head>
+Where to put the CSS file (with \`@import "tailwindcss";\`):
+- Vite: src/index.css → import in src/main.tsx
 - Next.js App Router: app/globals.css → import in app/layout.tsx
 - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
 - Astro: src/styles/global.css → import in layout
-- Nuxt: assets/css/main.css → add to nuxt.config.ts css array
-- CRA: src/index.css → import in src/index.tsx
-- Remix: app/globals.css → add to links() in app/root.tsx
-- Plain HTML: <style> in <head> of index.html
-NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — some bundlers strip them.`);
+- Nuxt: handled by module (assets/css/main.css if customizing)
+- Remix: app/globals.css → import in app/root.tsx
+Use Tailwind utility classes for ALL styling. Avoid writing custom CSS unless absolutely necessary.
+NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — Tailwind's preflight handles resets automatically.`);
       }
     }
   } else {
@@ -398,17 +423,17 @@ NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — some bund
 
   // Dev preview — tell agent the actual preview URL so it can share with users
   if (DEV_DOMAIN) {
-    const previewHints = buildPreviewHints(projectName ?? null);
+    const previewHints = buildPreviewHints(projectName ?? null, previewPort);
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
-Apps listening on port 3000 are served at this URL via reverse proxy.
-When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
+Apps listening on port ${previewPort} are served at this URL via reverse proxy.
+When configuring a dev server, bind to \`0.0.0.0:${previewPort}\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
 Before telling the user the preview is live, verify ALL of:
 1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200
-3. \`curl -s localhost:3000 | head -20\` shows actual HTML
-4. \`pm2 logs preview --nostream --lines 20\` — no errors
-${previewHints || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite framework plugin and restart.'}
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` returns 200
+3. \`curl -s localhost:${previewPort} | head -20\` shows actual HTML
+4. \`pm2 logs ${pm2PreviewName} --nostream --lines 20\` — no errors
+${previewHints || `Check for module script errors: \`curl -sI localhost:${previewPort}/src/main.jsx 2>/dev/null | grep content-type\` — must return \`application/javascript\`, not \`text/jsx\`. If wrong, install the missing Vite framework plugin and restart.`}
 If ANY check fails, diagnose and fix before sharing the URL.`);
   }
 
@@ -440,6 +465,8 @@ export function buildClawSystemPrompt(
   projectName?: string | null,
 ): string {
   const parts: string[] = [];
+  const previewPort = getProjectPreviewPort(projectName ?? null);
+  const pm2PreviewName = `preview-${projectName || 'app'}`;
 
   parts.push(`You are ellul, a full-stack coding assistant on ellul.ai. You help users build websites, apps, APIs, and other software projects.
 
@@ -449,27 +476,34 @@ export function buildClawSystemPrompt(
 - When making changes, explain what you did and why in 1-2 sentences.
 - If something is ambiguous, make a reasonable decision and proceed. Pick the most popular/common option rather than asking.
 
-## CSS Reset (REQUIRED for all web apps)
-ALWAYS create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
-Where to put it depends on your framework:
-- Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
+## Styling (REQUIRED for all web apps)
+ALWAYS use **Tailwind CSS** for styling. Install and configure it during project setup:
+- Vite (React/Vue/Svelte): \`npm install tailwindcss @tailwindcss/vite\` → add \`@tailwindcss/vite\` plugin to vite.config → CSS: \`@import "tailwindcss";\`
+- Next.js: \`npm install tailwindcss @tailwindcss/postcss\` → create postcss.config.mjs exporting \`{ plugins: { "@tailwindcss/postcss": {} } }\` → CSS: \`@import "tailwindcss";\`
+- Astro: \`npx astro add tailwind\` (auto-configures)
+- Nuxt: \`npx nuxi module add @nuxtjs/tailwindcss\`
+- Remix: \`npm install tailwindcss @tailwindcss/vite\` → add plugin to vite.config → CSS: \`@import "tailwindcss";\`
+- Plain HTML: include \`<script src="https://cdn.tailwindcss.com"></script>\` in <head>
+Where to put the CSS file (with \`@import "tailwindcss";\`):
+- Vite: src/index.css → import in src/main.tsx
 - Next.js App Router: app/globals.css → import in app/layout.tsx
 - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
 - Astro: src/styles/global.css → import in layout
-- Nuxt: assets/css/main.css → add to nuxt.config.ts css array
-- CRA: src/index.css → import in src/index.tsx
-- Remix: app/globals.css → add to links() in app/root.tsx
-- Plain HTML: <style> in <head> of index.html
-NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — some bundlers strip them.
+- Nuxt: handled by module (assets/css/main.css if customizing)
+- Remix: app/globals.css → import in app/root.tsx
+Use Tailwind utility classes for ALL styling. Avoid writing custom CSS unless absolutely necessary.
+NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — Tailwind's preflight handles resets automatically.
 
 ## After creating or modifying a web app, ALWAYS verify:
-1. Restart preview: \`pm2 delete preview 2>/dev/null && pm2 start npm --name preview -- run dev\`
+1. Restart preview: \`pm2 delete ${pm2PreviewName} 2>/dev/null && pm2 start npm --name ${pm2PreviewName} -- run dev\`
 2. Wait: \`sleep 3\`
-3. Check: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` → must be 200
-4. Check: \`curl -s localhost:3000 | head -10\` → must show HTML content, no errors
-5. Check: \`pm2 logs preview --nostream --lines 20\` → no errors
+3. Check: \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` → must be 200
+4. Check: \`curl -s localhost:${previewPort} | head -10\` → must show HTML content, no errors
+5. Check: \`pm2 logs ${pm2PreviewName} --nostream --lines 20\` → no errors
 If any check fails, read the error, fix the code, restart, and re-verify.
-Repeat until ALL checks pass. Do not report success until the preview works.`);
+Repeat until ALL checks pass. Do not report success until the preview works.
+
+Your project's preview port is **${previewPort}** and PM2 process name is **${pm2PreviewName}**.`);
 
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);
@@ -492,17 +526,17 @@ Repeat until ALL checks pass. Do not report success until the preview works.`);
   }
 
   if (DEV_DOMAIN) {
-    const previewHints = buildPreviewHints(projectName ?? null);
+    const previewHints = buildPreviewHints(projectName ?? null, previewPort);
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
-Apps listening on port 3000 are served at this URL via reverse proxy.
-When configuring a dev server, bind to \`0.0.0.0:3000\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
+Apps listening on port ${previewPort} are served at this URL via reverse proxy.
+When configuring a dev server, bind to \`0.0.0.0:${previewPort}\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
 Before telling the user the preview is live, verify ALL of:
 1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200
-3. \`curl -s localhost:3000 | head -20\` shows actual HTML
-4. \`pm2 logs preview --nostream --lines 20\` — no errors
-${previewHints || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite framework plugin and restart.'}
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` returns 200
+3. \`curl -s localhost:${previewPort} | head -20\` shows actual HTML
+4. \`pm2 logs ${pm2PreviewName} --nostream --lines 20\` — no errors
+${previewHints || `Check for module script errors: \`curl -sI localhost:${previewPort}/src/main.jsx 2>/dev/null | grep content-type\` — must return \`application/javascript\`, not \`text/jsx\`. If wrong, install the missing Vite framework plugin and restart.`}
 If ANY check fails, diagnose and fix before sharing the URL.`);
   }
 

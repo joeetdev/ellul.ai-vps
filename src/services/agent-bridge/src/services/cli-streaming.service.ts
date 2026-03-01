@@ -652,7 +652,7 @@ async function sendToOpencodeOneShot(
         try {
           const event = JSON.parse(line);
           // opencode run --format json spreads part data onto event: {type, timestamp, sessionID, ...partData}
-          // Also check event.part for backwards compat
+          // Also check event.part (older opencode format nests part data)
           const part = event.part || event;
 
           // Handle different event types from opencode run --format json

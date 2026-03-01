@@ -93,6 +93,11 @@ heartbeat() {
   local CHAIN_HEAD=$(cat /etc/ellulai/shield-data/audit-chain-head 2>/dev/null || echo '{"seq":0,"hash":"genesis"}')
   # Agent telemetry
   local AGENT_STATUS=$(get_agent_status)
+  # Boot validation failures (sent once, deleted after successful delivery)
+  local BOOT_FAILURES_JSON="null"
+  if [ -f /etc/ellulai/boot-failures ]; then
+    BOOT_FAILURES_JSON=$(cat /etc/ellulai/boot-failures | jq -R -s 'split("\n") | map(select(. != ""))' 2>/dev/null || echo "null")
+  fi
   local PAYLOAD=$(jq -n \
     --argjson activeSessions "$ACTIVE_SESSIONS" \
     --argjson deployments "$DEPLOYED_APPS" \
@@ -106,7 +111,8 @@ heartbeat() {
     --arg localSsh "$LOCAL_SSH" \
     --argjson auditChainHead "$CHAIN_HEAD" \
     --argjson agentStatus "$AGENT_STATUS" \
-    '{activeSessions: $activeSessions, deployments: $deployments, ramUsage: ($ramUsage | tonumber), cpuUsage: ($cpuUsage | tonumber), securityTier: $securityTier, sshKeyCount: ($sshKeyCount | tonumber), open_ports: ($openPorts | split(",") | map(select(. != "") | tonumber)), currentTag: $currentTag, secretsLocal: true, localTerminalEnabled: ($localTerminal == "true"), localSshEnabled: ($localSsh == "true"), auditChainHead: $auditChainHead, agentStatus: $agentStatus}')
+    --argjson bootValidationFailures "$BOOT_FAILURES_JSON" \
+    '{activeSessions: $activeSessions, deployments: $deployments, ramUsage: ($ramUsage | tonumber), cpuUsage: ($cpuUsage | tonumber), securityTier: $securityTier, sshKeyCount: ($sshKeyCount | tonumber), open_ports: ($openPorts | split(",") | map(select(. != "") | tonumber)), currentTag: $currentTag, secretsLocal: true, localTerminalEnabled: ($localTerminal == "true"), localSshEnabled: ($localSsh == "true"), auditChainHead: $auditChainHead, agentStatus: $agentStatus, bootValidationFailures: $bootValidationFailures}')
 
   # Ed25519 signature (Phase 4: asymmetric auth)
   compute_heartbeat_signature
@@ -117,6 +123,8 @@ heartbeat() {
 
   if [ "$HTTP_CODE" = "200" ]; then
     HEARTBEAT_FAILURES=0
+    # Clear boot failures after successful delivery
+    rm -f /etc/ellulai/boot-failures
   else
     HEARTBEAT_FAILURES=$((HEARTBEAT_FAILURES + 1))
     log "Heartbeat failed (HTTP $HTTP_CODE), failure count: $HEARTBEAT_FAILURES"
@@ -192,4 +200,39 @@ heartbeat_raw() {
 
   # Write local status for WebSocket broadcast (only on successful heartbeat)
   write_local_status "$CPU_USAGE" "$RAM_USAGE" "$ACTIVE_SESSIONS" "$TERMINAL_ENABLED" "$SSH_ENABLED"
+
+  # Ship logs every 5th heartbeat cycle (~2.5 min)
+  LOG_SHIP_COUNTER=$((${LOG_SHIP_COUNTER:-0} + 1))
+  if [ $LOG_SHIP_COUNTER -ge 5 ]; then
+    LOG_SHIP_COUNTER=0
+    ship_logs &
+  fi
+}
+
+# Ship recent log lines to the API log-drain endpoint (fire-and-forget)
+LOG_SHIP_COUNTER=0
+ship_logs() {
+  local TOKEN=$(get_token)
+  [ -z "$TOKEN" ] && return
+
+  local BATCHES="[]"
+
+  # Collect last 50 lines from enforcer log
+  if [ -f /var/log/ellulai-enforcer.log ]; then
+    local ENFORCER_LINES=$(tail -50 /var/log/ellulai-enforcer.log 2>/dev/null | jq -R -s '[split("\n") | .[] | select(. != "") | {ts: (now | todate), msg: .}]' 2>/dev/null || echo "[]")
+    BATCHES=$(echo "$BATCHES" | jq --argjson lines "$ENFORCER_LINES" '. + [{source: "enforcer", lines: $lines}]' 2>/dev/null || echo "$BATCHES")
+  fi
+
+  # Collect last 50 lines from sovereign-shield log
+  if [ -f /var/log/ellulai-sovereign-shield.log ]; then
+    local SHIELD_LINES=$(tail -50 /var/log/ellulai-sovereign-shield.log 2>/dev/null | jq -R -s '[split("\n") | .[] | select(. != "") | {ts: (now | todate), msg: .}]' 2>/dev/null || echo "[]")
+    BATCHES=$(echo "$BATCHES" | jq --argjson lines "$SHIELD_LINES" '. + [{source: "sovereign-shield", lines: $lines}]' 2>/dev/null || echo "$BATCHES")
+  fi
+
+  local PAYLOAD=$(jq -n --argjson batches "$BATCHES" '{batches: $batches}')
+  curl -s -o /dev/null --connect-timeout 5 --max-time 10 \
+    -X POST "$API_URL/api/servers/log-drain" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" 2>/dev/null || true
 }

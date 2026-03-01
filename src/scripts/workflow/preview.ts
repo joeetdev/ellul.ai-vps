@@ -1,6 +1,7 @@
 /**
- * Preview server script - serves user-selected app on port 3000.
+ * Preview server script - serves user-selected app on its dedicated preview port.
  * Auto-detects framework and runs appropriate dev command.
+ * Port is read from ~/.ellulai/preview-ports.json (range 4000-4099).
  */
 export function getPreviewScript(): string {
   // Node.js code for heredocs uses String.raw to preserve backslash escapes
@@ -28,7 +29,7 @@ if (!existing) {
   const calls = needed.map(p => p.call).join(', ');
   const plugins = calls ? '\n  plugins: [' + calls + '],' : '';
   fs.writeFileSync(path.join(dir, 'vite.config.js'),
-    imports.join('\n') + '\nexport default defineConfig({' + plugins + '\n  server: {\n    host: true,\n    port: 3000,\n    allowedHosts: true,\n  },\n});\n');
+    imports.join('\n') + '\nexport default defineConfig({' + plugins + '\n  server: {\n    host: true,\n    port: ' + (process.env.FW_FIX_PORT || '4000') + ',\n    allowedHosts: true,\n  },\n});\n');
   console.log('Created vite.config.js');
   process.exit(0);
 }
@@ -40,7 +41,7 @@ if (!content.includes('allowedHosts')) {
   if (/server\s*:\s*\{/.test(content)) {
     content = content.replace(/(server\s*:\s*\{)/, '$1\n    allowedHosts: true,');
   } else if (content.includes('defineConfig(')) {
-    content = content.replace(/(defineConfig\s*\(\s*\{)/, '$1\n  server: { host: true, port: 3000, allowedHosts: true },');
+    content = content.replace(/(defineConfig\s*\(\s*\{)/, '$1\n  server: { host: true, port: ' + (process.env.FW_FIX_PORT || '4000') + ', allowedHosts: true },');
   }
   changed = true;
 }
@@ -142,7 +143,7 @@ process.exit(check() ? 0 : 1);`;
   const FRAMEWORK_CONFIG_FIXER = String.raw`const fs = require('fs'), path = require('path');
 const dir = process.env.FW_FIX_DIR;
 const fw = process.env.FW_FIX_FW;
-const port = process.env.FW_FIX_PORT || '3000';
+const port = process.env.FW_FIX_PORT || '4000';
 try { JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { process.exit(0); }
 
 if (fw === 'next') {
@@ -186,8 +187,9 @@ if (fw === 'next') {
 }`;
 
   return `#!/bin/bash
-# Preview Server — serves user-selected app on port 3000.
+# Preview Server — serves user-selected app on its dedicated preview port.
 # Reads ~/.ellulai/preview-app to determine which project to serve.
+# Reads port from ~/.ellulai/preview-ports.json (range 4000-4099).
 # Handles all frameworks: Vite, Next.js, CRA, Astro, Remix, Nuxt, Svelte, Gatsby, static HTML.
 #
 # Robustness guarantees:
@@ -198,13 +200,26 @@ if (fw === 'next') {
 # - Health-checks after startup — restarts if MIME types are wrong
 # - Won't npm install while another install is already running
 
-PORT=3000
 PROJECTS_DIR="\$HOME/projects"
 CHECK_INTERVAL=3
 APP_FILE="\$HOME/.ellulai/preview-app"
 SCRIPT_FILE="\$HOME/.ellulai/preview-script"
+PORT_REGISTRY="\$HOME/.ellulai/preview-ports.json"
 HEALTH_CHECK_DELAY=8
 MAX_READINESS_WAIT=60
+DEFAULT_PORT=4000
+
+# Get the preview port for a project from the port registry
+get_project_port() {
+  local project="$1"
+  [ -z "$project" ] && echo "$DEFAULT_PORT" && return
+  [ ! -f "$PORT_REGISTRY" ] && echo "$DEFAULT_PORT" && return
+  local port
+  port=$(node -e "try{const r=JSON.parse(require('fs').readFileSync('$PORT_REGISTRY','utf8'));console.log(r['$project']||$DEFAULT_PORT)}catch{console.log($DEFAULT_PORT)}" 2>/dev/null)
+  echo "\${port:-$DEFAULT_PORT}"
+}
+
+PORT=$DEFAULT_PORT
 
 log() { echo "[$(date -Iseconds)] $1"; }
 
@@ -341,7 +356,7 @@ wait_for_install() {
 ensure_vite_config() {
   local dir="$1"
   [ ! -f "$dir/package.json" ] && return
-  VITE_FIX_DIR="$dir" node << 'VITECFG_EOF'
+  VITE_FIX_DIR="$dir" FW_FIX_PORT="$PORT" node << 'VITECFG_EOF'
 ${VITE_CONFIG_FIXER}
 VITECFG_EOF
 }
@@ -526,7 +541,7 @@ while true; do
     continue
   fi
 
-  # ── App changed → kill old, reset state ────────────────────────────
+  # ── App changed → kill old, reset state, update port ────────────────
   if [ "$SELECTED_APP" != "$CURRENT_APP" ] || [ "$SELECTED_SCRIPT" != "$CURRENT_SCRIPT" ]; then
     [ -n "$DEV_PID" ] && kill_tree $DEV_PID && sleep 1
     DEV_PID=""
@@ -534,7 +549,8 @@ while true; do
     CURRENT_SCRIPT="$SELECTED_SCRIPT"
     CURRENT_FRAMEWORK=""
     HEALTH_CHECKED=false
-    log "App changed to: $SELECTED_APP"
+    PORT=$(get_project_port "$SELECTED_APP")
+    log "App changed to: $SELECTED_APP (port $PORT)"
   fi
 
   # ── Re-detect framework every cycle ────────────────────────────────
@@ -642,9 +658,6 @@ while true; do
           ensure_vite_plugins_installed "$PROJECT_DIR"
           ;;
       esac
-
-      # Inject CSS reset into index.html (all frameworks, not just Vite)
-      ensure_css_reset "$PROJECT_DIR"
 
       DEV_CMD=$(get_dev_command "$FRAMEWORK")
       log "Detected: $FRAMEWORK -> $DEV_CMD"

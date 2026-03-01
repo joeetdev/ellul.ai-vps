@@ -25,7 +25,7 @@ import {
   type UploadedFile,
 } from './services/files.service';
 import { detectApps } from './services/apps.service';
-import { getPreviewStatus, getPreviewHealth, setPreviewApp, startPreview, stopPreview } from './services/preview.service';
+import { getPreviewStatus, getPreviewHealth, setPreviewApp, startPreview, stopPreview, getProjectPort, releaseProjectPort, reconcilePortRegistry, cleanupOrphanedPreviews, getPreviewMetrics, ensureCaddyRoute } from './services/preview.service';
 import {
   listContextFiles,
   getContextFile,
@@ -821,6 +821,16 @@ const server = http.createServer(async (req, res) => {
           if (pm2Result.success) cleanup.push('pm2');
         }
 
+        // 1.5 Stop preview PM2 process and release port
+        try {
+          await runCmd(`pm2 delete "preview-${app.directory}" 2>/dev/null || true`);
+          cleanup.push('preview-pm2');
+        } catch {}
+        try {
+          releaseProjectPort(app.directory);
+          cleanup.push('preview-port');
+        } catch {}
+
         // 2. Remove Caddy config - ONLY the file that matches our deployment
         if (deployedAppName) {
           const caddyConfigPath = `/etc/caddy/sites-enabled/${deployedAppName}.caddy`;
@@ -1007,6 +1017,159 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // GET /api/deployment/:name/logs - Get PM2 logs for a deployment
+    if (req.method === 'GET' && pathname.match(/^\/api\/deployment\/[^/]+\/logs$/)) {
+      const parts = pathname.split('/');
+      const deployName = decodeURIComponent(parts[3] || '');
+
+      if (!deployName || !/^[a-z0-9][a-z0-9-]*$/.test(deployName)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid deployment name' }));
+        return;
+      }
+
+      const linesParam = parseInt(parsedUrl.query.lines as string || '100', 10);
+      const lines = Math.min(Math.max(linesParam, 1), 500);
+      const logType = (parsedUrl.query.type as string) || 'all';
+
+      if (!['out', 'err', 'all'].includes(logType)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid type parameter (out, err, all)' }));
+        return;
+      }
+
+      const pm2LogDir = path.join(HOME, '.pm2', 'logs');
+      const result: Array<{ line: string; type: 'out' | 'err' }> = [];
+
+      const readLogTail = (filePath: string, type: 'out' | 'err'): Array<{ line: string; type: 'out' | 'err' }> => {
+        try {
+          if (!fs.existsSync(filePath)) return [];
+          const content = fs.readFileSync(filePath, 'utf8');
+          const allLines = content.split('\n').filter(l => l.trim());
+          return allLines.slice(-lines).map(line => ({ line, type }));
+        } catch {
+          return [];
+        }
+      };
+
+      if (logType === 'out' || logType === 'all') {
+        result.push(...readLogTail(path.join(pm2LogDir, `${deployName}-out.log`), 'out'));
+      }
+      if (logType === 'err' || logType === 'all') {
+        result.push(...readLogTail(path.join(pm2LogDir, `${deployName}-error.log`), 'err'));
+      }
+
+      // For 'all', keep order as stdout first then stderr (no timestamps to interleave)
+      // Limit total to requested lines
+      const limited = result.slice(-lines);
+
+      res.writeHead(200);
+      res.end(JSON.stringify({ logs: limited, name: deployName }));
+      return;
+    }
+
+    // POST /api/deployment/:name/redeploy - Trigger redeployment via sovereign-shield
+    if (req.method === 'POST' && pathname.match(/^\/api\/deployment\/[^/]+\/redeploy$/)) {
+      const parts = pathname.split('/');
+      const deployName = decodeURIComponent(parts[3] || '');
+
+      if (!deployName || !/^[a-z0-9][a-z0-9-]*$/.test(deployName)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid deployment name' }));
+        return;
+      }
+
+      // Read app metadata to get deploy params
+      const metaFile = path.join(HOME, '.ellulai', 'apps', `${deployName}.json`);
+      if (!fs.existsSync(metaFile)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Deployment not found' }));
+        return;
+      }
+
+      let meta: Record<string, unknown>;
+      try {
+        meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      } catch {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: 'Failed to read deployment metadata' }));
+        return;
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 120000);
+
+        const shieldRes = await fetch('http://127.0.0.1:3005/api/workflow/expose', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: meta.name,
+            port: meta.port,
+            projectPath: meta.projectPath,
+            stack: meta.stack,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        const shieldData = await shieldRes.json();
+
+        if (!shieldRes.ok) {
+          res.writeHead(shieldRes.status);
+          res.end(JSON.stringify(shieldData));
+          return;
+        }
+
+        res.writeHead(200);
+        res.end(JSON.stringify(shieldData));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: `Redeploy failed: ${(e as Error).message}` }));
+      }
+      return;
+    }
+
+    // DELETE /api/deployment/:name - Remove a deployment via sovereign-shield
+    if (req.method === 'DELETE' && pathname.match(/^\/api\/deployment\/[^/]+$/) && !pathname.includes('/tree') && !pathname.includes('/file') && !pathname.includes('/logs') && !pathname.includes('/redeploy')) {
+      const parts = pathname.split('/');
+      const deployName = decodeURIComponent(parts[3] || '');
+
+      if (!deployName || !/^[a-z0-9][a-z0-9-]*$/.test(deployName)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid deployment name' }));
+        return;
+      }
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
+        const shieldRes = await fetch('http://127.0.0.1:3005/api/workflow/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: deployName }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        const shieldData = await shieldRes.json();
+
+        if (!shieldRes.ok) {
+          res.writeHead(shieldRes.status);
+          res.end(JSON.stringify(shieldData));
+          return;
+        }
+
+        res.writeHead(200);
+        res.end(JSON.stringify(shieldData));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: `Remove failed: ${(e as Error).message}` }));
+      }
+      return;
+    }
+
     // GET /api/app/:directory - Get single app details + auto-activate preview
     // This is the main backend-driven endpoint for app pages
     if (req.method === 'GET' && pathname.startsWith('/api/app/') && !pathname.includes('/tree') && !pathname.includes('/context') && !pathname.includes('/status')) {
@@ -1051,12 +1214,15 @@ const server = http.createServer(async (req, res) => {
       if (app.previewable) {
         // Use port-level health check to see if preview is actually serving
         const health = getPreviewHealth();
+        // Defense-in-depth: verify Caddy route points to correct port
+        ensureCaddyRoute(getProjectPort(app.directory));
         if (health.app === app.directory && health.active) {
           // Already running and healthy — reuse
           previewRunning = true;
         } else {
           // Start/switch — non-blocking (returns immediately)
-          setPreviewApp(app.directory);
+          // Fire-and-forget — don't block the app page response on preview startup
+          setPreviewApp(app.directory).catch(() => {});
           previewActivated = true;
         }
       } else {
@@ -1074,6 +1240,9 @@ const server = http.createServer(async (req, res) => {
       const hasProjectContext = fs.existsSync(projectContextPath);
       const hasGlobalContext = fs.existsSync(globalContextPath);
 
+      // Include phase/error info from health check
+      const healthInfo = previewRunning ? getPreviewHealth() : null;
+
       res.writeHead(200);
       res.end(JSON.stringify({
         app,
@@ -1081,8 +1250,12 @@ const server = http.createServer(async (req, res) => {
           active: previewRunning,
           app: app.previewable ? app.directory : null,
           activated: previewActivated,
-          port: 3000,
-          failReason: null,
+          port: getProjectPort(app.directory),
+          phase: healthInfo?.phase ?? (previewActivated ? 'starting' : 'idle'),
+          error: healthInfo?.error ?? null,
+          logTail: healthInfo?.logTail ?? null,
+          healAttempts: healthInfo?.healAttempts ?? 0,
+          healStatus: healthInfo?.healStatus ?? null,
         },
         context: {
           hasProjectContext,
@@ -1203,7 +1376,11 @@ const server = http.createServer(async (req, res) => {
           active: isActivePreview && health.active,
           isCurrentApp: isActivePreview,
           phase: isActivePreview ? health.phase : 'idle',
-          port: 3000,
+          port: health.port,
+          error: isActivePreview ? (health.error ?? null) : null,
+          logTail: isActivePreview ? (health.logTail ?? null) : null,
+          healAttempts: isActivePreview ? (health.healAttempts ?? 0) : 0,
+          healStatus: isActivePreview ? (health.healStatus ?? null) : null,
         },
       }));
       return;
@@ -1238,7 +1415,7 @@ const server = http.createServer(async (req, res) => {
       // Get the app's configured port
       const allApps = detectApps();
       const appInfo = allApps.find(a => a.directory === resolvedDir);
-      const port = appInfo?.port ?? 3000;
+      const port = appInfo?.port ?? getProjectPort(resolvedDir);
 
       // Check in-memory cache (path → spec, 30s TTL)
       const cacheKey = `${resolvedDir}:${port}`;
@@ -1516,28 +1693,41 @@ const server = http.createServer(async (req, res) => {
         const health = getPreviewHealth();
         let autoStarted = false;
 
-        // Only auto-start if port-level check shows nothing running
-        // (avoids killing preview started by the ellulai-preview bash script)
-        if (health.app && !health.active) {
-          const result = startPreview(health.app);
-          if (result.success) {
-            autoStarted = true;
+        if (health.app) {
+          // Defense-in-depth: verify Caddy route on every poll.
+          // Primary write happens in setPreviewApp(), this catches edge cases.
+          ensureCaddyRoute(health.port);
+
+          if (!health.active) {
+            // Auto-start if port-level check shows nothing running
+            // (avoids killing preview started by the ellulai-preview bash script)
+            const result = await startPreview(health.app);
+            if (result.success) {
+              autoStarted = true;
+            }
           }
         }
 
         res.writeHead(200);
-        res.end(JSON.stringify({ app: health.app, running: health.active, autoStarted }));
+        res.end(JSON.stringify({ app: health.app, running: health.active || autoStarted, autoStarted }));
         return;
       }
 
       if (req.method === 'POST') {
         const body = await parseBody(req);
         const { app, script } = body as { app?: string; script?: string };
-        const result = setPreviewApp(app || null, script);
+        const result = await setPreviewApp(app || null, script);
         res.writeHead(200);
         res.end(JSON.stringify(result));
         return;
       }
+    }
+
+    // GET /api/preview/metrics — operational counters for observability
+    if (req.method === 'GET' && pathname === '/api/preview/metrics') {
+      res.writeHead(200);
+      res.end(JSON.stringify(getPreviewMetrics()));
+      return;
     }
 
     // GET/POST/DELETE /api/context
@@ -2518,6 +2708,11 @@ server.on('clientError', (err, socket) => {
 // Start server
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`ellul.ai File API running on port ${PORT}`);
+
+  // Preview GC on startup (after 5s delay for PM2 to settle)
+  setTimeout(() => { reconcilePortRegistry(); cleanupOrphanedPreviews(); }, 5000);
+  // Preview GC hourly
+  setInterval(() => { reconcilePortRegistry(); cleanupOrphanedPreviews(); }, 3600000);
 });
 
 // Set up WebSocket

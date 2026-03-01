@@ -103,6 +103,15 @@ ${bundledCode}
  */
 export function getAgentBridgeService(svcUser: string = "dev"): string {
   const svcHome = `/home/${svcUser}`;
+  const isFreeTier = svcUser === 'coder';
+  const securityBlock = isFreeTier
+    ? `# Security hardening (free tier — no sudo, restrict privilege escalation)
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=${svcHome} /etc/ellulai/vibe`
+    : `# Paid tier — allow sudo for system package installs (Ruby, Python, etc.)
+PrivateTmp=true`;
   return `[Unit]
 Description=ellul.ai Agent Bridge (Vibe Mode)
 After=network-online.target
@@ -123,11 +132,7 @@ RestartSec=5
 KillMode=process
 TimeoutStopSec=90
 
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-PrivateTmp=true
-ReadWritePaths=${svcHome} /etc/ellulai/vibe
+${securityBlock}
 
 [Install]
 WantedBy=multi-user.target

@@ -184,6 +184,196 @@ function sendToThread(ws: WsClient, threadId: string | null, msg: Record<string,
   }
 }
 
+// ---------------------------------------------------------------------------
+// Preview Health Gate — ensures agent keeps going until preview works
+// ---------------------------------------------------------------------------
+
+import { execSync } from 'child_process';
+import { PREVIEW_PORT_MIN, PREVIEW_PORT_MAX, PREVIEW_LIMITS } from '../../shared/constants';
+
+const MAX_HEALTH_RETRIES = 3;
+const HEALTH_CHECK_DELAY_MS = 4000;
+
+/**
+ * Get the preview port for a project from the port registry.
+ */
+function getPreviewPort(project: string | null): number {
+  if (!project) return PREVIEW_PORT_MIN;
+  try {
+    const registryPath = path.join(path.dirname(PROJECTS_DIR), '.ellulai', 'preview-ports.json');
+    const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    return registry[project] || PREVIEW_PORT_MIN;
+  } catch {
+    return PREVIEW_PORT_MIN;
+  }
+}
+
+interface HealthGateResult {
+  healthy: boolean;
+  httpStatus?: number;
+  error?: string;
+}
+
+/**
+ * Check if the preview is healthy (returning 2xx/3xx).
+ * Returns structured result with error details from pm2 logs if unhealthy.
+ */
+function checkPreviewHealth(port: number = PREVIEW_PORT_MIN, project?: string | null): HealthGateResult {
+  const pm2Name = project ? `preview-${project}` : 'preview-unknown';
+  try {
+    // Check if anything is listening on the preview port
+    const statusOut = execSync(
+      `curl -s -o /dev/null -w '%{http_code}' -m 3 http://localhost:${port}/`,
+      { encoding: 'utf8', timeout: 5000 }
+    ).trim();
+    const httpStatus = parseInt(statusOut, 10);
+    if (httpStatus >= 200 && httpStatus < 400) {
+      return { healthy: true, httpStatus };
+    }
+
+    // Unhealthy — extract error from pm2 logs
+    let error = `Preview returned HTTP ${httpStatus}`;
+    try {
+      const logs = execSync(`pm2 logs ${JSON.stringify(pm2Name)} --nostream --lines 30 2>&1`, {
+        encoding: 'utf8', timeout: 5000,
+      });
+      // Extract the most useful error line
+      const errorLines = logs.split('\n').filter(l =>
+        /error|Error|ERR|SyntaxError|TypeError|ModuleBuildError|Cannot find|Module not found/i.test(l)
+      );
+      if (errorLines.length > 0) {
+        error += '\n\npm2 logs:\n' + errorLines.slice(0, 10).join('\n');
+      }
+    } catch {}
+    return { healthy: false, httpStatus, error };
+  } catch {
+    // curl failed entirely — nothing listening
+    return { healthy: false, error: `Preview is not responding on port ${port} (nothing listening)` };
+  }
+}
+
+/**
+ * Check if a project is a previewable web app (has ellulai.json with previewable: true,
+ * or has package.json with a dev script).
+ */
+function isPreviewableProject(project: string | null): boolean {
+  if (!project) return false;
+  const projectPath = path.join(PROJECTS_DIR, project);
+  // Check ellulai.json
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(projectPath, 'ellulai.json'), 'utf8'));
+    if (meta.previewable === true || meta.type === 'frontend') return true;
+  } catch {}
+  // Check package.json for dev scripts
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(projectPath, 'package.json'), 'utf8'));
+    const scripts = pkg.scripts || {};
+    if (scripts.dev || scripts.start) return true;
+  } catch {}
+  return false;
+}
+
+/**
+ * Wait for the preview to potentially start up (cold starts take a few seconds).
+ * Async to avoid blocking the event loop.
+ */
+const bridgeSleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+async function waitForPreview(): Promise<void> { await bridgeSleep(HEALTH_CHECK_DELAY_MS); }
+
+/**
+ * Health check result cache — avoid re-checking the same port+project within TTL.
+ * Keyed by "port:project" to prevent stale results if two projects share a port edge case.
+ */
+const healthCache = new Map<string, { result: HealthGateResult; ts: number }>();
+function checkPreviewHealthCached(port: number = PREVIEW_PORT_MIN, project?: string | null): HealthGateResult {
+  const key = `${port}:${project ?? ''}`;
+  const cached = healthCache.get(key);
+  if (cached && Date.now() - cached.ts < PREVIEW_LIMITS.HEALTH_CACHE_TTL_MS) return cached.result;
+  const result = checkPreviewHealth(port, project);
+  healthCache.set(key, { result, ts: Date.now() });
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Deployment Health Gate — ensures deployed apps actually work
+// ---------------------------------------------------------------------------
+
+const APPS_DIR = path.join(path.dirname(PROJECTS_DIR), '.ellulai', 'apps');
+
+interface DeploymentHealthResult {
+  healthy: boolean;
+  appName: string;
+  port: number;
+  httpStatus?: number;
+  error?: string;
+}
+
+/**
+ * Check if any recently deployed apps are broken.
+ * Scans ~/.ellulai/apps/ for app metadata, checks each app's port.
+ * Returns the first broken deployment found, or null if all healthy.
+ */
+function checkDeploymentHealth(): DeploymentHealthResult | null {
+  try {
+    if (!fs.existsSync(APPS_DIR)) return null;
+    const files = fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json'));
+    if (files.length === 0) return null;
+
+    // Check all deployed apps — find the first broken one
+    for (const file of files) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(APPS_DIR, file), 'utf8'));
+        if (!meta.port || !meta.name) continue;
+        // Skip preview ports — handled by preview health gate
+        if (meta.port >= PREVIEW_PORT_MIN && meta.port <= PREVIEW_PORT_MAX) continue;
+
+        const statusOut = execSync(
+          `curl -s -o /dev/null -w '%{http_code}' -m 3 http://localhost:${meta.port}/`,
+          { encoding: 'utf8', timeout: 5000 }
+        ).trim();
+        const httpStatus = parseInt(statusOut, 10);
+
+        if (isNaN(httpStatus) || httpStatus >= 500) {
+          let error = `Deployed app "${meta.name}" returned HTTP ${httpStatus || 'no response'} on port ${meta.port}`;
+          // Extract error from pm2 logs
+          try {
+            const logs = execSync(`pm2 logs ${JSON.stringify(meta.name)} --nostream --lines 30 2>&1`, {
+              encoding: 'utf8', timeout: 5000,
+            });
+            const errorLines = logs.split('\n').filter(l =>
+              /error|Error|ERR|SyntaxError|TypeError|Cannot find|Module not found/i.test(l)
+            );
+            if (errorLines.length > 0) {
+              error += '\n\npm2 logs:\n' + errorLines.slice(0, 10).join('\n');
+            }
+          } catch {}
+          return { healthy: false, appName: meta.name, port: meta.port, httpStatus, error };
+        }
+      } catch {}
+    }
+  } catch {}
+  return null; // All healthy or no deployments
+}
+
+/**
+ * Check if any deployment happened by looking for recently modified app metadata.
+ * Returns true if an app was deployed in the last 2 minutes.
+ */
+function hasRecentDeployment(): boolean {
+  try {
+    if (!fs.existsSync(APPS_DIR)) return false;
+    const files = fs.readdirSync(APPS_DIR).filter(f => f.endsWith('.json'));
+    const twoMinutesAgo = Date.now() - 120000;
+    for (const file of files) {
+      try {
+        const stat = fs.statSync(path.join(APPS_DIR, file));
+        if (stat.mtimeMs > twoMinutesAgo) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
 // Context cache
 let cachedGlobalContext = '';
 let globalContextLastRead = 0;
@@ -251,6 +441,68 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/internal/preview-error - Self-healing: inject build error into agent thread
+  // Localhost-only — called by file-api's preview.service.ts when a dev server fails
+  if (req.method === 'POST' && url.pathname === '/api/internal/preview-error') {
+    // Reject non-localhost requests
+    const remoteAddr = req.socket.remoteAddress;
+    if (remoteAddr !== '127.0.0.1' && remoteAddr !== '::1' && remoteAddr !== '::ffff:127.0.0.1') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, reason: 'Localhost only' }));
+      return;
+    }
+
+    let body = '';
+    req.on('data', (chunk: Buffer) => (body += chunk.toString()));
+    req.on('end', () => {
+      try {
+        const { projectName, error, logTail } = JSON.parse(body) as {
+          projectName?: string;
+          threadId?: string;
+          error?: string;
+          logTail?: string;
+        };
+
+        if (!projectName || !error) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, reason: 'Missing projectName or error' }));
+          return;
+        }
+
+        // Find the latest thread for this project
+        const threads = listThreads(projectName);
+        if (threads.length === 0) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, reason: 'No active thread for project' }));
+          return;
+        }
+
+        // Use the most recent thread
+        const targetThread = threads[0]!;
+
+        // Inject a system message with the build error
+        const logSection = logTail ? `\n\nRelevant logs:\n${logTail.slice(-2048)}` : '';
+        const message = addMessage(targetThread.id, {
+          type: 'system',
+          content: `[Preview Build Error]\nThe dev server for this project failed to start. Here is the error output:\n\n${error}${logSection}\n\nPlease fix the code issue causing this build failure. After fixing, the dev server will automatically restart.`,
+          session: 'system',
+          model: null,
+          thinking: null,
+          metadata: { source: 'preview-self-heal' },
+        });
+
+        console.log(`[Bridge] Preview error injected into thread ${targetThread.id.substring(0, 8)} for project "${projectName}"`);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, messageId: message.id, threadId: targetThread.id }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, reason: (err as Error).message }));
+      }
+    });
+    return;
+  }
+
   // Not found
   res.writeHead(404);
   res.end();
@@ -261,6 +513,9 @@ const httpServer = http.createServer(async (req, res) => {
 const WebSocketModule = require('ws');
 const wss: WsServer = new WebSocketModule.WebSocketServer({
   server: httpServer,
+  // 1 MB max payload — prevents OOM from oversized messages.
+  // Chat messages are typically <100KB; anything larger is malformed or malicious.
+  maxPayload: 1 * 1024 * 1024,
   verifyClient: async (
     info: { req: { url?: string; _shieldSessionId?: string } },
     cb: (result: boolean, code?: number, message?: string) => void
@@ -768,9 +1023,125 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
               systemPrompt,
             );
 
-            const output = openclawResponse.text.trim() || 'Done';
+            let clawOutput = openclawResponse.text.trim() || 'Done';
+
+            // Health check gate for Claw mode
+            if (isPreviewableProject(project)) {
+              const previewPort = getPreviewPort(project);
+              const pm2Name = `preview-${project || 'app'}`;
+              for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
+                // Skip wait on first attempt if cache already shows healthy
+                if (attempt > 0 || !checkPreviewHealthCached(previewPort, project).healthy) {
+                  await waitForPreview();
+                  // Invalidate cache after waiting — force fresh check
+                  healthCache.delete(`${previewPort}:${project ?? ''}`);
+                }
+                const health = checkPreviewHealthCached(previewPort, project);
+                if (health.healthy) {
+                  console.log(`[Bridge] Claw health gate passed (HTTP ${health.httpStatus}) for project ${project}`);
+                  break;
+                }
+
+                console.log(`[Bridge] Claw health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${health.error}`);
+                if (attempt >= MAX_HEALTH_RETRIES - 1) {
+                  clawOutput += `\n\n⚠️ Preview health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${health.error}`;
+                  break;
+                }
+
+                sendToThread(ws, commandThreadId, {
+                  type: 'output',
+                  content: `Preview returned an error (HTTP ${health.httpStatus || 'no response'}). Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                  threadId: commandThreadId,
+                  timestamp: Date.now(),
+                });
+
+                const fixMessage = `The preview is broken. Fix this error and make sure the app works on localhost:${previewPort}.\n\nError details:\n${health.error}\n\nSteps:\n1. Read the error above carefully\n2. Fix the code that's causing the error\n3. Restart the preview: pm2 delete ${pm2Name} 2>/dev/null && pm2 start npm --name ${pm2Name} -- run dev\n4. Verify: curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort} must return 200`;
+
+                try {
+                  const fixResponse = await sendToOpenClaw(
+                    commandThreadId || `claw-${Date.now()}`,
+                    fixMessage,
+                    'claw',
+                    (chunk: OpenClawChunk) => {
+                      if (chunk.type === 'text' && chunk.content) {
+                        streamedText += chunk.content;
+                        if (commandThreadId) updateStreamedText(commandThreadId, streamedText);
+                        sendToThread(ws, commandThreadId, {
+                          type: 'output',
+                          content: streamedText,
+                          threadId: commandThreadId,
+                          timestamp: Date.now(),
+                        });
+                      }
+                    },
+                    null,
+                    project,
+                    systemPrompt,
+                  );
+                  const fixOutput = fixResponse.text.trim();
+                  if (fixOutput) clawOutput += '\n\n' + fixOutput;
+                } catch (fixErr) {
+                  console.error(`[Bridge] Claw health gate fix attempt ${attempt + 1} failed:`, (fixErr as Error).message);
+                }
+              }
+            }
+
+            // Deployment health gate: if a deployment happened, verify it works
+            if (hasRecentDeployment()) {
+              for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
+                await waitForPreview(); // same delay for cold start
+                const deployHealth = checkDeploymentHealth();
+                if (!deployHealth) {
+                  console.log(`[Bridge] Claw deployment health gate passed — all deployed apps healthy`);
+                  break;
+                }
+
+                console.log(`[Bridge] Claw deployment health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${deployHealth.error}`);
+                if (attempt >= MAX_HEALTH_RETRIES - 1) {
+                  clawOutput += `\n\n⚠️ Deployment health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${deployHealth.error}`;
+                  break;
+                }
+
+                sendToThread(ws, commandThreadId, {
+                  type: 'output',
+                  content: `Deployed app "${deployHealth.appName}" returned HTTP ${deployHealth.httpStatus || 'no response'}. Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                  threadId: commandThreadId,
+                  timestamp: Date.now(),
+                });
+
+                const fixMessage = `The deployed app "${deployHealth.appName}" is broken on port ${deployHealth.port}. Fix this error and redeploy.\n\nError details:\n${deployHealth.error}\n\nSteps:\n1. Read the error above carefully\n2. Fix the code in the project\n3. Run ellulai-expose again to redeploy\n4. Verify the deployed app returns HTTP 200`;
+
+                try {
+                  const fixResponse = await sendToOpenClaw(
+                    commandThreadId || `claw-${Date.now()}`,
+                    fixMessage,
+                    'claw',
+                    (chunk: OpenClawChunk) => {
+                      if (chunk.type === 'text' && chunk.content) {
+                        streamedText += chunk.content;
+                        if (commandThreadId) updateStreamedText(commandThreadId, streamedText);
+                        sendToThread(ws, commandThreadId, {
+                          type: 'output',
+                          content: streamedText,
+                          threadId: commandThreadId,
+                          timestamp: Date.now(),
+                        });
+                      }
+                    },
+                    null,
+                    project,
+                    systemPrompt,
+                  );
+                  const fixOutput = fixResponse.text.trim();
+                  if (fixOutput) clawOutput += '\n\n' + fixOutput;
+                } catch (fixErr) {
+                  console.error(`[Bridge] Claw deployment health gate fix attempt ${attempt + 1} failed:`, (fixErr as Error).message);
+                }
+              }
+            }
+
             // Save to DB first (source of truth) — message_added broadcast replaces streaming placeholder
-            saveAssistantMessage(output, openclawResponse.reasoning);
+            saveAssistantMessage(clawOutput, openclawResponse.reasoning);
             // No redundant output send — message_added already has the final content
             sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           } else {
@@ -794,36 +1165,114 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
             return;
           }
 
-          // Dispatch directly to CLI — no AI middleman
-          let cliResponse: CliResponse;
-          switch (commandSession) {
-            case 'claude':
-              cliResponse = await sendToClaudeStreaming(userMessage, ws, true, commandThreadId, project);
-              break;
-            case 'codex':
-              cliResponse = await sendToCodexStreaming(userMessage, ws, true, commandThreadId, project);
-              break;
-            case 'gemini':
-              cliResponse = await sendToGeminiStreaming(userMessage, ws, true, commandThreadId, project);
-              break;
-            case 'opencode':
-            case 'main':
-            default:
-              cliResponse = await sendToOpencodeStreaming(userMessage, ws, commandThreadId, project);
-              break;
-          }
+          // Dispatch to CLI with health check gate — retry loop ensures preview works
+          const dispatchToCli = async (message: string): Promise<CliResponse> => {
+            switch (commandSession) {
+              case 'claude':
+                return sendToClaudeStreaming(message, ws, true, commandThreadId, project);
+              case 'codex':
+                return sendToCodexStreaming(message, ws, true, commandThreadId, project);
+              case 'gemini':
+                return sendToGeminiStreaming(message, ws, true, commandThreadId, project);
+              case 'opencode':
+              case 'main':
+              default:
+                return sendToOpencodeStreaming(message, ws, commandThreadId, project);
+            }
+          };
 
-          // Build final output from CLI response
-          const output = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
+          let cliResponse = await dispatchToCli(userMessage);
+          let finalOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
             || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
 
+          // Health check gate: if project is previewable, verify the preview works.
+          // If it doesn't, send the error back to the CLI and let it fix the code.
+          if (isPreviewableProject(project)) {
+            const previewPort = getPreviewPort(project);
+            const pm2Name = `preview-${project || 'app'}`;
+            for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
+              if (attempt > 0 || !checkPreviewHealthCached(previewPort, project).healthy) {
+                await waitForPreview();
+                healthCache.delete(`${previewPort}:${project ?? ''}`);
+              }
+              const health = checkPreviewHealthCached(previewPort, project);
+              if (health.healthy) {
+                console.log(`[Bridge] Health gate passed (HTTP ${health.httpStatus}) for project ${project}`);
+                break;
+              }
+
+              // Preview is broken — send fix request to CLI
+              console.log(`[Bridge] Health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${health.error}`);
+              if (attempt >= MAX_HEALTH_RETRIES - 1) {
+                // Final attempt failed — append error info to output so user sees it
+                finalOutput += `\n\n⚠️ Preview health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${health.error}`;
+                break;
+              }
+
+              // Tell user we're auto-fixing
+              sendToThread(ws, commandThreadId, {
+                type: 'output',
+                content: `Preview returned an error (HTTP ${health.httpStatus || 'no response'}). Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                threadId: commandThreadId,
+                timestamp: Date.now(),
+              });
+
+              // Send fix request to CLI with the actual error
+              const fixMessage = `The preview is broken. Fix this error and make sure the app works on localhost:${previewPort}.\n\nError details:\n${health.error}\n\nSteps:\n1. Read the error above carefully\n2. Fix the code that's causing the error\n3. Restart the preview: pm2 delete ${pm2Name} 2>/dev/null && pm2 start npm --name ${pm2Name} -- run dev\n4. Verify: curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort} must return 200`;
+
+              try {
+                cliResponse = await dispatchToCli(fixMessage);
+                const fixOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim();
+                if (fixOutput) finalOutput += '\n\n' + fixOutput;
+              } catch (fixErr) {
+                console.error(`[Bridge] Health gate fix attempt ${attempt + 1} failed:`, (fixErr as Error).message);
+              }
+            }
+          }
+
+          // Deployment health gate: if a deployment happened, verify it works
+          if (hasRecentDeployment()) {
+            for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
+              await waitForPreview(); // same delay for cold start
+              const deployHealth = checkDeploymentHealth();
+              if (!deployHealth) {
+                console.log(`[Bridge] Deployment health gate passed — all deployed apps healthy`);
+                break;
+              }
+
+              console.log(`[Bridge] Deployment health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${deployHealth.error}`);
+              if (attempt >= MAX_HEALTH_RETRIES - 1) {
+                finalOutput += `\n\n⚠️ Deployment health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${deployHealth.error}`;
+                break;
+              }
+
+              sendToThread(ws, commandThreadId, {
+                type: 'output',
+                content: `Deployed app "${deployHealth.appName}" returned HTTP ${deployHealth.httpStatus || 'no response'}. Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                threadId: commandThreadId,
+                timestamp: Date.now(),
+              });
+
+              const fixMessage = `The deployed app "${deployHealth.appName}" is broken on port ${deployHealth.port}. Fix this error and redeploy.\n\nError details:\n${deployHealth.error}\n\nSteps:\n1. Read the error above carefully\n2. Fix the code in the project\n3. Run ellulai-expose again to redeploy\n4. Verify the deployed app returns HTTP 200`;
+
+              try {
+                cliResponse = await dispatchToCli(fixMessage);
+                const fixOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim();
+                if (fixOutput) finalOutput += '\n\n' + fixOutput;
+              } catch (fixErr) {
+                console.error(`[Bridge] Deployment health gate fix attempt ${attempt + 1} failed:`, (fixErr as Error).message);
+              }
+            }
+          }
+
           // Save to DB first (source of truth) — message_added broadcast replaces streaming placeholder
-          saveAssistantMessage(output, cliResponse.reasoning);
+          saveAssistantMessage(finalOutput, cliResponse.reasoning);
           // No redundant output send — message_added already has the final content
           sendToThread(ws, commandThreadId, { type: 'ack', command: msg.content, session: commandSession, project: commandProject, threadId: commandThreadId, timestamp: Date.now() });
           }
         } catch (err) {
-          const errMsg = (err as Error).message || 'Unknown error';
+          const rawMsg = (err as Error).message;
+          const errMsg = typeof rawMsg === 'string' ? rawMsg : (rawMsg ? String(rawMsg) : 'Unknown error');
           console.error(`[Bridge] CLI error: ${errMsg}`);
           try {
             // Reactive auth fallback: if CLI throws auth error, start in-chat auth
@@ -994,6 +1443,39 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
             console.log(`[Bridge] Thread set to ${threadId.substring(0, 8)}..., session=${state.currentSession}`);
             ws.send(JSON.stringify({ type: 'thread_set', threadId, session: state.currentSession, timestamp: Date.now() }));
 
+            // If this thread is currently processing, re-send the thinking signal
+            // with the original startedAt so the frontend timer resumes accurately
+            // instead of resetting to 0 on thread switch.
+            const activeProcessing = getProcessingState(threadId);
+            if (activeProcessing) {
+              ws.send(JSON.stringify({
+                type: 'thinking',
+                session: activeProcessing.session,
+                threadId,
+                startedAt: activeProcessing.startedAt,
+                timestamp: Date.now(),
+              }));
+              // Replay buffered thinking steps so the client catches up
+              for (const step of activeProcessing.thinkingSteps) {
+                ws.send(JSON.stringify({
+                  type: 'thinking_step',
+                  content: step,
+                  threadId,
+                  timestamp: Date.now(),
+                }));
+              }
+              // Replay accumulated streamed text
+              if (activeProcessing.streamedText) {
+                ws.send(JSON.stringify({
+                  type: 'output',
+                  content: activeProcessing.streamedText,
+                  threadId,
+                  isReplay: true,
+                  timestamp: Date.now(),
+                }));
+              }
+            }
+
             // Try to reattach an auth session from a dropped ws (reconnect scenario)
             // Pass thread session to prevent cross-session reattach (e.g., claude auth on opencode thread)
             const reattached = targetHasAuth ? reattachCliAuth(ws, threadId, state.currentSession) : false;
@@ -1112,8 +1594,11 @@ httpServer.listen(PORT, '127.0.0.1', async () => {
  */
 async function recoverInterruptedRequests(): Promise<void> {
   const orphans = db.prepare(
-    'SELECT thread_id, session, project, prompt FROM processing_ledger'
-  ).all() as Array<{ thread_id: string; session: string; project: string | null; prompt: string }>;
+    'SELECT thread_id, session, project, prompt, thinking_steps, streamed_text FROM processing_ledger'
+  ).all() as Array<{
+    thread_id: string; session: string; project: string | null; prompt: string;
+    thinking_steps: string | null; streamed_text: string | null;
+  }>;
   if (orphans.length === 0) return;
 
   console.log(`[Bridge] Recovering ${orphans.length} interrupted request(s)`);
@@ -1125,6 +1610,25 @@ async function recoverInterruptedRequests(): Promise<void> {
       'SELECT type FROM messages WHERE thread_id = ? ORDER BY seq DESC LIMIT 1'
     ).get(orphan.thread_id) as { type: string } | undefined;
     if (lastMsg && lastMsg.type !== 'user') continue;
+
+    // Persist any partial thinking steps that were captured before the crash
+    let recoveredThinking: string[] = [];
+    try {
+      recoveredThinking = orphan.thinking_steps ? JSON.parse(orphan.thinking_steps) : [];
+    } catch {}
+
+    if (recoveredThinking.length > 0 || orphan.streamed_text) {
+      // Save partial response as a system message so the user sees what was delivered pre-crash
+      addMessage(orphan.thread_id, {
+        type: 'system',
+        content: orphan.streamed_text
+          ? `Partial response recovered after restart:\n\n${orphan.streamed_text}`
+          : 'Service restarted during processing — partial thinking recovered.',
+        session: null, model: null,
+        thinking: recoveredThinking.length > 0 ? recoveredThinking : null,
+        metadata: { recovery: true, partial: true },
+      });
+    }
 
     addMessage(orphan.thread_id, {
       type: 'system',

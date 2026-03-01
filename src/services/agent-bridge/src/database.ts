@@ -74,6 +74,21 @@ db.exec(`
   );
 `);
 
+// Schema migration: add thinking_steps + streamed_text to processing_ledger for crash recovery.
+// These columns persist in-flight state so thinking steps survive a mid-stream crash.
+try {
+  const cols = db.prepare("PRAGMA table_info(processing_ledger)").all() as { name: string }[];
+  const colNames = new Set(cols.map(c => c.name));
+  if (!colNames.has('thinking_steps')) {
+    db.exec("ALTER TABLE processing_ledger ADD COLUMN thinking_steps TEXT DEFAULT '[]'");
+  }
+  if (!colNames.has('streamed_text')) {
+    db.exec("ALTER TABLE processing_ledger ADD COLUMN streamed_text TEXT DEFAULT ''");
+  }
+} catch (e) {
+  console.warn('[vibe-chat] processing_ledger migration warning:', (e as Error).message);
+}
+
 console.log('[vibe-chat] Database initialized at', CHAT_DB_PATH);
 
 // Ensure thread state directory exists

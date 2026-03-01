@@ -6,6 +6,7 @@
 # Runs once at enforcer startup before the main heartbeat loop.
 validate_full_stack() {
   local FAILURES=0
+  local FAILURE_LIST=""
 
   # Check warden if firewall mode requires it (Linux only — macOS BYOS uses relaxed mode)
   FIREWALL_MODE=$(cat /etc/ellulai/firewall-mode 2>/dev/null)
@@ -15,6 +16,7 @@ validate_full_stack() {
       svc_start ellulai-warden
       sleep 2
       FAILURES=$((FAILURES + 1))
+      FAILURE_LIST="${FAILURE_LIST}warden_not_running\n"
     else
       WARDEN_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" -m 3 http://localhost:8081/_health 2>/dev/null || echo "000")
       if [ "$WARDEN_HEALTH" != "200" ]; then
@@ -22,6 +24,7 @@ validate_full_stack() {
         svc_restart ellulai-warden
         sleep 2
         FAILURES=$((FAILURES + 1))
+        FAILURE_LIST="${FAILURE_LIST}warden_health_failed\n"
       fi
     fi
 
@@ -31,6 +34,7 @@ validate_full_stack() {
       svc_restart ellulai-warden
       sleep 3
       FAILURES=$((FAILURES + 1))
+      FAILURE_LIST="${FAILURE_LIST}no_outbound_internet\n"
     fi
   fi
 
@@ -40,6 +44,7 @@ validate_full_stack() {
     svc_restart ellulai-sovereign-shield
     sleep 2
     FAILURES=$((FAILURES + 1))
+    FAILURE_LIST="${FAILURE_LIST}shield_not_responding\n"
   fi
 
   # Check agent-bridge
@@ -48,6 +53,7 @@ validate_full_stack() {
     svc_restart ellulai-agent-bridge
     sleep 2
     FAILURES=$((FAILURES + 1))
+    FAILURE_LIST="${FAILURE_LIST}agent_bridge_not_running\n"
   fi
 
   # OpenClaw gateway — warn only (may still be starting up)
@@ -57,8 +63,49 @@ validate_full_stack() {
 
   if [ $FAILURES -eq 0 ]; then
     log "Boot validation passed — all critical services operational"
+    rm -f /etc/ellulai/boot-failures
   else
     log "Boot validation completed with $FAILURES failures — remediation attempted"
+    mkdir -p /etc/ellulai
+    printf "%b" "$FAILURE_LIST" | head -20 > /etc/ellulai/boot-failures
+  fi
+}
+
+# Clean up orphaned preview-* PM2 processes whose project directory no longer exists.
+# Runs with cooldown — only checks every 5 minutes to avoid pm2 jlist + python3 on every heartbeat.
+PREVIEW_GC_LAST=0
+check_preview_processes() {
+  local NOW
+  NOW=$(date +%s)
+  if [ $(( NOW - PREVIEW_GC_LAST )) -lt 300 ]; then
+    return
+  fi
+  PREVIEW_GC_LAST=$NOW
+  if ! command -v pm2 &>/dev/null 2>&1 && ! run_as_user 'command -v pm2' &>/dev/null 2>&1; then
+    return
+  fi
+  ORPHANED=$(run_as_user 'pm2 jlist 2>/dev/null' 2>/dev/null | python3 -c "
+import sys,json,os,re
+try:
+  raw=sys.stdin.read()
+  m=re.search(r'\[\s*\{', raw)
+  if not m: sys.exit(0)
+  procs=json.loads(raw[m.start():])
+  for p in procs:
+    name=p.get('name','')
+    if name.startswith('preview-'):
+      project=name[len('preview-'):]
+      project_dir=os.path.join('${SVC_HOME}/projects', project)
+      if not os.path.isdir(project_dir):
+        print(name)
+except Exception:
+  pass
+" 2>/dev/null)
+  if [ -n "$ORPHANED" ]; then
+    echo "$ORPHANED" | while read -r pname; do
+      log "GC: stopping orphaned preview process $pname"
+      run_as_user "pm2 delete \"$pname\" 2>/dev/null" || true
+    done
   fi
 }
 
@@ -151,6 +198,9 @@ check_critical_services() {
     log "CRITICAL: ellulai-agent-bridge is down, restarting..."
     svc_restart ellulai-agent-bridge
   fi
+
+  # Clean up orphaned preview-* PM2 processes (project dir deleted while preview ran)
+  check_preview_processes
 
   # Ensure OpenClaw gateway is running (PM2 managed)
   if command -v pm2 &>/dev/null 2>&1 || run_as_user 'command -v pm2' &>/dev/null 2>&1; then

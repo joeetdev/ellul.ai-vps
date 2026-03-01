@@ -56,7 +56,8 @@ window.addEventListener('message', async (event) => {
     const result = await handleMessage(type, data);
     respond(event.origin, requestId, { success: true, ...result });
   } catch (err) {
-    respond(event.origin, requestId, { success: false, error: err.message });
+    const errMsg = typeof err?.message === 'string' ? err.message : String(err?.message ?? err ?? 'Unknown error');
+    respond(event.origin, requestId, { success: false, error: errMsg });
   }
 });
 

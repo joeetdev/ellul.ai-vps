@@ -51,8 +51,11 @@ export const PORTS = {
   FILE_API: 3002,
   AGENT_BRIDGE: 7700,
   TERM_PROXY: 7701,
-  PREVIEW: 3000,
 } as const;
+
+// Per-project preview port range (each project gets a dedicated port)
+export const PREVIEW_PORT_MIN = 4000;
+export const PREVIEW_PORT_MAX = 4099;
 
 // Session/Token TTLs
 export const SESSION_TTL_MS = 4 * 60 * 60 * 1000;        // 4 hours idle timeout
@@ -67,7 +70,22 @@ export const AGENT_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;   // 24 hours for agent t
 export const RESERVED_PORTS = new Set([
   22, 80, 443, 2019, 3000, 3002, 3005, 3006,
   7681, 7682, 7683, 7684, 7685, 7686, 7687, 7688, 7689, 7690, 7700, 7701,
+  // Preview port range (4000-4099) — reserved for per-project preview ports
+  ...Array.from({ length: PREVIEW_PORT_MAX - PREVIEW_PORT_MIN + 1 }, (_, i) => PREVIEW_PORT_MIN + i),
 ]);
+
+// Preview resource limits
+export const PREVIEW_LIMITS = {
+  MAX_CONCURRENT: 3,           // max simultaneous preview-* PM2 processes
+  MAX_MEMORY_MB: 256,          // PM2 max_memory_restart per preview
+  MAX_RESTARTS: 10,            // PM2 max restarts before errored
+  RESTART_DELAY_MS: 1000,      // base delay between PM2 restarts
+  MAX_REPAIR_ATTEMPTS: 3,      // background auto-repair cap
+  RAM_THRESHOLD: 0.85,         // refuse new preview if RAM > 85%
+  LOAD_MULTIPLIER: 1.5,        // refuse if loadavg > nCPU * 1.5
+  HEALTH_CACHE_TTL_MS: 2000,   // don't re-check health within 2s
+  ANCESTOR_DEPTH: 16,          // isDescendantOf max proc tree depth
+} as const;
 
 // Rate limiting
 export const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;      // 15 minutes

@@ -86,21 +86,158 @@ function isHttpAlive(port: number): boolean {
 }
 
 /**
+ * Check if a port has a HEALTHY HTTP listener (2xx/3xx only).
+ * Rejects 4xx/5xx — a process returning error pages is not considered healthy.
+ * Returns { alive, healthy, httpStatus } for richer diagnostics.
+ */
+function isHttpHealthy(port: number): { alive: boolean; healthy: boolean; httpStatus: number } {
+  try {
+    const code = execSync(
+      `curl -s -o /dev/null -w '%{http_code}' -m 3 http://localhost:${port}`,
+      { stdio: 'pipe', timeout: 5000, encoding: 'utf8' },
+    ).trim();
+    const httpStatus = parseInt(code, 10);
+    if (isNaN(httpStatus)) return { alive: false, healthy: false, httpStatus: 0 };
+    return {
+      alive: httpStatus >= 100 && httpStatus < 600,
+      healthy: httpStatus >= 200 && httpStatus < 400,
+      httpStatus,
+    };
+  } catch {
+    return { alive: false, healthy: false, httpStatus: 0 };
+  }
+}
+
+/**
+ * Check if a port is occupied by a listening TCP socket.
+ */
+function isPortOccupied(p: number): boolean {
+  try {
+    const out = execSync(`ss -tlnH sport = :${p}`, {
+      stdio: 'pipe',
+      timeout: 3000,
+      encoding: 'utf8',
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start a pm2 process with smart start-method detection.
+ * Handles npm start, static sites (npx serve), and plain Node entrypoints.
+ */
+function startPm2Process(procName: string, port: number, projectPath: string): { started: boolean } {
+  let hasStartScript = false;
+  let startScriptValue = '';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(`${projectPath}/package.json`, 'utf8'));
+    if (pkg.scripts?.start) {
+      hasStartScript = true;
+      startScriptValue = pkg.scripts.start;
+    }
+  } catch {}
+
+  // For built projects (Vite, CRA, etc.), serve from the build output directory
+  let servePath = projectPath;
+  for (const outDir of ['dist', 'build', 'out', '.output/public']) {
+    const candidate = `${projectPath}/${outDir}`;
+    if (fs.existsSync(`${candidate}/index.html`)) {
+      servePath = candidate;
+      break;
+    }
+  }
+
+  // Static HTML site detection: index.html exists AND no start script.
+  // If a start script exists, ALWAYS use it — `node server.js` could be
+  // an Express server, not a static file server.
+  const hasIndexHtml = fs.existsSync(`${servePath}/index.html`);
+  const isStaticSite = hasIndexHtml && !hasStartScript;
+
+  let startCmd: string;
+  if (isStaticSite) {
+    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(servePath)}`;
+  } else if (hasStartScript) {
+    startCmd = `pm2 start bash --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(projectPath)} -- -c "export PORT=${port} && npm start"`;
+  } else {
+    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(servePath)}`;
+  }
+
+  try {
+    console.log(`[shield] Starting "${procName}" on port ${port} (${isStaticSite ? 'static' : hasStartScript ? 'npm start' : 'serve fallback'})`);
+    execSync(`bash -lc '${startCmd}'`, { stdio: 'pipe', timeout: 30000 });
+    try { execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, { stdio: 'pipe', timeout: 5000 }); } catch {}
+    return { started: true };
+  } catch {
+    return { started: false };
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+/**
+ * Poll a port for a healthy HTTP response (2xx/3xx) with timeout.
+ * Async to avoid blocking the event loop — Shield can still serve other requests.
+ * Returns { healthy, httpStatus } for rich diagnostics on failure.
+ */
+async function waitForHealthy(
+  port: number,
+  timeoutMs: number,
+  intervalMs: number,
+): Promise<{ healthy: boolean; httpStatus: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = 0;
+
+  while (Date.now() < deadline) {
+    const check = isHttpHealthy(port);
+    lastStatus = check.httpStatus;
+
+    if (check.healthy) return { healthy: true, httpStatus: lastStatus };
+
+    // Process alive but returning server errors — won't self-fix, bail early
+    if (check.alive && check.httpStatus >= 500) {
+      return { healthy: false, httpStatus: lastStatus };
+    }
+
+    // Check if PM2 process crashed — no point polling a dead process
+    try {
+      const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
+        stdio: 'pipe', timeout: 5000, encoding: 'utf8',
+      });
+      const list = JSON.parse(raw);
+      // Check for any process on this port that has crashed
+      const crashed = list.find((p: any) =>
+        (p.pm2_env?.status === 'errored' || p.pm2_env?.status === 'stopped') &&
+        String(p.pm2_env?.PORT || p.pm2_env?.env?.PORT) === String(port)
+      );
+      if (crashed) {
+        return { healthy: false, httpStatus: 0 };
+      }
+    } catch {}
+
+    await sleep(intervalMs);
+  }
+
+  return { healthy: false, httpStatus: lastStatus };
+}
+
+/**
  * Ensure the app process is running on the correct port via pm2.
  * Handles port conflict resolution, process lifecycle, and health checks.
+ * Used for first-deploy path; blue-green redeploys use startPm2Process directly.
  */
-function ensureAppProcess(
+async function ensureAppProcess(
   name: string,
   requestedPort: number,
   projectPath: string,
   appsDir: string,
-): { port: number } {
+): Promise<{ port: number }> {
   // Fast path: if the requested port already has a healthy listener owned by THIS project,
-  // skip PM2 entirely. This prevents the destructive delete-and-restart cycle when
-  // preview hands off a running process, while ensuring we don't accept a stale app.
+  // skip PM2 entirely. Prevents the destructive delete-and-restart cycle when
+  // preview hands off a running process.
   try {
     if (!isHttpAlive(requestedPort)) throw new Error('not alive');
-    // Verify the listener actually belongs to this project via /proc/{pid}/cwd
     const pid = execSync(
       `ss -tlnpH sport = :${requestedPort} 2>/dev/null | grep -oP 'pid=\\K\\d+' | head -1`,
       { stdio: 'pipe', timeout: 3000, encoding: 'utf8' },
@@ -112,82 +249,18 @@ function ensureAppProcess(
         return { port: requestedPort };
       }
     }
-  } catch {
-    // Port not healthy or identity check failed — fall through to PM2 management
-  }
-
-  // A. Get pm2 process list
-  let pm2List: Array<{
-    name: string;
-    pm2_env?: { cwd?: string; PORT?: string; status?: string };
-  }> = [];
-  try {
-    const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
-      stdio: 'pipe',
-      timeout: 10000,
-    }).toString();
-    pm2List = JSON.parse(raw);
   } catch {}
 
-  // B. Check if this app already has a running pm2 process
-  const existing = pm2List.find(
-    (p) => p.pm2_env?.cwd === projectPath || p.name === name,
-  );
+  // Clean up any existing PM2 process for this app
+  try {
+    execSync(`bash -lc 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
+      stdio: 'pipe', timeout: 5000,
+    });
+  } catch {}
 
-  if (existing) {
-    if (
-      existing.pm2_env?.cwd === projectPath &&
-      existing.pm2_env?.status === 'online'
-    ) {
-      const existingPort = parseInt(
-        existing.pm2_env?.PORT || (existing.pm2_env as any)?.env?.PORT || '0', 10
-      );
-      if (existingPort > 0 && !RESERVED_PORTS.has(existingPort)) {
-        // Verify port is actually listening by this pm2 process (not another service)
-        try {
-          const pid = (existing as { pid?: number }).pid;
-          const check = pid
-            ? `ss -tlnpH sport = :${existingPort} 2>/dev/null | grep -q 'pid=${pid},'`
-            : `ss -tlnH sport = :${existingPort} 2>/dev/null`;
-          execSync(check, {
-            stdio: 'pipe',
-            timeout: 3000,
-          });
-          console.log(`[shield] Reusing existing PM2 process "${existing.name}" on port ${existingPort}`);
-          return { port: existingPort };
-        } catch {
-          // Port not listening or owned by different process — fall through to restart
-        }
-      }
-    }
-    // Stale or wrong cwd — remove it
-    console.log(`[shield] Cleaning up stale PM2 process "${existing.name}" (status: ${existing.pm2_env?.status})`);
-    try {
-      execSync(`bash -lc 'pm2 delete ${JSON.stringify(existing.name)} 2>/dev/null'`, {
-        stdio: 'pipe',
-        timeout: 5000,
-      });
-    } catch {}
-  }
-
-  // C. Resolve port — guarantee no conflict
+  // Resolve port — guarantee no conflict
   let port = requestedPort;
-
-  function isPortOccupied(p: number): boolean {
-    try {
-      const out = execSync(`ss -tlnH sport = :${p}`, {
-        stdio: 'pipe',
-        timeout: 3000,
-        encoding: 'utf8',
-      });
-      return out.trim().length > 0;
-    } catch {
-      return false;
-    }
-  }
-
   if (isPortOccupied(port)) {
-    // Check if occupied by the same project
     let occupiedBySame = false;
     try {
       const files = fs.readdirSync(appsDir).filter((f) => f.endsWith('.json'));
@@ -203,133 +276,33 @@ function ensureAppProcess(
     } catch {}
 
     if (!occupiedBySame) {
-      console.log(`[shield] Port ${port} occupied by another project, finding alternative...`);
-      // Find next free port
-      let candidate = port + 1;
-      while (candidate <= 65535) {
-        if (!RESERVED_PORTS.has(candidate) && !isPortOccupied(candidate)) {
-          port = candidate;
-          break;
-        }
-        candidate++;
-      }
-      if (candidate > 65535) {
-        throw new Error('No free ports available');
-      }
+      port = findFreePort(port + 1);
     }
   }
 
-  // D. Start the process
-  try {
-    execSync(`bash -lc 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
-      stdio: 'pipe',
-      timeout: 5000,
-    });
-  } catch {}
-
-  // Detect start method
-  let hasStartScript = false;
-  let hasPackageJson = false;
-  let startScriptValue = '';
-  try {
-    const pkg = JSON.parse(fs.readFileSync(`${projectPath}/package.json`, 'utf8'));
-    hasPackageJson = true;
-    if (pkg.scripts && pkg.scripts.start) {
-      hasStartScript = true;
-      startScriptValue = pkg.scripts.start;
-    }
-  } catch {}
-
-  // For built projects (Vite, CRA, etc.), serve from the build output directory
-  // instead of the project root. The root index.html references raw source files
-  // (e.g. /src/main.jsx) which static servers can't transform.
-  let servePath = projectPath;
-  for (const outDir of ['dist', 'build', 'out', '.output/public']) {
-    const candidate = `${projectPath}/${outDir}`;
-    if (fs.existsSync(`${candidate}/index.html`)) {
-      servePath = candidate;
-      break;
-    }
+  // Start via shared helper
+  const result = startPm2Process(name, port, projectPath);
+  if (!result.started) {
+    throw new Error(`Failed to start PM2 process "${name}" on port ${port}`);
   }
 
-  // Determine if this is a static HTML site that needs a file server.
-  // If the start script just runs a plain node file (no framework server)
-  // and index.html exists, use npx serve instead — the node script likely
-  // won't bind to the right port or serve static files correctly.
-  const hasIndexHtml = fs.existsSync(`${servePath}/index.html`);
-  const isStaticSite = hasIndexHtml && (
-    !hasStartScript ||
-    /^node\s+\S+\.js$/.test(startScriptValue.trim())
-  );
-
-  let startCmd: string;
-  if (isStaticSite) {
-    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(servePath)}`;
-  } else if (hasStartScript) {
-    startCmd = `pm2 start bash --name ${JSON.stringify(name)} --cwd ${JSON.stringify(projectPath)} -- -c "export PORT=${port} && npm start"`;
-  } else {
-    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(name)} --cwd ${JSON.stringify(servePath)}`;
-  }
-
-  console.log(`[shield] Starting "${name}" on port ${port} (${isStaticSite ? 'static' : hasStartScript ? 'npm start' : 'serve fallback'})`);
-  execSync(`bash -lc '${startCmd}'`, {
-    stdio: 'pipe',
-    timeout: 30000,
-  });
-
-  try {
-    execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, {
-      stdio: 'pipe',
-      timeout: 5000,
-    });
-  } catch {}
-
-  // E. Health check — wait up to 8 seconds
-  // Accept ANY HTTP response (not just 200) so backend APIs that return 404 on / still pass
-  const maxWait = 8000;
-  const interval = 500;
-  let waited = 0;
-  let healthy = false;
-
-  while (waited < maxWait) {
-    if (isHttpAlive(port)) {
-      console.log(`[shield] Health check passed for "${name}" on port ${port} (after ${waited}ms)`);
-      healthy = true;
-      break;
-    }
-
-    // After 1.5s of failures, check if PM2 process crashed — no point polling a dead process
-    if (waited >= 1500 && waited % 1500 === 0) {
-      try {
-        const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
-          stdio: 'pipe', timeout: 5000, encoding: 'utf8',
-        });
-        const list = JSON.parse(raw);
-        const proc = list.find((p: any) => p.name === name);
-        if (proc?.pm2_env?.status === 'errored' || proc?.pm2_env?.status === 'stopped') {
-          console.error(`[shield] App "${name}" crashed during startup (PM2 status: ${proc.pm2_env.status})`);
-          break;
-        }
-      } catch {}
-    }
-
-    execSync('sleep 0.5', { stdio: 'pipe' });
-    waited += interval;
-  }
-
-  if (!healthy) {
-    // Collect diagnostic info before cleanup
+  // Health check — wait up to 8s with rich diagnostics
+  const healthResult = await waitForHealthy(port, 8000, 500);
+  if (!healthResult.healthy) {
     let diagnosis = '';
+    if (healthResult.httpStatus > 0) {
+      diagnosis = ` — HTTP ${healthResult.httpStatus}`;
+    }
+
+    // Check PM2 process status for crash diagnostics
     try {
       const raw = execSync(`bash -lc 'pm2 jlist 2>/dev/null'`, {
         stdio: 'pipe', timeout: 5000, encoding: 'utf8',
       });
       const list = JSON.parse(raw);
       const proc = list.find((p: any) => p.name === name);
-      const status = proc?.pm2_env?.status;
-
-      if (status === 'errored') {
-        diagnosis = ' — process crashed';
+      if (proc?.pm2_env?.status === 'errored') {
+        diagnosis += ' — process crashed';
         try {
           const logs = execSync(
             `bash -lc 'pm2 logs ${JSON.stringify(name)} --lines 5 --nostream --err 2>/dev/null'`,
@@ -338,23 +311,19 @@ function ensureAppProcess(
           const lastLine = logs.split('\n').filter(l => l.trim()).pop() || '';
           if (lastLine) diagnosis += `: ${lastLine.replace(/^\d+\|[^|]+\|\s*/, '')}`;
         } catch {}
-      } else if (status === 'online') {
-        diagnosis = ' — process running but not listening on expected port';
-      } else if (status) {
-        diagnosis = ` — PM2 status: ${status}`;
+      } else if (proc?.pm2_env?.status) {
+        diagnosis += ` — PM2 status: ${proc.pm2_env.status}`;
       }
     } catch {}
 
-    // Clean up
     try {
       execSync(`bash -lc 'pm2 delete ${JSON.stringify(name)} 2>/dev/null'`, {
-        stdio: 'pipe',
-        timeout: 5000,
+        stdio: 'pipe', timeout: 5000,
       });
     } catch {}
 
     throw new Error(
-      `App failed to start on port ${port} (health check timed out after ${maxWait / 1000}s${diagnosis})`
+      `App failed to start on port ${port} (health check timed out after 8s${diagnosis})`
     );
   }
 
@@ -362,9 +331,51 @@ function ensureAppProcess(
 }
 
 /**
+ * Find the next free port starting from a candidate.
+ */
+function findFreePort(startPort: number): number {
+  let candidate = startPort;
+  while (candidate <= 65535) {
+    if (!RESERVED_PORTS.has(candidate) && !isPortOccupied(candidate)) {
+      return candidate;
+    }
+    candidate++;
+  }
+  throw new Error('No free ports available');
+}
+
+// ---------------------------------------------------------------------------
+// Deployment Metrics — lightweight counters for observability
+// ---------------------------------------------------------------------------
+
+const deployMetrics = {
+  deploys: 0,
+  deploysSucceeded: 0,
+  deploysFailed: 0,
+  rollbacks: 0,
+  rollbacksSucceeded: 0,
+  rollbacksFailed: 0,
+  canaryPromotions: 0,
+  canaryPromotionsFailed: 0,
+  caddyReloadFailures: 0,
+  npmInstallFailures: 0,
+  snapshotFailures: 0,
+  lockContentions: 0,
+  startedAt: Date.now(),
+};
+
+/**
  * Register workflow routes on Hono app
  */
 export function registerWorkflowRoutes(app: Hono): void {
+
+  // GET /api/workflow/metrics — deployment observability
+  app.get('/api/workflow/metrics', (c) => {
+    return c.json({
+      ...deployMetrics,
+      uptimeMs: Date.now() - deployMetrics.startedAt,
+    });
+  });
   /**
    * POST /api/workflow/expose
    *
@@ -372,6 +383,7 @@ export function registerWorkflowRoutes(app: Hono): void {
    * enforces billing tier limits, generates Caddy config, and reloads.
    */
   app.post('/api/workflow/expose', async (c) => {
+    deployMetrics.deploys++;
     let body: {
       name?: string;
       port?: number;
@@ -458,58 +470,46 @@ export function registerWorkflowRoutes(app: Hono): void {
       }
     }
 
-    // ── Create deployment snapshot (isolate deployed code from dev) ──
-    // Every deploy takes a fresh snapshot of the current source code.
-    // The snapshot freezes the deployed state so dev edits don't affect live.
+    // ── Create versioned deployment snapshot ─────────────────────
+    // Every deploy takes a fresh snapshot into a timestamped version dir.
+    // A 'current' symlink points to the live version, enabling instant rollback.
     let servingPath = projectPath;
     const { home } = getUserInfo();
+    // isFirstDeploy is computed INSIDE the lock to prevent race conditions.
+    // Two concurrent deploys could both see isFirstDeploy=false, but only one
+    // gets the lock — the loser must re-evaluate after acquiring it.
+    let isFirstDeploy = true;
 
     if (projectPath) {
-      const deploymentsDir = `${home}/.ellulai/deployments`;
-      const deploymentPath = `${deploymentsDir}/${name}`;
+      const appDeployDir = `${home}/.ellulai/deployments/${name}`;
+      const currentLink = `${appDeployDir}/current`;
+      const versionDir = `${appDeployDir}/${Date.now()}`;
 
       try {
-        fs.mkdirSync(deploymentsDir, { recursive: true });
+        fs.mkdirSync(versionDir, { recursive: true });
 
-        // Kill existing deployed process — will restart from fresh snapshot
-        try {
-          execSync(`bash -lc 'pm2 delete ${JSON.stringify(name!)} 2>/dev/null'`, {
-            stdio: 'pipe', timeout: 15000,
-          });
-        } catch {}
-        // Kill orphan on previous port
-        try {
-          const prevMeta = JSON.parse(fs.readFileSync(`${appsDir}/${name}.json`, 'utf8'));
-          if (prevMeta.port) {
-            execSync(`fuser -k ${prevMeta.port}/tcp 2>/dev/null || true`, {
-              stdio: 'pipe', timeout: 3000,
-            });
-          }
-        } catch {}
-
-        // Create fresh snapshot of current project state
-        // Exclude node_modules and .git to keep snapshot fast and small
-        if (fs.existsSync(deploymentPath)) {
-          fs.rmSync(deploymentPath, { recursive: true, force: true });
-        }
-        fs.mkdirSync(deploymentPath, { recursive: true });
+        // Build snapshot WITHOUT killing old process (zero-downtime for redeploys)
         execSync(
-          `rsync -a --exclude='node_modules' --exclude='.git' ${JSON.stringify(projectPath + '/')} ${JSON.stringify(deploymentPath + '/')}`,
+          `rsync -a --exclude='node_modules' --exclude='.git' ${JSON.stringify(projectPath + '/')} ${JSON.stringify(versionDir + '/')}`,
           { stdio: 'pipe', timeout: 30000 }
         );
-        // Install production deps in snapshot if package.json exists
-        if (fs.existsSync(`${deploymentPath}/package.json`)) {
+        // Install production deps in snapshot if package.json exists.
+        // --prefer-offline avoids hung registry requests; 120s timeout covers slow VPSes.
+        if (fs.existsSync(`${versionDir}/package.json`)) {
           try {
-            execSync(`bash -lc 'cd ${JSON.stringify(deploymentPath)} && npm install --omit=dev 2>&1'`, {
-              stdio: 'pipe', timeout: 60000,
+            execSync(`bash -lc 'cd ${JSON.stringify(versionDir)} && npm install --omit=dev --prefer-offline 2>&1'`, {
+              stdio: 'pipe', timeout: 120000,
             });
-          } catch {}
+          } catch (npmErr) {
+            const err = npmErr as Error & { killed?: boolean; signal?: string };
+            const reason = err.killed ? `killed by timeout (${err.signal || 'SIGTERM'}) after 120s` : err.message;
+            console.error(`[shield] npm install failed in snapshot: ${reason}`);
+            deployMetrics.npmInstallFailures++;
+          }
 
-          // Strip hardcoded PORT=XXXX from start script — the deployment
-          // infrastructure provides PORT via environment variable, and a
-          // hardcoded value in the script prefix would override it.
+          // Strip hardcoded PORT=XXXX from start script
           try {
-            const pkgPath = `${deploymentPath}/package.json`;
+            const pkgPath = `${versionDir}/package.json`;
             const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
             if (pkg.scripts?.start && /\bPORT=\d+/.test(pkg.scripts.start)) {
               pkg.scripts.start = pkg.scripts.start.replace(/\bPORT=\d+\s*/g, '').trim();
@@ -518,47 +518,161 @@ export function registerWorkflowRoutes(app: Hono): void {
           } catch {}
         }
 
-        servingPath = deploymentPath;
-        console.log(`[shield] Created deployment snapshot: ${deploymentPath}`);
-      } catch (e) {
-        console.error(`[shield] Snapshot failed, serving from source: ${(e as Error).message}`);
-      }
-    }
-
-    // ── Inject CSS reset into deployment HTML (eliminates white border) ──
-    // Infrastructure-level fix: injects a <style data-ellulai-reset> tag into
-    // all index.html files. Idempotent — skips if already present.
-    if (servingPath) {
-      const CSS_RESET_MARKER = 'data-ellulai-reset';
-      const CSS_RESET_STYLE = `<style ${CSS_RESET_MARKER}>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}html,body,#root,#__next,#app{width:100%;height:100%;min-height:100vh}</style>`;
-      for (const htmlLoc of [servingPath, `${servingPath}/dist`, `${servingPath}/build`, `${servingPath}/out`]) {
-        const htmlPath = `${htmlLoc}/index.html`;
-        if (!fs.existsSync(htmlPath)) continue;
+        // Atomic symlink swap: create tmp link then rename over current
+        // rename() is atomic on POSIX — guarantees no window where 'current' is missing
+        const tmpLink = `${appDeployDir}/.current-tmp-${Date.now()}`;
+        fs.symlinkSync(versionDir, tmpLink);
         try {
-          let html = fs.readFileSync(htmlPath, 'utf8');
-          if (html.includes(CSS_RESET_MARKER)) continue;
-          if (html.includes('<head>')) {
-            html = html.replace('<head>', `<head>\n${CSS_RESET_STYLE}`);
-          } else if (/<head\s/.test(html)) {
-            html = html.replace(/<head\s[^>]*>/, `$&\n${CSS_RESET_STYLE}`);
-          } else if (html.includes('<html')) {
-            html = html.replace(/<html[^>]*>/, `$&\n<head>${CSS_RESET_STYLE}</head>`);
-          } else {
-            html = `${CSS_RESET_STYLE}\n${html}`;
+          fs.renameSync(tmpLink, currentLink);
+        } catch (renameErr) {
+          try { fs.unlinkSync(tmpLink); } catch {}
+          // Symlink swap failed — rollback state will be inconsistent.
+          // Serve from the new version dir directly (it's already built).
+          console.error(`[shield] Symlink swap failed: ${(renameErr as Error).message} — rollback unavailable for this deploy`);
+        }
+
+        // Purge old versions — keep last 3
+        try {
+          const entries = fs.readdirSync(appDeployDir)
+            .filter(e => /^\d+$/.test(e))
+            .sort((a, b) => parseInt(a) - parseInt(b));
+          const toRemove = entries.slice(0, Math.max(0, entries.length - 3));
+          for (const old of toRemove) {
+            fs.rmSync(`${appDeployDir}/${old}`, { recursive: true, force: true });
           }
-          fs.writeFileSync(htmlPath, html);
         } catch {}
+
+        servingPath = versionDir;
+        console.log(`[shield] Created deployment snapshot v${path.basename(versionDir)}`);
+      } catch (e) {
+        // Cleanup failed version dir
+        try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch {}
+        console.error(`[shield] Snapshot failed, serving from source: ${(e as Error).message}`);
+        deployMetrics.snapshotFailures++;
       }
     }
 
-    // ── Ensure app process is running (port ownership + lifecycle) ──
-    if (servingPath) {
+    // ── Blue-green deploy (zero-downtime for redeploys) ──────────
+    const lockFile = `/tmp/ellulai-deploy-${name}.lock`;
+    // Atomic concurrency guard: O_EXCL fails if file exists (no TOCTOU race)
+    try {
+      const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+    } catch {
+      // Lock exists — check if stale (>2 min = dead deployer)
       try {
-        const result = ensureAppProcess(name!, port, servingPath, appsDir);
-        port = result.port;
-      } catch (e) {
-        return c.json({ error: (e as Error).message }, 500);
+        const lockAge = Date.now() - (fs.statSync(lockFile).mtimeMs || 0);
+        if (lockAge < 120000) {
+          deployMetrics.lockContentions++;
+          deployMetrics.deploysFailed++;
+          return c.json({ error: 'Deploy already in progress' }, 409);
+        }
+        // Stale lock — atomic reclaim: unlink + re-create with O_EXCL.
+        // If another process also sees the stale lock, only one reclaim succeeds.
+        fs.unlinkSync(lockFile);
+        const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+      } catch {
+        deployMetrics.lockContentions++;
+        deployMetrics.deploysFailed++;
+        return c.json({ error: 'Deploy lock contention' }, 409);
       }
+    }
+
+    // Track canary state for cleanup on any error path
+    let canaryActive = false;
+    const canaryProcName = `${name}__canary`;
+    const cleanupCanary = () => {
+      if (!canaryActive) return;
+      try {
+        execSync(`bash -lc 'pm2 delete ${JSON.stringify(canaryProcName)} 2>/dev/null'`, {
+          stdio: 'pipe', timeout: 5000,
+        });
+      } catch {}
+      canaryActive = false;
+    };
+    const releaseLock = () => {
+      try { fs.unlinkSync(lockFile); } catch {}
+    };
+
+    try {
+      // Evaluate isFirstDeploy INSIDE the lock to prevent race conditions
+      isFirstDeploy = !isHttpAlive(port);
+
+      // Clean up stale canary from a crashed prior deploy (not the live process).
+      // A canary left from a failed deploy won't be serving on the live port.
+      try {
+        execSync(`bash -lc 'pm2 delete ${JSON.stringify(canaryProcName)} 2>/dev/null'`, {
+          stdio: 'pipe', timeout: 5000,
+        });
+      } catch {}
+
+      if (!isFirstDeploy && servingPath && servingPath !== projectPath) {
+        // ── Blue-green: old process stays alive, start canary alongside ──
+        const canaryPort = findFreePort(port + 1);
+
+        // Start canary process
+        const canaryResult = startPm2Process(canaryProcName, canaryPort, servingPath);
+        if (!canaryResult.started) throw new Error('Canary process failed to start');
+        canaryActive = true;
+
+        // Health check canary (500ms polls, 15s timeout)
+        const canaryCheck = await waitForHealthy(canaryPort, 15000, 500);
+
+        if (canaryCheck.healthy) {
+          // Canary is healthy — swap traffic
+          port = canaryPort;
+          // Old process will be cleaned up after Caddy config is written and reloaded (below)
+          // We defer the pm2 delete of the old process until after Caddy reload
+        } else {
+          // Canary failed — kill it, keep old process running
+          cleanupCanary();
+          releaseLock();
+          deployMetrics.deploysFailed++;
+          const reason = canaryCheck.httpStatus > 0
+            ? `HTTP ${canaryCheck.httpStatus}`
+            : 'no response';
+          return c.json({
+            error: `New version failed health check (${reason}) — old version still running`,
+          }, 500);
+        }
+      } else {
+        // First deploy or no snapshot — simple path
+        if (isFirstDeploy) {
+          // Kill existing process if any (first deploy, no live traffic to protect)
+          try {
+            execSync(`bash -lc 'pm2 delete ${JSON.stringify(name!)} 2>/dev/null'`, {
+              stdio: 'pipe', timeout: 15000,
+            });
+          } catch {}
+          // Kill orphan on previous port
+          try {
+            const prevMeta = JSON.parse(fs.readFileSync(`${appsDir}/${name}.json`, 'utf8'));
+            if (prevMeta.port) {
+              execSync(`fuser -k ${prevMeta.port}/tcp 2>/dev/null || true`, {
+                stdio: 'pipe', timeout: 3000,
+              });
+            }
+          } catch {}
+        }
+
+        if (servingPath) {
+          try {
+            const result = await ensureAppProcess(name!, port, servingPath, appsDir);
+            port = result.port;
+          } catch (e) {
+            releaseLock();
+            return c.json({ error: (e as Error).message }, 500);
+          }
+        }
+      }
+    } catch (e) {
+      cleanupCanary();
+      releaseLock();
+      deployMetrics.deploysFailed++;
+      return c.json({ error: (e as Error).message }, 500);
     }
 
     // ── Build domain ─────────────────────────────────────────────────
@@ -620,10 +734,20 @@ handle @app-${name} {${authBlock}
     }
 
     // ── Write Caddy config ───────────────────────────────────────────
+    // Save old config for rollback on Caddy reload failure (blue-green safety)
     const configFile = `${configDir}/${name}.caddy`;
+    let oldCaddyConfig = '';
+    try { oldCaddyConfig = fs.readFileSync(configFile, 'utf8'); } catch {}
+    let oldMetaContent = '';
+    const metaFile = `${appsDir}/${name}.json`;
+    try { oldMetaContent = fs.readFileSync(metaFile, 'utf8'); } catch {}
+
     try {
       fs.writeFileSync(configFile, caddyConfig);
     } catch (e) {
+      cleanupCanary();
+      releaseLock();
+      deployMetrics.deploysFailed++;
       return c.json({ error: `Failed to write Caddy config: ${(e as Error).message}` }, 500);
     }
 
@@ -646,12 +770,15 @@ handle @app-${name} {${authBlock}
       deploymentPath: servingPath !== projectPath ? servingPath : null,
     };
 
-    const metaFile = `${appsDir}/${name}.json`;
     try {
       fs.writeFileSync(metaFile, JSON.stringify(appMeta, null, 2));
     } catch (e) {
-      // Clean up Caddy config on metadata write failure
-      try { fs.unlinkSync(configFile); } catch {}
+      // Restore old Caddy config, clean up canary
+      if (oldCaddyConfig) { try { fs.writeFileSync(configFile, oldCaddyConfig); } catch {} }
+      else { try { fs.unlinkSync(configFile); } catch {} }
+      cleanupCanary();
+      releaseLock();
+      deployMetrics.deploysFailed++;
       return c.json({ error: `Failed to write app metadata: ${(e as Error).message}` }, 500);
     }
 
@@ -662,12 +789,18 @@ handle @app-${name} {${authBlock}
         timeout: 10000,
       });
     } catch (e) {
-      // Validation failed — clean up
-      try { fs.unlinkSync(configFile); } catch {}
-      try { fs.unlinkSync(metaFile); } catch {}
+      // Validation failed — restore old config state
+      if (oldCaddyConfig) { try { fs.writeFileSync(configFile, oldCaddyConfig); } catch {} }
+      else { try { fs.unlinkSync(configFile); } catch {} }
+      if (oldMetaContent) { try { fs.writeFileSync(metaFile, oldMetaContent); } catch {} }
+      else { try { fs.unlinkSync(metaFile); } catch {} }
+      cleanupCanary();
+      releaseLock();
+      deployMetrics.deploysFailed++;
       return c.json({ error: 'Caddy configuration invalid — rolled back' }, 500);
     }
 
+    let caddyReloadOk = false;
     try {
       // Use caddy reload (admin API) — works without root since shield runs as $SVC_USER.
       // systemctl reload requires root and fails silently when run as non-root.
@@ -675,10 +808,91 @@ handle @app-${name} {${authBlock}
         stdio: 'pipe',
         timeout: 10000,
       });
+      caddyReloadOk = true;
     } catch {
-      // Config is valid but reload failed — leave config in place
       console.error('[shield] Caddy reload failed after valid config write');
+      deployMetrics.caddyReloadFailures++;
     }
+
+    // ── Blue-green cleanup: retire old process after Caddy points to canary ──
+    // SAFETY: Only proceed if Caddy reload succeeded. If it failed, the old
+    // config is still active in memory — killing the old process would cause downtime.
+    if (canaryActive && !isFirstDeploy && servingPath && servingPath !== projectPath) {
+      if (!caddyReloadOk) {
+        // Caddy reload failed — abort blue-green. Restore old config so future
+        // reloads don't point to the (about to be killed) canary port.
+        console.error('[shield] Caddy reload failed during blue-green — aborting, keeping old process');
+        if (oldCaddyConfig) { try { fs.writeFileSync(configFile, oldCaddyConfig); } catch {} }
+        else { try { fs.unlinkSync(configFile); } catch {} }
+        if (oldMetaContent) { try { fs.writeFileSync(metaFile, oldMetaContent); } catch {} }
+        else { try { fs.unlinkSync(metaFile); } catch {} }
+        cleanupCanary();
+        releaseLock();
+        deployMetrics.deploysFailed++;
+        deployMetrics.caddyReloadFailures++;
+        return c.json({ error: 'Caddy reload failed — old version still running' }, 500);
+      }
+
+      // Grace period: let Caddy drain connections to old upstream (2s)
+      await sleep(2000);
+
+      // 1. Delete old canonical process — Caddy already routes to canary port
+      try {
+        execSync(`bash -lc 'pm2 delete ${JSON.stringify(name!)} 2>/dev/null'`, {
+          stdio: 'pipe', timeout: 5000,
+        });
+      } catch {}
+
+      // 2. Promote canary to canonical name: delete canary, immediately restart
+      //    under the canonical name on the SAME port. The ~100ms gap is absorbed
+      //    by Caddy's automatic retries (reverse_proxy retries on connect failure).
+      //    This ensures `pm2 list` shows the canonical name and the next deploy's
+      //    stale canary cleanup doesn't kill the live process.
+      canaryActive = false; // We're about to delete it intentionally
+      try {
+        execSync(`bash -lc 'pm2 delete ${JSON.stringify(canaryProcName)} 2>/dev/null'`, {
+          stdio: 'pipe', timeout: 5000,
+        });
+      } catch {}
+      const promoted = startPm2Process(name!, port, servingPath);
+      if (!promoted.started) {
+        console.error(`[shield] CRITICAL: Canary promotion failed for "${name}" on port ${port}`);
+        deployMetrics.canaryPromotionsFailed++;
+        // Caddy is pointing to this port — try one more time
+        await sleep(1000);
+        const retry = startPm2Process(name!, port, servingPath);
+        if (!retry.started) {
+          console.error(`[shield] CRITICAL: Canary promotion retry failed — port ${port} may be unserved`);
+        } else {
+          deployMetrics.canaryPromotions++;
+        }
+      } else {
+        deployMetrics.canaryPromotions++;
+      }
+
+      try { execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, { stdio: 'pipe', timeout: 5000 }); } catch {}
+    } else if (!caddyReloadOk) {
+      // First deploy with failed Caddy reload — retry once via systemctl as fallback.
+      // If caddy reload (admin API) failed, it may be a Caddy process issue, not a config issue
+      // (validation already passed above).
+      console.error('[shield] Caddy reload failed on first deploy — retrying via systemctl');
+      try {
+        await sleep(1000);
+        execSync('systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null', {
+          stdio: 'pipe', timeout: 15000,
+        });
+        caddyReloadOk = true;
+        console.log('[shield] Caddy reload succeeded on retry via systemctl');
+      } catch {
+        // Still failed — app is running but unreachable. Surface this clearly.
+        console.error('[shield] CRITICAL: Caddy reload retry failed — app running but not routable');
+        deployMetrics.caddyReloadFailures++;
+      }
+    }
+
+    // Release deploy lock
+    releaseLock();
+    deployMetrics.deploysSucceeded++;
 
     // ── Update ellulai.json in project root ───────────────────────
     if (projectPath) {
@@ -718,6 +932,10 @@ handle @app-${name} {${authBlock}
       ? ' (Dev Preview — only you can access this URL)'
       : '';
 
+    const caddyWarning = !caddyReloadOk
+      ? `  ⚠ Warning: Caddy reload failed — URL may not be reachable yet. Try: caddy reload`
+      : '';
+
     const message = [
       '',
       `App deployed!`,
@@ -726,6 +944,7 @@ handle @app-${name} {${authBlock}
       `  Stack:   ${appMeta.stack}`,
       ...(isCustom ? [`  Note:    Custom domain — ensure DNS points to this server`] : []),
       ...(isPreview ? [`  Tip:     Upgrade to Sovereign tier for public live URLs`] : []),
+      ...(caddyWarning ? [caddyWarning] : []),
       '',
     ].join('\n');
 
@@ -738,6 +957,258 @@ handle @app-${name} {${authBlock}
       stack: appMeta.stack,
       message,
     });
+  });
+
+  /**
+   * POST /api/workflow/rollback
+   *
+   * Rolls back a deployed app to the previous version snapshot.
+   * Swaps the 'current' symlink to the previous version and restarts PM2.
+   */
+  app.post('/api/workflow/rollback', async (c) => {
+    deployMetrics.rollbacks++;
+    const body = await c.req.json().catch(() => ({}));
+    const { name } = body as { name?: string };
+
+    if (!name) return c.json({ error: 'name is required' }, 400);
+
+    // Sanitize name same as expose
+    const safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '');
+    if (!safeName) return c.json({ error: 'Invalid app name' }, 400);
+
+    // Acquire deploy lock — prevents race with concurrent deploy/rollback
+    const lockFile = `/tmp/ellulai-deploy-${safeName}.lock`;
+    try {
+      const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+    } catch {
+      try {
+        const lockAge = Date.now() - (fs.statSync(lockFile).mtimeMs || 0);
+        if (lockAge < 120000) {
+          return c.json({ error: 'Deploy in progress — cannot rollback now' }, 409);
+        }
+        fs.unlinkSync(lockFile);
+        const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+      } catch {
+        return c.json({ error: 'Deploy lock contention' }, 409);
+      }
+    }
+    const releaseLock = () => { try { fs.unlinkSync(lockFile); } catch {} };
+
+    const { home, appsDir } = getUserInfo();
+    const appDeployDir = `${home}/.ellulai/deployments/${safeName}`;
+    const currentLink = `${appDeployDir}/current`;
+    const metaFile = `${appsDir}/${safeName}.json`;
+
+    if (!fs.existsSync(appDeployDir)) {
+      releaseLock();
+      return c.json({ error: 'No deployment versions found' }, 404);
+    }
+
+    // List version directories (numeric timestamps)
+    const versions = fs.readdirSync(appDeployDir)
+      .filter(e => /^\d+$/.test(e))
+      .sort((a, b) => parseInt(a) - parseInt(b));
+
+    if (versions.length < 2) {
+      releaseLock();
+      return c.json({ error: 'No previous version to roll back to' }, 400);
+    }
+
+    // Determine current and previous versions
+    const currentVersion = fs.existsSync(currentLink)
+      ? path.basename(fs.readlinkSync(currentLink))
+      : versions[versions.length - 1]!;
+    const currentIdx = versions.indexOf(currentVersion);
+    const previousIdx = currentIdx > 0 ? currentIdx - 1 : versions.length - 2;
+    const previousVersion = versions[previousIdx];
+    const previousDir = `${appDeployDir}/${previousVersion}`;
+
+    if (!fs.existsSync(previousDir)) {
+      releaseLock();
+      return c.json({ error: 'Previous version directory missing' }, 500);
+    }
+
+    // Read current app metadata for port and domain
+    let appMeta: Record<string, unknown> = {};
+    let port = 3000;
+    try {
+      appMeta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      port = (appMeta.port as number) || port;
+    } catch {}
+
+    // Atomic symlink swap
+    const tmpLink = `${appDeployDir}/.current-tmp-${Date.now()}`;
+    try {
+      fs.symlinkSync(previousDir, tmpLink);
+      fs.renameSync(tmpLink, currentLink);
+    } catch (e) {
+      try { fs.unlinkSync(tmpLink); } catch {}
+      releaseLock();
+      deployMetrics.rollbacksFailed++;
+      return c.json({ error: `Symlink swap failed: ${(e as Error).message}` }, 500);
+    }
+
+    // Kill existing processes (canonical + any leftover canary)
+    for (const proc of [safeName, `${safeName}__canary`]) {
+      try {
+        execSync(`bash -lc 'pm2 delete ${JSON.stringify(proc)} 2>/dev/null'`, {
+          stdio: 'pipe', timeout: 5000,
+        });
+      } catch {}
+    }
+
+    // Start from rolled-back version
+    const started = startPm2Process(safeName, port, previousDir);
+    if (!started.started) {
+      releaseLock();
+      deployMetrics.rollbacksFailed++;
+      return c.json({ error: 'Failed to start rolled-back version' }, 500);
+    }
+
+    // Health check the rolled-back version
+    const healthCheck = await waitForHealthy(port, 10000, 500);
+    if (!healthCheck.healthy) {
+      console.error(`[shield] Rollback health check failed (HTTP ${healthCheck.httpStatus})`);
+      // Don't abort — the process may still come up, and we've already swapped the symlink
+    }
+
+    // Update app metadata with new deployment path
+    try {
+      appMeta.deploymentPath = previousDir;
+      fs.writeFileSync(metaFile, JSON.stringify(appMeta, null, 2));
+    } catch {}
+
+    // Caddy reload (config points to same port, but ensures clean state)
+    let caddyOk = false;
+    try {
+      execSync('caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1', {
+        stdio: 'pipe', timeout: 10000,
+      });
+      caddyOk = true;
+    } catch {
+      // Retry via systemctl
+      try {
+        execSync('systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null', {
+          stdio: 'pipe', timeout: 15000,
+        });
+        caddyOk = true;
+      } catch {
+        console.error('[shield] Caddy reload failed during rollback — app may be unreachable');
+      }
+    }
+
+    try { execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, { stdio: 'pipe', timeout: 5000 }); } catch {}
+
+    releaseLock();
+    deployMetrics.rollbacksSucceeded++;
+
+    // Trigger heartbeat
+    try {
+      const pid = fs.readFileSync('/run/ellulai-enforcer.pid', 'utf8').trim();
+      if (pid) execSync(`kill -USR1 ${pid}`, { stdio: 'pipe', timeout: 2000 });
+    } catch {}
+
+    return c.json({
+      message: `Rolled back ${safeName} to version ${previousVersion}`,
+      version: previousVersion,
+      previousVersion: currentVersion,
+      healthy: healthCheck.healthy,
+      caddyReloaded: caddyOk,
+    });
+  });
+
+  /**
+   * POST /api/workflow/remove
+   *
+   * Removes a deployed app: stops PM2 processes, removes Caddy config,
+   * cleans up app metadata and deployment snapshots.
+   */
+  app.post('/api/workflow/remove', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const { name } = body as { name?: string };
+
+    if (!name) return c.json({ error: 'name is required' }, 400);
+
+    const safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '');
+    if (!safeName) return c.json({ error: 'Invalid app name' }, 400);
+
+    // Acquire deploy lock
+    const lockFile = `/tmp/ellulai-deploy-${safeName}.lock`;
+    try {
+      const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+    } catch {
+      try {
+        const lockAge = Date.now() - (fs.statSync(lockFile).mtimeMs || 0);
+        if (lockAge < 120000) {
+          return c.json({ error: 'Deploy in progress — cannot remove now' }, 409);
+        }
+        fs.unlinkSync(lockFile);
+        const fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+        fs.writeSync(fd, String(process.pid));
+        fs.closeSync(fd);
+      } catch {
+        return c.json({ error: 'Deploy lock contention' }, 409);
+      }
+    }
+    const releaseLock = () => { try { fs.unlinkSync(lockFile); } catch {} };
+
+    const { home, appsDir } = getUserInfo();
+
+    try {
+      // 1. Stop PM2 processes (canonical + canary)
+      for (const proc of [safeName, `${safeName}__canary`]) {
+        try {
+          execSync(`bash -lc 'pm2 delete ${JSON.stringify(proc)} 2>/dev/null'`, {
+            stdio: 'pipe', timeout: 10000,
+          });
+        } catch {}
+      }
+
+      // 2. Remove Caddy configs
+      try { fs.unlinkSync(`${SITES_DIR}/${safeName}.caddy`); } catch {}
+      try { fs.unlinkSync(`${APP_ROUTES_DIR}/${safeName}.caddy`); } catch {}
+
+      // 3. Remove app metadata
+      try { fs.unlinkSync(`${appsDir}/${safeName}.json`); } catch {}
+
+      // 4. Validate + reload Caddy
+      try {
+        execSync('caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile 2>&1', {
+          stdio: 'pipe', timeout: 10000,
+        });
+        execSync('caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1', {
+          stdio: 'pipe', timeout: 10000,
+        });
+      } catch (e) {
+        console.error(`[shield] Caddy reload after remove failed: ${(e as Error).message}`);
+      }
+
+      // 5. Remove deployment snapshots
+      const deployDir = `${home}/.ellulai/deployments/${safeName}`;
+      try { fs.rmSync(deployDir, { recursive: true, force: true }); } catch {}
+
+      // 6. Save PM2 state
+      try { execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, { stdio: 'pipe', timeout: 5000 }); } catch {}
+
+      releaseLock();
+
+      // 7. Trigger heartbeat
+      try {
+        const pid = fs.readFileSync('/run/ellulai-enforcer.pid', 'utf8').trim();
+        if (pid) execSync(`kill -USR1 ${pid}`, { stdio: 'pipe', timeout: 2000 });
+      } catch {}
+
+      return c.json({ message: `Deployment "${safeName}" removed` });
+    } catch (e) {
+      releaseLock();
+      return c.json({ error: (e as Error).message }, 500);
+    }
   });
 
   /**
@@ -823,7 +1294,9 @@ handle @app-${name} {${authBlock}
           );
           console.log(`${LOG} npm install complete`);
         } catch (npmErr) {
-          console.warn(`${LOG} npm install failed (non-fatal): ${npmErr}`);
+          const err = npmErr as Error & { killed?: boolean; signal?: string };
+          const reason = err.killed ? `killed by timeout (${err.signal || 'SIGTERM'}) after 120s` : (err as Error).message;
+          console.warn(`${LOG} npm install failed (non-fatal): ${reason}`);
         }
       }
 

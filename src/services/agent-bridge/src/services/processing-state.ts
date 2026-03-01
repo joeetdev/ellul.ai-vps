@@ -49,6 +49,23 @@ const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 export function startProcessing(threadId: string, session: string, project?: string, prompt?: string): void {
   const existing = processingStore.get(threadId);
   const now = Date.now();
+
+  // If this thread is already actively processing, preserve the original startedAt
+  // and accumulated state. This prevents the timer from resetting when auth auto-start
+  // or other subsystems call startProcessing on an already-running thread.
+  if (existing?.isProcessing) {
+    existing.session = session;
+    // Still update the ledger with the new prompt if provided
+    if (processingDb && prompt) {
+      try {
+        processingDb.prepare(
+          'INSERT OR REPLACE INTO processing_ledger (thread_id, session, project, prompt, started_at, pid) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(threadId, session, project ?? null, prompt, existing.startedAt, process.pid);
+      } catch {}
+    }
+    return;
+  }
+
   const entry: ProcessingEntry = {
     isProcessing: true,
     thinkingSteps: [],
@@ -71,14 +88,39 @@ export function startProcessing(threadId: string, session: string, project?: str
   console.log(`[ProcessingState] Started processing for thread ${threadId.substring(0, 8)}...`);
 }
 
+// Batch thinking step persistence — flush to SQLite at most every 2s to avoid
+// write amplification while still surviving mid-stream crashes.
+const THINKING_FLUSH_INTERVAL_MS = 2000;
+const dirtyThinkingThreads = new Set<string>();
+
+function flushThinkingSteps(): void {
+  if (!processingDb || dirtyThinkingThreads.size === 0) return;
+  for (const threadId of dirtyThinkingThreads) {
+    const entry = processingStore.get(threadId);
+    if (!entry || !entry.isProcessing) continue;
+    try {
+      processingDb.prepare(
+        'UPDATE processing_ledger SET thinking_steps = ?, streamed_text = ? WHERE thread_id = ?'
+      ).run(JSON.stringify(entry.thinkingSteps), entry.streamedText, threadId);
+    } catch {}
+  }
+  dirtyThinkingThreads.clear();
+}
+
+const thinkingFlushTimer = setInterval(flushThinkingSteps, THINKING_FLUSH_INTERVAL_MS);
+// Don't keep process alive just for this timer
+if (thinkingFlushTimer.unref) thinkingFlushTimer.unref();
+
 /**
  * Buffer a thinking step AND forward to all subscribers.
+ * Marks the thread as dirty for batched persistence to the processing ledger.
  */
 export function addThinkingStep(threadId: string, step: string): void {
   const entry = processingStore.get(threadId);
   if (!entry || !entry.isProcessing) return;
 
   entry.thinkingSteps.push(step);
+  dirtyThinkingThreads.add(threadId);
 
   // Forward to all subscribers
   const message = JSON.stringify({
@@ -122,12 +164,14 @@ export function broadcastToSubscribers(threadId: string, msg: Record<string, unk
 /**
  * Update accumulated streamed text and broadcast output to all subscribers.
  * Ensures reconnecting clients see in-progress streamed content.
+ * Marks thread as dirty for batched ledger persistence.
  */
 export function updateStreamedText(threadId: string, text: string): void {
   const entry = processingStore.get(threadId);
   if (!entry || !entry.isProcessing) return;
 
   entry.streamedText = text;
+  dirtyThinkingThreads.add(threadId);
 }
 
 /**
@@ -138,6 +182,8 @@ export function endProcessing(threadId: string, lastSeq?: number): void {
   const entry = processingStore.get(threadId);
   if (!entry) return;
 
+  // Flush any pending thinking steps before removing from ledger
+  dirtyThinkingThreads.delete(threadId);
   // Remove from persistent ledger (crash recovery no longer needed for this request)
   if (processingDb) {
     try { processingDb.prepare('DELETE FROM processing_ledger WHERE thread_id = ?').run(threadId); } catch {}

@@ -9,7 +9,7 @@
  * DEV_DOMAIN_PLACEHOLDER — callers replace these with actual domains.
  */
 
-import { PORTS } from '../shared/constants';
+import { PORTS, PREVIEW_PORT_MIN } from '../shared/constants';
 
 // ── Constants ──
 
@@ -18,7 +18,6 @@ const SHIELD_PORT = PORTS.SOVEREIGN_SHIELD;
 const TERM_PROXY_PORT = PORTS.TERM_PROXY;
 const FILE_API_PORT = PORTS.FILE_API;
 const AGENT_BRIDGE_PORT = PORTS.AGENT_BRIDGE;
-const PREVIEW_PORT = PORTS.PREVIEW;
 
 interface CorsConfig {
   methods: string;
@@ -210,9 +209,8 @@ export function generateCaddyHandlers(scope: "ai" | "app" | "all"): string {
 
   if (scope === "app" || scope === "all") {
     // Per-app routes (host-matched handlers written by ellulai-expose)
-    // Imported before @dev so app-specific hosts are matched first.
+    // Also imports dev.caddy which is dynamically written by preview.service.ts
     lines.push(...indent([`import /etc/caddy/app-routes.d/*.caddy`], 1));
-    lines.push(...devHandler());
   }
 
   lines.push(...indent([
@@ -267,33 +265,43 @@ function codeHandler(): Lines {
 }
 
 /**
- * Dev domain handler — user app preview proxy with auth gate.
+ * Generate initial dev.caddy route file content for provisioning.
+ * Written to /etc/caddy/app-routes.d/dev.caddy — updated at runtime by preview.service.ts.
  */
-function devHandler(): Lines {
-  return [
-    "",
-    `    @dev host DEV_DOMAIN_PLACEHOLDER`,
-    `    handle @dev {`,
-    ...indent([`@notAuth not path /_auth/*`], 2),
-    ...indent([`header @notAuth Content-Security-Policy "frame-ancestors 'self' ${CONSOLE_ORIGIN}"`], 2),
-    "",
-    `        # CRITICAL: Use route to enforce written order.`,
-    `        # Without route, Caddy's standard directive order runs 'uri' BEFORE 'forward_auth',`,
-    `        # which would strip _preview_token from the URI before sovereign-shield can read it.`,
-    ...indent([`route {`], 2),
-    ...forwardAuthBlock(3),
-    `            # Strip auth params before forwarding to user's app - prevents 404s from naive routers`,
-    ...indent([`uri query -_shield_session`], 3),
-    ...indent([`uri query -_preview_token`], 3),
-    ...indent([
-      `reverse_proxy localhost:${PREVIEW_PORT} {`,
-      `    header_up Host localhost`,
-      `    header_up X-Real-IP {remote_host}`,
-      `}`,
-    ], 3),
-    ...indent([`}`], 2),
-    `    }`,
-  ];
+export function generateInitialDevRoute(devDomain: string): string {
+  const port = PREVIEW_PORT_MIN; // Default first preview port
+  return `@dev host ${devDomain}
+handle @dev {
+    @notAuth not path /_auth/*
+    header @notAuth Content-Security-Policy "frame-ancestors 'self' ${CONSOLE_ORIGIN}"
+
+    route {
+        forward_auth localhost:${SHIELD_PORT} {
+            uri /api/auth/session
+            header_up Cookie {http.request.header.Cookie}
+            header_up Accept {http.request.header.Accept}
+            header_up X-PoP-Signature {http.request.header.X-PoP-Signature}
+            header_up X-PoP-Timestamp {http.request.header.X-PoP-Timestamp}
+            header_up X-PoP-Nonce {http.request.header.X-PoP-Nonce}
+            header_up User-Agent {http.request.header.User-Agent}
+            header_up Sec-Ch-Ua {http.request.header.Sec-Ch-Ua}
+            header_up Sec-Ch-Ua-Mobile {http.request.header.Sec-Ch-Ua-Mobile}
+            header_up Sec-Ch-Ua-Platform {http.request.header.Sec-Ch-Ua-Platform}
+            header_up Sec-Fetch-Dest {http.request.header.Sec-Fetch-Dest}
+            header_up Sec-Fetch-Mode {http.request.header.Sec-Fetch-Mode}
+            header_up X-Forwarded-Uri {uri}
+            header_up X-Forwarded-Host {host}
+            copy_headers X-Auth-User X-Auth-Tier X-Auth-Session
+        }
+        uri query -_shield_session
+        uri query -_preview_token
+        reverse_proxy localhost:${port} {
+            header_up Host localhost
+            header_up X-Real-IP {remote_host}
+        }
+    }
+}
+`;
 }
 
 /**
