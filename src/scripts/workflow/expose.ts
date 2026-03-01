@@ -1,3 +1,5 @@
+import { generateBashStackDetect } from '../../services/shared/framework';
+
 /**
  * Expose tool — thin client that delegates to Sovereign Shield.
  *
@@ -51,47 +53,7 @@ if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1024 ] || [ "$PORT" -gt 65535 ];
   error "Invalid port: $PORT (must be 1024-65535)"
 fi
 
-# ── Detect stack (harmless, runs in user space) ───────────────────
-PROJECT_PATH="$(pwd)"
-STACK="Unknown"
-if [ -f "$PROJECT_PATH/package.json" ]; then
-  if grep -q '"next"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Next.js"
-  elif grep -q '"nuxt"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Nuxt"
-  elif grep -q '"svelte"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Svelte"
-  elif grep -q '"vue"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Vue"
-  elif grep -q '"react"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="React"
-  elif grep -q '"express"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Express"
-  elif grep -q '"hono"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Hono"
-  elif grep -q '"fastify"' "$PROJECT_PATH/package.json" 2>/dev/null; then
-    STACK="Fastify"
-  else
-    STACK="Node.js"
-  fi
-  if [ -f "$PROJECT_PATH/tsconfig.json" ]; then
-    STACK="$STACK/TS"
-  fi
-elif [ -f "$PROJECT_PATH/requirements.txt" ] || [ -f "$PROJECT_PATH/pyproject.toml" ]; then
-  if grep -q "fastapi" "$PROJECT_PATH/requirements.txt" 2>/dev/null; then
-    STACK="FastAPI"
-  elif grep -q "flask" "$PROJECT_PATH/requirements.txt" 2>/dev/null; then
-    STACK="Flask"
-  elif grep -q "django" "$PROJECT_PATH/requirements.txt" 2>/dev/null; then
-    STACK="Django"
-  else
-    STACK="Python"
-  fi
-elif [ -f "$PROJECT_PATH/go.mod" ]; then
-  STACK="Go"
-elif [ -f "$PROJECT_PATH/Cargo.toml" ]; then
-  STACK="Rust"
-fi
+\${generateBashStackDetect()}
 
 # ── Send to privileged service ────────────────────────────────────
 BODY="{\\"name\\":\\"$NAME\\",\\"port\\":$PORT"

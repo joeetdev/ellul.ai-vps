@@ -57,7 +57,7 @@ import {
   buildClawSystemPrompt,
   getActiveProject,
 } from './services/context.service';
-import { sendToOpenClaw, type OpenClawChunk } from './services/openclaw-client.service';
+import { sendToOpenClaw, closeOpenClawConnection, type OpenClawChunk } from './services/openclaw-client.service';
 import { ensureProjectAgent, refreshProjectContext } from './services/openclaw-agent.service';
 import {
   getProviders,
@@ -71,6 +71,7 @@ import {
   sendToGeminiStreaming,
   hasPendingQuestion,
   respondToPendingQuestion,
+  abortThreadCommand,
   type CliResponse,
 } from './services/cli-streaming.service';
 import {
@@ -926,6 +927,21 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
         return;
       }
 
+      // ============ Abort Command ============
+      if (msgType === 'abort_command') {
+        const threadId = state.currentThreadId;
+        if (threadId) {
+          // Abort all session types: OpenCode SSE, CLI processes, and OpenClaw
+          const abortedCli = abortThreadCommand(threadId);
+          closeOpenClawConnection(threadId);
+          console.log(`[Bridge] Abort requested for thread ${threadId.substring(0, 8)}: cli=${abortedCli}`);
+          // End processing state so frontend clears the thinking spinner
+          endProcessing(threadId, getLastSeq(threadId));
+        }
+        ws.send(JSON.stringify({ type: 'abort_ack', threadId, timestamp: Date.now() }));
+        return;
+      }
+
       // ============ Command Execution ============
       if (msgType === 'command' && msg.content) {
         const userMessage = (msg.content as string).trim();
@@ -1223,6 +1239,21 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
           let cliResponse = await dispatchToCli(userMessage);
           let finalOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
             || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
+
+          // Echo detection: if the model just repeated the user's message back, retry once
+          const isEcho = finalOutput.trim().toLowerCase() === userMessage.trim().toLowerCase()
+            && cliResponse.tools.length === 0;
+          if (isEcho) {
+            console.log(`[Bridge] Echo detected — model repeated user input, retrying with explicit instruction`);
+            const retryMessage = `The user said: "${userMessage}"\n\nPlease actually execute this request. Do NOT just repeat it back. Use the appropriate tools (Bash, Read, Write, Edit) to accomplish the task. If they asked to deploy, run: sudo ellulai-expose <app_name> <port>`;
+            cliResponse = await dispatchToCli(retryMessage);
+            finalOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
+              || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
+            // If still echoing after retry, give a helpful fallback
+            if (finalOutput.trim().toLowerCase() === retryMessage.trim().toLowerCase() || finalOutput.trim().toLowerCase() === userMessage.trim().toLowerCase()) {
+              finalOutput = 'I wasn\'t able to process that request. Please try being more specific, or try switching to a different model.';
+            }
+          }
 
           // Preview health gate: poll file-api for readiness
           if (isPreviewableProject(project)) {

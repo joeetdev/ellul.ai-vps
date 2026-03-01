@@ -32,3 +32,19 @@ export {
   getServerCredentials,
   type ServerCredentials,
 } from './credentials';
+
+// Framework detection & registry
+export {
+  FRAMEWORKS,
+  detectFramework,
+  findAppRoot,
+  getStartCommand,
+  getInstallCommand,
+  resolveModule,
+  generateBashDetectFramework,
+  generateBashGetCommand,
+  generateBashWaitForInstall,
+  generateBashStackDetect,
+  type FrameworkDef,
+  type Runtime,
+} from './framework';

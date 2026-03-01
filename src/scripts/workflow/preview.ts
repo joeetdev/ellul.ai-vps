@@ -1,3 +1,5 @@
+import { generateBashDetectFramework, generateBashGetCommand, generateBashWaitForInstall } from '../../services/shared/framework';
+
 /**
  * Preview server script - serves user-selected app on its dedicated preview port.
  * Auto-detects framework and runs appropriate dev command.
@@ -376,119 +378,11 @@ PORT=$DEFAULT_PORT
 
 log() { echo "[$(date -Iseconds)] $1"; }
 
-# ── Framework detection ──────────────────────────────────────────────────
-detect_framework() {
-  local dir="$1"
+# ── Framework detection (generated from shared registry) ─────────────────
+\${generateBashDetectFramework()}
 
-  # Non-Node detection (before package.json check)
-  if [ ! -f "$dir/package.json" ]; then
-    if [ -f "$dir/Gemfile" ]; then
-      if grep -q 'rails' "$dir/Gemfile" 2>/dev/null; then echo "rails"
-      elif grep -q 'sinatra' "$dir/Gemfile" 2>/dev/null; then echo "sinatra"
-      elif grep -q 'hanami' "$dir/Gemfile" 2>/dev/null; then echo "ruby"
-      else echo "ruby"
-      fi
-      return
-    fi
-    if [ -f "$dir/manage.py" ] && { [ -f "$dir/requirements.txt" ] || [ -f "$dir/pyproject.toml" ]; }; then
-      echo "django" && return
-    fi
-    if [ -f "$dir/requirements.txt" ]; then
-      if grep -qi 'fastapi\\|uvicorn' "$dir/requirements.txt" 2>/dev/null; then echo "fastapi"
-      elif grep -qi 'flask' "$dir/requirements.txt" 2>/dev/null; then echo "flask"
-      elif grep -qi 'streamlit' "$dir/requirements.txt" 2>/dev/null; then echo "streamlit"
-      else echo "python"
-      fi
-      return
-    fi
-    if [ -f "$dir/pyproject.toml" ]; then echo "python" && return; fi
-    if [ -f "$dir/Cargo.toml" ]; then echo "rust" && return; fi
-    if [ -f "$dir/go.mod" ]; then echo "golang" && return; fi
-    if [ -f "$dir/mix.exs" ]; then
-      if grep -q 'phoenix' "$dir/mix.exs" 2>/dev/null; then echo "phoenix"
-      else echo "elixir"
-      fi
-      return
-    fi
-    if [ -f "$dir/pubspec.yaml" ]; then
-      if grep -q 'flutter' "$dir/pubspec.yaml" 2>/dev/null; then echo "flutter"
-      else echo "dart"
-      fi
-      return
-    fi
-    if [ -f "$dir/composer.json" ]; then
-      if grep -q 'laravel' "$dir/composer.json" 2>/dev/null; then echo "laravel"
-      else echo "php"
-      fi
-      return
-    fi
-    # Static HTML fallback (no package manager files)
-    if ls "$dir"/*.html >/dev/null 2>&1; then echo "static" && return; fi
-    echo "static" && return
-  fi
-
-  # Node.js: validate package.json
-  local pkg
-  pkg=$(cat "$dir/package.json" 2>/dev/null)
-  echo "$pkg" | node -e "try{JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'))}catch{process.exit(1)}" 2>/dev/null
-  if [ $? -ne 0 ]; then
-    echo "pending"
-    return
-  fi
-  if echo "$pkg" | grep -q '"next"'; then echo "next"
-  elif echo "$pkg" | grep -q '"nuxt"'; then echo "nuxt"
-  elif echo "$pkg" | grep -q '"vite"'; then echo "vite"
-  elif echo "$pkg" | grep -q '"vue"'; then echo "vue"
-  elif echo "$pkg" | grep -q '"react-scripts"'; then echo "cra"
-  elif echo "$pkg" | grep -q '"svelte"'; then echo "svelte"
-  elif echo "$pkg" | grep -q '"astro"'; then echo "astro"
-  elif echo "$pkg" | grep -q '"gatsby"'; then echo "gatsby"
-  elif echo "$pkg" | grep -q '"remix"'; then echo "remix"
-  elif echo "$pkg" | grep -q '"scripts"' && echo "$pkg" | grep -q '"dev"'; then echo "npm-dev"
-  # Fallback: check for non-Node markers alongside package.json
-  elif [ -f "$dir/Gemfile" ]; then
-    if grep -q 'rails' "$dir/Gemfile" 2>/dev/null; then echo "rails"
-    elif grep -q 'sinatra' "$dir/Gemfile" 2>/dev/null; then echo "sinatra"
-    else echo "ruby"
-    fi
-  else echo "static"
-  fi
-}
-
-# ── Framework → dev command ──────────────────────────────────────────────
-# Uses npx to invoke binaries directly, bypassing potentially broken npm scripts.
-get_dev_command() {
-  local framework="$1"
-  case "$framework" in
-    next)       echo "npx next dev -H 0.0.0.0 -p $PORT" ;;
-    nuxt)       echo "npx nuxi dev --port $PORT" ;;
-    vite)       echo "npx vite --port $PORT --host 0.0.0.0" ;;
-    vue)        echo "npx vue-cli-service serve --port $PORT" ;;
-    cra)        echo "PORT=$PORT npx react-scripts start" ;;
-    svelte)     echo "npx vite --port $PORT --host 0.0.0.0" ;;
-    astro)      echo "npx astro dev --port $PORT --host 0.0.0.0" ;;
-    gatsby)     echo "npx gatsby develop -p $PORT" ;;
-    remix)      echo "npx remix vite:dev --port $PORT --host 0.0.0.0" ;;
-    npm-dev)    echo "npm run dev" ;;
-    rails)      echo "bundle exec rails server -b 0.0.0.0 -p $PORT" ;;
-    sinatra)    echo "bundle exec ruby app.rb -p $PORT -o 0.0.0.0" ;;
-    ruby)       echo "bundle exec ruby app.rb" ;;
-    django)     echo "python manage.py runserver 0.0.0.0:$PORT" ;;
-    flask)      echo "flask run --host 0.0.0.0 --port $PORT" ;;
-    fastapi)    echo "uvicorn main:app --host 0.0.0.0 --port $PORT --reload" ;;
-    streamlit)  echo "streamlit run app.py --server.port $PORT --server.address 0.0.0.0" ;;
-    python)     echo "python app.py" ;;
-    rust)       echo "cargo run" ;;
-    golang)     echo "go run ." ;;
-    phoenix)    echo "mix phx.server" ;;
-    elixir)     echo "mix run --no-halt" ;;
-    flutter)    echo "flutter run -d web-server --web-port $PORT --web-hostname 0.0.0.0" ;;
-    dart)       echo "dart run" ;;
-    laravel)    echo "php artisan serve --host 0.0.0.0 --port $PORT" ;;
-    php)        echo "php -S 0.0.0.0:$PORT" ;;
-    *)          echo "" ;;
-  esac
-}
+# ── Framework → dev command (generated from shared registry) ─────────────
+\${generateBashGetCommand('dev')}
 
 # ── Process management ───────────────────────────────────────────────────
 kill_tree() {
@@ -528,104 +422,8 @@ port_in_use_by_other() {
   return 1
 }
 
-# ── Readiness gate ───────────────────────────────────────────────────────
-# For projects with package.json, wait until node_modules has the framework binary.
-# Returns 0 (ready) or 1 (not ready / timed out).
-wait_for_install() {
-  local dir="$1"
-  local framework="$2"
-
-  # Non-Node frameworks: handle their own package managers
-  case "$framework" in
-    rails|sinatra|ruby)
-      [ ! -f "$dir/Gemfile" ] && return 0
-      if [ ! -f "$dir/Gemfile.lock" ] || [ ! -d "$dir/vendor/bundle" ]; then
-        log "Running bundle install..."
-        cd "$dir" && bundle install 2>&1 | tail -5
-      fi
-      return 0
-      ;;
-    django|flask|fastapi|streamlit|python)
-      if [ -f "$dir/requirements.txt" ]; then
-        log "Running pip install..."
-        cd "$dir" && pip install -r requirements.txt 2>&1 | tail -5
-      fi
-      return 0
-      ;;
-    rust|golang)
-      return 0  # cargo run / go run handle deps automatically
-      ;;
-    phoenix|elixir)
-      [ ! -f "$dir/mix.exs" ] && return 0
-      if [ ! -f "$dir/mix.lock" ] || [ ! -d "$dir/deps" ]; then
-        log "Running mix deps.get..."
-        cd "$dir" && mix deps.get 2>&1 | tail -5
-      fi
-      return 0
-      ;;
-    flutter)
-      [ ! -f "$dir/pubspec.yaml" ] && return 0
-      if [ ! -d "$dir/.dart_tool" ]; then
-        log "Running flutter pub get..."
-        cd "$dir" && flutter pub get 2>&1 | tail -5
-      fi
-      return 0
-      ;;
-    dart)
-      [ ! -f "$dir/pubspec.yaml" ] && return 0
-      if [ ! -d "$dir/.dart_tool" ]; then
-        log "Running dart pub get..."
-        cd "$dir" && dart pub get 2>&1 | tail -5
-      fi
-      return 0
-      ;;
-    laravel|php)
-      [ ! -f "$dir/composer.json" ] && return 0
-      if [ ! -d "$dir/vendor" ]; then
-        log "Running composer install..."
-        cd "$dir" && composer install 2>&1 | tail -5
-      fi
-      return 0
-      ;;
-  esac
-
-  # Node.js frameworks: wait for node_modules
-  [ ! -f "$dir/package.json" ] && return 0
-
-  local expected_bin=""
-  case "$framework" in
-    vite|svelte|remix) expected_bin="node_modules/.bin/vite" ;;
-    next)     expected_bin="node_modules/.bin/next" ;;
-    cra)      expected_bin="node_modules/.bin/react-scripts" ;;
-    astro)    expected_bin="node_modules/.bin/astro" ;;
-    nuxt)     expected_bin="node_modules/.bin/nuxi" ;;
-    gatsby)   expected_bin="node_modules/.bin/gatsby" ;;
-    vue)      expected_bin="node_modules/.bin/vue-cli-service" ;;
-    npm-dev)  expected_bin="node_modules" ;;
-    *)        return 0 ;;
-  esac
-
-  if [ -e "$dir/$expected_bin" ]; then
-    return 0
-  fi
-
-  log "Waiting for install to complete ($expected_bin)..."
-  local waited=0
-  while [ $waited -lt $MAX_READINESS_WAIT ]; do
-    # Don't run npm install if another process is already doing it
-    if ! pgrep -f "npm install" >/dev/null 2>&1 && ! pgrep -f "npm exec" >/dev/null 2>&1; then
-      if [ ! -d "$dir/node_modules" ]; then
-        log "Running npm install..."
-        cd "$dir" && npm install 2>&1 | tail -5
-      fi
-    fi
-    [ -e "$dir/$expected_bin" ] && return 0
-    sleep 2
-    waited=$((waited + 2))
-  done
-  log "WARNING: Install did not complete within \${MAX_READINESS_WAIT}s"
-  return 1
-}
+# ── Readiness gate (generated from shared registry) ──────────────────────
+\${generateBashWaitForInstall()}
 
 # ── Vite config fixup (inline Node.js via heredoc) ───────────────────────
 # Ensures vite.config has allowedHosts and the correct framework plugin.

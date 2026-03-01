@@ -206,9 +206,21 @@ export class ThreadSSEHandler {
   }
 
   /**
-   * Destroy handler: clean up all resources and resolve with partial response.
+   * Destroy handler: clean up all resources, abort OpenCode session, and resolve with partial response.
    */
   destroy(): void {
+    // Send abort to OpenCode session so it stops processing
+    const abortReq = http.request({
+      hostname: '127.0.0.1',
+      port: OPENCODE_API_PORT,
+      path: `/session/${this.sessionId}/abort`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': 2 },
+    }, (res) => { res.resume(); this.log(`Abort on destroy: ${res.statusCode}`); });
+    abortReq.on('error', () => {});
+    abortReq.write('{}');
+    abortReq.end();
+
     this.finish();
   }
 
@@ -354,7 +366,12 @@ export class ThreadSSEHandler {
           this.log(`First reasoning: delta="${(delta || '').substring(0, 50)}", buffer="${this.reasoningBuffer.substring(0, 50)}"`);
         }
       } else if (partType === 'text') {
-        if (delta) {
+        // Filter out text that is just a reflection of the user's prompt
+        const textContent = delta || part.text || '';
+        const isPromptEcho = textContent.trim() && textContent.trim().toLowerCase() === this.message.trim().toLowerCase();
+        if (isPromptEcho) {
+          this.warn(`Filtered prompt echo from text part: "${textContent.substring(0, 50)}"`);
+        } else if (delta) {
           if (this.response.text.length === 0) this.response.text.push('');
           this.response.text[this.response.text.length - 1] += delta;
         } else if (part.text) {

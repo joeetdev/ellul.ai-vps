@@ -30,6 +30,59 @@ import { ThreadSSEHandler } from './thread-sse-handler';
 // Active SSE handlers — keyed by threadId for question routing
 const activeHandlers = new Map<string, ThreadSSEHandler>();
 
+// Active CLI processes — keyed by threadId for universal abort
+import { ChildProcess } from 'child_process';
+
+type CliTool = 'claude' | 'codex' | 'gemini' | 'opencode';
+
+interface TrackedProcess {
+  proc: ChildProcess;
+  tool: CliTool;
+}
+
+const activeProcesses = new Map<string, TrackedProcess>();
+
+/**
+ * Register a CLI process for a thread so it can be aborted.
+ */
+export function registerActiveProcess(threadId: string, proc: ChildProcess, tool: CliTool): void {
+  activeProcesses.set(threadId, { proc, tool });
+  proc.on('close', () => activeProcesses.delete(threadId));
+  proc.on('error', () => activeProcesses.delete(threadId));
+}
+
+/**
+ * Forcefully kill a process and its entire process group.
+ * Escalation: SIGINT/SIGTERM -> wait -> SIGKILL (process group).
+ *
+ * - Gemini CLI may not handle SIGTERM, so we lead with SIGINT.
+ * - All tools can leave orphan children, so we kill the process group (-pid).
+ * - SIGKILL is the last resort after a timeout.
+ */
+function killProcessTree(tracked: TrackedProcess): void {
+  const { proc, tool } = tracked;
+  if (proc.killed) return;
+  const pid = proc.pid;
+  if (!pid) return;
+
+  const tag = `[Abort][${tool}][pid=${pid}]`;
+
+  // Phase 1: Graceful — SIGINT for gemini (no SIGTERM handler), SIGTERM for others
+  const gracefulSignal = tool === 'gemini' ? 'SIGINT' : 'SIGTERM';
+  console.log(`${tag} Phase 1: sending ${gracefulSignal} to process group`);
+  try { process.kill(-pid, gracefulSignal); } catch { /* group may not exist */ }
+  try { proc.kill(gracefulSignal); } catch { /* already dead */ }
+
+  // Phase 2: After 3s, escalate — send SIGTERM to gemini (in case SIGINT wasn't enough),
+  // and SIGKILL the process group for everything
+  setTimeout(() => {
+    if (proc.killed) return;
+    console.log(`${tag} Phase 2: process still alive after 3s, sending SIGKILL to process group`);
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* already dead */ }
+    try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+  }, 3000);
+}
+
 /**
  * Check if a thread has a pending OpenCode question awaiting user response.
  */
@@ -44,8 +97,52 @@ export function respondToPendingQuestion(threadId: string, value: string): void 
   activeHandlers.get(threadId)?.answerQuestion(value);
 }
 
+/**
+ * Abort a running command for a thread. Handles all session types:
+ * - OpenCode SSE: destroys handler + aborts OpenCode session
+ * - Claude/Codex/Gemini/OpenCode one-shot: SIGTERMs the spawned CLI process
+ */
+export function abortThreadCommand(threadId: string): boolean {
+  let aborted = false;
+
+  // 1. Abort OpenCode SSE handler if active
+  const handler = activeHandlers.get(threadId);
+  if (handler) {
+    console.log(`[CLI] Aborting SSE handler for thread ${threadId.substring(0, 8)}`);
+    handler.destroy();
+    aborted = true;
+  }
+
+  // 2. Kill any active CLI process tree (claude, codex, gemini, opencode one-shot)
+  const tracked = activeProcesses.get(threadId);
+  if (tracked && !tracked.proc.killed) {
+    console.log(`[CLI] Killing ${tracked.tool} process tree (pid=${tracked.proc.pid}) for thread ${threadId.substring(0, 8)}`);
+    killProcessTree(tracked);
+    activeProcesses.delete(threadId);
+    aborted = true;
+  }
+
+  return aborted;
+}
+
 // Lazy AI flag file — touched when all background npm installs complete
 const LAZY_AI_READY_FLAG = '/var/lib/ellul.ai/lazy-ai-ready';
+
+/**
+ * Kill a detached process and its process group (for timeout handlers).
+ * Sends SIGTERM to process group, then SIGKILL after 3s.
+ */
+function killDetachedProcess(proc: ChildProcess): void {
+  const pid = proc.pid;
+  if (!pid) { try { proc.kill('SIGKILL'); } catch {} return; }
+  try { process.kill(-pid, 'SIGTERM'); } catch {}
+  try { proc.kill('SIGTERM'); } catch {}
+  setTimeout(() => {
+    if (proc.killed) return;
+    try { process.kill(-pid, 'SIGKILL'); } catch {}
+    try { proc.kill('SIGKILL'); } catch {}
+  }, 3000);
+}
 
 /**
  * Check if a CLI binary is available in PATH.
@@ -635,8 +732,11 @@ async function sendToOpencodeOneShot(
       cwd: workingDir,
       env: getCliSpawnEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     });
+    proc.unref();
     proc.stdin?.end();
+    if (threadId) registerActiveProcess(threadId, proc, 'opencode');
 
     let killed = false;
     let buffer = '';
@@ -727,7 +827,7 @@ async function sendToOpencodeOneShot(
     setTimeout(() => {
       if (!killed) {
         killed = true;
-        proc.kill('SIGTERM');
+        killDetachedProcess(proc);
         reject(new Error('OpenCode timed out'));
       }
     }, 5 * 60 * 1000);
@@ -824,8 +924,11 @@ async function sendToClaudeOneShot(
       cwd: workingDir,
       env: getIsolatedCliEnv(threadId),
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     });
+    proc.unref(); // Don't block parent exit
     proc.stdin?.end();
+    if (threadId) registerActiveProcess(threadId, proc, 'claude');
 
     let killed = false;
     let buffer = '';
@@ -929,7 +1032,7 @@ async function sendToClaudeOneShot(
     setTimeout(() => {
       if (!killed) {
         killed = true;
-        proc.kill('SIGTERM');
+        killDetachedProcess(proc);
         reject(new Error('Claude timeout (10 min limit reached)'));
       }
     }, CLI_ONESHOT_TIMEOUT_MS);
@@ -970,8 +1073,11 @@ async function sendToCodexOneShot(
       cwd: workingDir,
       env: getIsolatedCliEnv(threadId),
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     });
+    proc.unref();
     proc.stdin?.end();
+    if (threadId) registerActiveProcess(threadId, proc, 'codex');
 
     let killed = false;
     let buffer = '';
@@ -1076,7 +1182,7 @@ async function sendToCodexOneShot(
     setTimeout(() => {
       if (!killed) {
         killed = true;
-        proc.kill('SIGTERM');
+        killDetachedProcess(proc);
         reject(new Error('Codex timeout (10 min limit reached)'));
       }
     }, CLI_ONESHOT_TIMEOUT_MS);
@@ -1117,7 +1223,10 @@ async function sendToGeminiOneShot(
       cwd: workingDir,
       env: getIsolatedCliEnv(threadId),
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     });
+    proc.unref();
+    if (threadId) registerActiveProcess(threadId, proc, 'gemini');
     proc.stdin?.end();
 
     let killed = false;
@@ -1193,7 +1302,7 @@ async function sendToGeminiOneShot(
     setTimeout(() => {
       if (!killed) {
         killed = true;
-        proc.kill('SIGTERM');
+        killDetachedProcess(proc);
         reject(new Error('Gemini timeout (10 min limit reached)'));
       }
     }, CLI_ONESHOT_TIMEOUT_MS);

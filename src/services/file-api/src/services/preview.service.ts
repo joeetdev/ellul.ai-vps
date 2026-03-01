@@ -12,9 +12,240 @@ import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { HOME, ROOT_DIR } from '../config';
 import { PORTS, PREVIEW_PORT_MIN, PREVIEW_PORT_MAX, PREVIEW_LIMITS } from '../../../shared/constants';
+import { findAppRoot, detectFramework, getStartCommand, getInstallCommand, resolveModule } from '../../../shared/framework';
 
 const PREVIEW_FILE = `${HOME}/.ellulai/preview-app`;
 const PORT_REGISTRY_FILE = `${HOME}/.ellulai/preview-ports.json`;
+
+// ---------------------------------------------------------------------------
+// OpenAPI Runtime Preload — injects /openapi.json into Express/Fastify apps
+// ---------------------------------------------------------------------------
+
+const OPENAPI_PRELOAD_FILE = `${HOME}/.ellulai/openapi-preload.cjs`;
+const OPENAPI_PRELOAD_VERSION = 'v1';
+
+const OPENAPI_USER_DEPS = new Set([
+  'swagger-jsdoc', 'swagger-ui-express', '@fastify/swagger', '@fastify/swagger-ui',
+  '@nestjs/swagger', '@hono/zod-openapi', 'express-openapi-validator', 'tsoa',
+  'routing-controllers-openapi', 'express-oas-generator',
+]);
+
+const OPENAPI_PRELOAD_SCRIPT = `// ${OPENAPI_PRELOAD_VERSION}
+// Auto-injected OpenAPI spec generator for Express/Fastify apps.
+// Instruments app.listen() to add GET /openapi.json with discovered routes.
+'use strict';
+
+var Module = require('module');
+var origLoad = Module._load;
+var expressPatched = false;
+var fastifyPatched = false;
+
+function walkExpressStack(stack, basePath, depth) {
+  if (!stack || depth > 10) return [];
+  var routes = [];
+  for (var i = 0; i < stack.length; i++) {
+    try {
+      var layer = stack[i];
+      if (layer.route) {
+        var methods = Object.keys(layer.route.methods || {});
+        for (var m = 0; m < methods.length; m++) {
+          if (methods[m] !== '_all') {
+            routes.push({ method: methods[m].toUpperCase(), path: basePath + layer.route.path });
+          }
+        }
+      } else if (layer.name === 'router' && layer.handle && layer.handle.stack) {
+        var mountPath = '';
+        if (layer.regexp) {
+          var src = layer.regexp.source;
+          if (src && src !== '^\\\\/?$' && src !== '^\\\\/?(?=\\\\/|$)') {
+            mountPath = src
+              .replace(/^\\/\\^/, '').replace(/\\\\\\//g, '/').replace(/\\(\\?:\\(\\[\\^\\\\\\/(\\?:\\?\\)\\]\\+\\)\\)/g, ':param')
+              .replace(/\\(\\?:\\/\\)\\?\\$$/, '').replace(/\\$$/, '').replace(/\\(\\?=\\/\\|\\$\\)$/, '')
+              .replace(/\\\\/\\//g, '/');
+            if (layer.keys && layer.keys.length > 0) {
+              var paramIdx = 0;
+              mountPath = mountPath.replace(/:param/g, function() {
+                var k = layer.keys[paramIdx++];
+                return k ? ':' + k.name : ':param';
+              });
+            }
+          }
+        }
+        routes = routes.concat(walkExpressStack(layer.handle.stack, basePath + mountPath, depth + 1));
+      }
+    } catch (e) {}
+  }
+  return routes;
+}
+
+function buildSpec(routes) {
+  var paths = {};
+  for (var i = 0; i < routes.length; i++) {
+    var r = routes[i];
+    var p = r.path.replace(/:([^/]+)/g, '{$1}');
+    if (!p.startsWith('/')) p = '/' + p;
+    p = p.replace(/\\/\\//g, '/');
+    if (!paths[p]) paths[p] = {};
+    var method = r.method.toLowerCase();
+    if (!paths[p][method]) {
+      var op = { responses: { '200': { description: 'OK' } } };
+      var params = [];
+      var paramRe = /\\{([^}]+)\\}/g;
+      var pm;
+      while ((pm = paramRe.exec(p)) !== null) {
+        params.push({ name: pm[1], in: 'path', required: true, schema: { type: 'string' } });
+      }
+      if (params.length) op.parameters = params;
+      if (method === 'post' || method === 'put' || method === 'patch') {
+        op.requestBody = { content: { 'application/json': { schema: { type: 'object' } } } };
+      }
+      paths[p][method] = op;
+    }
+  }
+  return { openapi: '3.0.3', info: { title: 'API', version: '1.0.0' }, paths: paths };
+}
+
+function routeExists(app, method, routePath) {
+  try {
+    if (!app._router || !app._router.stack) return false;
+    for (var i = 0; i < app._router.stack.length; i++) {
+      var layer = app._router.stack[i];
+      if (layer.route && layer.route.path === routePath && layer.route.methods[method]) return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function patchExpress(origExpress) {
+  if (expressPatched) return origExpress;
+  expressPatched = true;
+  var wrapped = function() {
+    var app;
+    try { app = origExpress.apply(this, arguments); } catch (e) { return origExpress.apply(this, arguments); }
+    if (!app || typeof app.listen !== 'function') return app;
+    var origListen = app.listen;
+    app.listen = function() {
+      try {
+        if (!routeExists(app, 'get', '/openapi.json')) {
+          app.get('/openapi.json', function(req, res) {
+            try {
+              var routes = walkExpressStack(app._router ? app._router.stack : [], '', 0);
+              routes = routes.filter(function(r) { return r.path !== '/openapi.json'; });
+              res.json(buildSpec(routes));
+            } catch (e) {
+              res.json({ openapi: '3.0.3', info: { title: 'API', version: '1.0.0' }, paths: {} });
+            }
+          });
+        }
+      } catch (e) {}
+      return origListen.apply(this, arguments);
+    };
+    return app;
+  };
+  // Preserve all static properties
+  try {
+    var keys = Object.getOwnPropertyNames(origExpress);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k === 'length' || k === 'name' || k === 'prototype') continue;
+      try {
+        Object.defineProperty(wrapped, k, Object.getOwnPropertyDescriptor(origExpress, k) || { value: origExpress[k] });
+      } catch (e) {}
+    }
+    wrapped.prototype = origExpress.prototype;
+  } catch (e) {}
+  return wrapped;
+}
+
+function patchFastify(origFastify) {
+  if (fastifyPatched) return origFastify;
+  fastifyPatched = true;
+  var wrapped = function() {
+    var instance;
+    try { instance = origFastify.apply(this, arguments); } catch (e) { return origFastify.apply(this, arguments); }
+    if (!instance || typeof instance.listen !== 'function') return instance;
+    var tracked = [];
+    var methods = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options'];
+    for (var m = 0; m < methods.length; m++) {
+      (function(method) {
+        if (typeof instance[method] === 'function') {
+          var orig = instance[method];
+          instance[method] = function(routePath) {
+            try { if (typeof routePath === 'string') tracked.push({ method: method.toUpperCase(), path: routePath }); } catch (e) {}
+            return orig.apply(this, arguments);
+          };
+        }
+      })(methods[m]);
+    }
+    if (typeof instance.route === 'function') {
+      var origRoute = instance.route;
+      instance.route = function(opts) {
+        try {
+          if (opts && opts.url) {
+            var rm = Array.isArray(opts.method) ? opts.method : [opts.method];
+            for (var i = 0; i < rm.length; i++) tracked.push({ method: rm[i].toUpperCase(), path: opts.url });
+          }
+        } catch (e) {}
+        return origRoute.apply(this, arguments);
+      };
+    }
+    var origListen = instance.listen;
+    instance.listen = function() {
+      try {
+        var hasRoute = tracked.some(function(r) { return r.path === '/openapi.json'; });
+        if (!hasRoute) {
+          instance.get('/openapi.json', function(req, reply) {
+            try {
+              var filtered = tracked.filter(function(r) { return r.path !== '/openapi.json'; });
+              reply.send(buildSpec(filtered));
+            } catch (e) {
+              reply.send({ openapi: '3.0.3', info: { title: 'API', version: '1.0.0' }, paths: {} });
+            }
+          });
+        }
+      } catch (e) {}
+      return origListen.apply(this, arguments);
+    };
+    return instance;
+  };
+  try {
+    var keys = Object.getOwnPropertyNames(origFastify);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k === 'length' || k === 'name' || k === 'prototype') continue;
+      try {
+        Object.defineProperty(wrapped, k, Object.getOwnPropertyDescriptor(origFastify, k) || { value: origFastify[k] });
+      } catch (e) {}
+    }
+    wrapped.prototype = origFastify.prototype;
+  } catch (e) {}
+  return wrapped;
+}
+
+Module._load = function(request, parent, isMain) {
+  var result = origLoad.apply(this, arguments);
+  try {
+    if (request === 'express' && result && typeof result === 'function') {
+      return patchExpress(result);
+    }
+    if (request === 'fastify' && result && typeof result === 'function') {
+      return patchFastify(result);
+    }
+  } catch (e) {}
+  return result;
+};
+`;
+
+function ensureOpenApiPreload(): void {
+  try {
+    try {
+      const firstLine = fs.readFileSync(OPENAPI_PRELOAD_FILE, 'utf8').split('\n')[0];
+      if (firstLine === `// ${OPENAPI_PRELOAD_VERSION}`) return; // up to date
+    } catch {} // file missing
+    fs.mkdirSync(path.dirname(OPENAPI_PRELOAD_FILE), { recursive: true });
+    fs.writeFileSync(OPENAPI_PRELOAD_FILE, OPENAPI_PRELOAD_SCRIPT, 'utf8');
+  } catch {}
+}
 
 // Request ordering - ensures only the latest request is processed
 let latestRequestId = 0;
@@ -116,183 +347,61 @@ function resolvePreviewConfig(appPath: string, port: number): ResolveResult {
     } catch {}
   }
 
-  // 2. Convention detection — Node.js (package.json)
-  const pkgPath = path.join(appPath, 'package.json');
-  if (fs.existsSync(pkgPath)) {
-    const pkg = safeReadJsonSync<{
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-      scripts?: Record<string, string>;
-    }>(pkgPath);
-    if (pkg) {
-      const allDeps: Record<string, string> = { ...pkg.dependencies, ...pkg.devDependencies };
-      const nodeEnv: Record<string, string> = {
-        PORT: String(port),
-        HOST: '127.0.0.1',
-        NODE_ENV: 'development',
-        DANGEROUSLY_DISABLE_HOST_CHECK: 'true',
-      };
+  // 2. Shared framework detection
+  const appRoot = findAppRoot(appPath);
+  const fw = detectFramework(appRoot);
+  if (!fw) return { ok: false, reason: 'No recognized project structure found' };
 
-      // Framework-specific commands (ordered by priority)
-      const nodeFrameworks: Array<{ dep: string; cmd: string; desc: string }> = [
-        { dep: 'next',              cmd: `npx next dev -H 0.0.0.0 -p ${port}`,                    desc: 'Next.js' },
-        { dep: 'vite',              cmd: `npx vite --host 0.0.0.0 --port ${port}`,                desc: 'Vite' },
-        { dep: 'astro',             cmd: `npx astro dev --host 0.0.0.0 --port ${port}`,           desc: 'Astro' },
-        { dep: 'react-scripts',     cmd: `npx react-scripts start`,                               desc: 'Create React App' },
-        { dep: 'nuxt',              cmd: `npx nuxi dev --port ${port}`,                           desc: 'Nuxt' },
-        { dep: '@remix-run/dev',    cmd: `npx remix vite:dev --host 0.0.0.0 --port ${port}`,     desc: 'Remix' },
-        { dep: 'gatsby',            cmd: `npx gatsby develop -p ${port}`,                          desc: 'Gatsby' },
-        { dep: '@sveltejs/kit',     cmd: `npx vite dev --host 0.0.0.0 --port ${port}`,           desc: 'SvelteKit' },
-      ];
+  let { command, env } = getStartCommand(fw, port, 'dev');
 
-      for (const fw of nodeFrameworks) {
-        if (allDeps[fw.dep]) {
-          const lockFile = fs.existsSync(path.join(appPath, 'pnpm-lock.yaml'))
-            ? 'pnpm install' : fs.existsSync(path.join(appPath, 'yarn.lock'))
-            ? 'yarn install' : 'npm install';
-          return {
-            ok: true,
-            config: {
-              runtime: 'node',
-              install: lockFile,
-              command: fw.cmd,
-              env: nodeEnv,
-              source: 'convention',
-              description: fw.desc,
-            },
-          };
-        }
-      }
+  // Resolve FastAPI $MODULE with actual files
+  if (fw.id === 'fastapi') {
+    const mod = resolveModule(appRoot);
+    command = command.replace(/\bmain:app\b/, `${mod}:app`);
+  }
 
-      // Node.js fallback: npm scripts
-      const scripts = pkg.scripts || {};
-      const scriptName = scripts.dev ? 'dev' : scripts.start ? 'start' : scripts.serve ? 'serve' : null;
-      if (scriptName) {
-        const lockFile = fs.existsSync(path.join(appPath, 'pnpm-lock.yaml'))
-          ? 'pnpm install' : fs.existsSync(path.join(appPath, 'yarn.lock'))
-          ? 'yarn install' : 'npm install';
-        return {
-          ok: true,
-          config: {
-            runtime: 'node',
-            install: lockFile,
-            command: `npm run ${scriptName}`,
-            env: nodeEnv,
-            source: 'convention',
-            description: `npm run ${scriptName}`,
-          },
-        };
-      }
+  let install = getInstallCommand(fw, 'dev');
 
-      return { ok: false, reason: 'package.json found but no framework detected and no dev/start/serve script' };
+  // Prefer pnpm/yarn if lock file exists (Node.js only)
+  if (fw.runtime === 'node' && install) {
+    if (fs.existsSync(path.join(appRoot, 'pnpm-lock.yaml'))) {
+      install = 'pnpm install';
+    } else if (fs.existsSync(path.join(appRoot, 'yarn.lock'))) {
+      install = 'yarn install';
     }
   }
 
-  // 3. Python (requirements.txt or pyproject.toml)
-  const hasPyReqs = fs.existsSync(path.join(appPath, 'requirements.txt'));
-  const hasPyProject = fs.existsSync(path.join(appPath, 'pyproject.toml'));
-  if (hasPyReqs || hasPyProject) {
-    let pyContent = '';
+  // Inject OpenAPI preload for Express/Fastify apps without user-provided swagger
+  if (fw.runtime === 'node') {
     try {
-      if (hasPyReqs) pyContent = fs.readFileSync(path.join(appPath, 'requirements.txt'), 'utf8');
-      else pyContent = fs.readFileSync(path.join(appPath, 'pyproject.toml'), 'utf8');
+      const pkg = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8'));
+      const allDeps: Record<string, string> = { ...pkg.dependencies, ...pkg.devDependencies };
+      const shouldInjectOpenApi = (allDeps['express'] || allDeps['fastify']) &&
+        !Array.from(OPENAPI_USER_DEPS).some(dep => !!allDeps[dep]);
+      if (shouldInjectOpenApi) {
+        ensureOpenApiPreload();
+        env['NODE_OPTIONS'] = `--require ${OPENAPI_PRELOAD_FILE}`;
+      }
     } catch {}
-
-    const pyEnv: Record<string, string> = { PORT: String(port), HOST: '0.0.0.0' };
-    const pyInstall = hasPyReqs ? 'pip install -r requirements.txt' : 'pip install -e .';
-
-    if (/\b(fastapi|uvicorn)\b/i.test(pyContent)) {
-      // Try to find the main app module
-      const mainCandidates = ['main.py', 'app.py', 'server.py', 'api.py'];
-      const mainFile = mainCandidates.find(f => fs.existsSync(path.join(appPath, f))) || 'main.py';
-      const module = mainFile.replace('.py', '');
-      return { ok: true, config: { runtime: 'python', install: pyInstall, command: `uvicorn ${module}:app --host 0.0.0.0 --port ${port} --reload`, env: pyEnv, source: 'convention', description: 'FastAPI/Uvicorn' } };
-    }
-    if (/\bflask\b/i.test(pyContent)) {
-      return { ok: true, config: { runtime: 'python', install: pyInstall, command: `flask run --host 0.0.0.0 --port ${port}`, env: pyEnv, source: 'convention', description: 'Flask' } };
-    }
-    if (/\bdjango\b/i.test(pyContent)) {
-      return { ok: true, config: { runtime: 'python', install: pyInstall, command: `python manage.py runserver 0.0.0.0:${port}`, env: pyEnv, source: 'convention', description: 'Django' } };
-    }
-    if (/\bstreamlit\b/i.test(pyContent)) {
-      const appFile = fs.existsSync(path.join(appPath, 'app.py')) ? 'app.py' : 'main.py';
-      return { ok: true, config: { runtime: 'python', install: pyInstall, command: `streamlit run ${appFile} --server.port ${port} --server.address 0.0.0.0`, env: pyEnv, source: 'convention', description: 'Streamlit' } };
-    }
-    // Python fallback
-    const appFile = fs.existsSync(path.join(appPath, 'app.py')) ? 'app.py' : 'main.py';
-    return { ok: true, config: { runtime: 'python', install: pyInstall, command: `python ${appFile}`, env: pyEnv, source: 'convention', description: 'Python' } };
   }
 
-  // 4. Rust (Cargo.toml)
-  if (fs.existsSync(path.join(appPath, 'Cargo.toml'))) {
-    return { ok: true, config: { runtime: 'rust', install: null, command: 'cargo run', env: { PORT: String(port), HOST: '0.0.0.0' }, source: 'convention', description: 'Rust (cargo run)' } };
-  }
+  // Map runtime for PreviewConfig type compatibility
+  const runtimeMap: Record<string, PreviewConfig['runtime']> = {
+    node: 'node', python: 'python', ruby: 'ruby', rust: 'rust', go: 'go',
+    elixir: 'elixir', dart: 'dart', php: 'php', static: 'static', custom: 'custom',
+  };
 
-  // 5. Go (go.mod)
-  if (fs.existsSync(path.join(appPath, 'go.mod'))) {
-    return { ok: true, config: { runtime: 'go', install: null, command: 'go run .', env: { PORT: String(port), HOST: '0.0.0.0' }, source: 'convention', description: 'Go (go run)' } };
-  }
-
-  // 6. Ruby (Gemfile)
-  if (fs.existsSync(path.join(appPath, 'Gemfile'))) {
-    let gemContent = '';
-    try { gemContent = fs.readFileSync(path.join(appPath, 'Gemfile'), 'utf8'); } catch {}
-    const rubyEnv: Record<string, string> = { PORT: String(port), HOST: '0.0.0.0', RAILS_ENV: 'development', BINDING: '0.0.0.0' };
-    if (/\brails\b/i.test(gemContent)) {
-      return { ok: true, config: { runtime: 'ruby', install: 'bundle install', command: `bundle exec rails server -b 0.0.0.0 -p ${port}`, env: rubyEnv, source: 'convention', description: 'Rails' } };
-    }
-    if (/\bsinatra\b/i.test(gemContent)) {
-      return { ok: true, config: { runtime: 'ruby', install: 'bundle install', command: `bundle exec ruby app.rb -p ${port} -o 0.0.0.0`, env: rubyEnv, source: 'convention', description: 'Sinatra' } };
-    }
-    // Generic Ruby with Gemfile
-    return { ok: true, config: { runtime: 'ruby', install: 'bundle install', command: 'bundle exec ruby app.rb', env: rubyEnv, source: 'convention', description: 'Ruby' } };
-  }
-
-  // 7. Elixir (mix.exs)
-  if (fs.existsSync(path.join(appPath, 'mix.exs'))) {
-    let mixContent = '';
-    try { mixContent = fs.readFileSync(path.join(appPath, 'mix.exs'), 'utf8'); } catch {}
-    const elixirEnv: Record<string, string> = { PORT: String(port), MIX_ENV: 'dev', PHX_HOST: '0.0.0.0' };
-    if (/\bphoenix\b/i.test(mixContent)) {
-      return { ok: true, config: { runtime: 'elixir', install: 'mix deps.get', command: 'mix phx.server', env: elixirEnv, source: 'convention', description: 'Phoenix' } };
-    }
-    return { ok: true, config: { runtime: 'elixir', install: 'mix deps.get', command: 'mix run --no-halt', env: elixirEnv, source: 'convention', description: 'Elixir' } };
-  }
-
-  // 8. Dart/Flutter (pubspec.yaml)
-  if (fs.existsSync(path.join(appPath, 'pubspec.yaml'))) {
-    let pubContent = '';
-    try { pubContent = fs.readFileSync(path.join(appPath, 'pubspec.yaml'), 'utf8'); } catch {}
-    if (/\bflutter\b/i.test(pubContent)) {
-      return { ok: true, config: { runtime: 'dart', install: 'flutter pub get', command: `flutter run -d web-server --web-port ${port} --web-hostname 0.0.0.0`, env: { PORT: String(port) }, source: 'convention', description: 'Flutter' } };
-    }
-    return { ok: true, config: { runtime: 'dart', install: 'dart pub get', command: 'dart run', env: { PORT: String(port) }, source: 'convention', description: 'Dart' } };
-  }
-
-  // 9. PHP (composer.json or *.php files)
-  if (fs.existsSync(path.join(appPath, 'composer.json'))) {
-    let composerContent = '';
-    try { composerContent = fs.readFileSync(path.join(appPath, 'composer.json'), 'utf8'); } catch {}
-    const phpEnv: Record<string, string> = { PORT: String(port), PHP_CLI_SERVER_WORKERS: '4' };
-    if (/\blaravel\b/i.test(composerContent)) {
-      return { ok: true, config: { runtime: 'php', install: 'composer install', command: `php artisan serve --host 0.0.0.0 --port ${port}`, env: phpEnv, source: 'convention', description: 'Laravel' } };
-    }
-    return { ok: true, config: { runtime: 'php', install: 'composer install', command: `php -S 0.0.0.0:${port}`, env: phpEnv, source: 'convention', description: 'PHP' } };
-  }
-  // Bare PHP files without composer
-  try {
-    const files = fs.readdirSync(appPath);
-    if (files.some(f => f.endsWith('.php'))) {
-      return { ok: true, config: { runtime: 'php', install: null, command: `php -S 0.0.0.0:${port}`, env: { PORT: String(port), PHP_CLI_SERVER_WORKERS: '4' }, source: 'convention', description: 'PHP (built-in server)' } };
-    }
-  } catch {}
-
-  // 10. Static (index.html without package.json)
-  if (fs.existsSync(path.join(appPath, 'index.html'))) {
-    return { ok: true, config: { runtime: 'static', install: null, command: `npx serve -l ${port}`, env: { PORT: String(port) }, source: 'convention', description: 'Static (npx serve)' } };
-  }
-
-  return { ok: false, reason: 'No recognized project structure found (no package.json, requirements.txt, Cargo.toml, go.mod, Gemfile, mix.exs, pubspec.yaml, composer.json, or index.html)' };
+  return {
+    ok: true,
+    config: {
+      runtime: runtimeMap[fw.runtime] || 'custom',
+      install,
+      command,
+      env,
+      source: fw.runtime === 'custom' ? 'explicit' : 'convention',
+      description: fw.stackLabel,
+    },
+  };
 }
 
 /**
@@ -944,7 +1053,7 @@ export async function startPreview(appDirectory: string, requestId?: number): Pr
   const pathEnv = `${NVM_BIN}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`;
   const envExports = [
     `export PATH=${pathEnv}`,
-    ...Object.entries({ ...config.env }).map(([k, v]) => `export ${k}=${v}`),
+    ...Object.entries({ ...config.env }).map(([k, v]) => `export ${k}="${v}"`),
   ].join(' && ');
 
   // PM2 resilience flags

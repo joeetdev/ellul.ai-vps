@@ -17,6 +17,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import type { Hono } from 'hono';
 import { RESERVED_PORTS } from '../../../shared/constants';
+import { findAppRoot, detectFramework, getStartCommand, getInstallCommand, resolveModule } from '../../../shared/framework';
 
 const BILLING_TIER_FILE = '/etc/ellulai/billing-tier';
 const DOMAIN_FILE = '/etc/ellulai/domain';
@@ -125,47 +126,36 @@ function isPortOccupied(p: number): boolean {
 }
 
 /**
- * Start a pm2 process with smart start-method detection.
- * Handles npm start, static sites (npx serve), and plain Node entrypoints.
+ * Start a pm2 process with framework-agnostic detection.
+ * Uses the shared framework registry to detect the stack and build the start command.
+ * Handles Node.js, Ruby, Python, Go, Rust, Elixir, PHP, Dart, static sites, and more.
  */
 function startPm2Process(procName: string, port: number, projectPath: string): { started: boolean } {
-  let hasStartScript = false;
-  let startScriptValue = '';
-  try {
-    const pkg = JSON.parse(fs.readFileSync(`${projectPath}/package.json`, 'utf8'));
-    if (pkg.scripts?.start) {
-      hasStartScript = true;
-      startScriptValue = pkg.scripts.start;
-    }
-  } catch {}
+  const appRoot = findAppRoot(projectPath);
+  const fw = detectFramework(appRoot);
 
-  // For built projects (Vite, CRA, etc.), serve from the build output directory
-  let servePath = projectPath;
-  for (const outDir of ['dist', 'build', 'out', '.output/public']) {
-    const candidate = `${projectPath}/${outDir}`;
-    if (fs.existsSync(`${candidate}/index.html`)) {
-      servePath = candidate;
-      break;
-    }
+  if (!fw) {
+    // No framework detected AND no build output with index.html — fail with diagnostic
+    console.error(`[shield] No recognized framework in ${appRoot} — cannot start process`);
+    return { started: false };
   }
 
-  // Static HTML site detection: index.html exists AND no start script.
-  // If a start script exists, ALWAYS use it — `node server.js` could be
-  // an Express server, not a static file server.
-  const hasIndexHtml = fs.existsSync(`${servePath}/index.html`);
-  const isStaticSite = hasIndexHtml && !hasStartScript;
-
-  let startCmd: string;
-  if (isStaticSite) {
-    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(servePath)}`;
-  } else if (hasStartScript) {
-    startCmd = `pm2 start bash --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(projectPath)} -- -c "export PORT=${port} && npm start"`;
-  } else {
-    startCmd = `PORT=${port} pm2 start "npx -y serve -s . -l ${port}" --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(servePath)}`;
+  // Resolve FastAPI $MODULE with actual files
+  let { command, env } = getStartCommand(fw, port, 'production');
+  if (fw.id === 'fastapi') {
+    const mod = resolveModule(appRoot);
+    command = command.replace(/\bmain:app\b/, `${mod}:app`);
   }
 
+  // Build env export string for bash
+  const envExports = Object.entries(env)
+    .map(([k, v]) => `export ${k}=${JSON.stringify(v)}`)
+    .join(' && ');
+
+  const startCmd = `pm2 start bash --name ${JSON.stringify(procName)} --cwd ${JSON.stringify(appRoot)} -- -c "${envExports} && ${command}"`;
+
   try {
-    console.log(`[shield] Starting "${procName}" on port ${port} (${isStaticSite ? 'static' : hasStartScript ? 'npm start' : 'serve fallback'})`);
+    console.log(`[shield] Starting "${procName}" on port ${port} (${fw.id}: ${command})`);
     execSync(`bash -lc '${startCmd}'`, { stdio: 'pipe', timeout: 30000 });
     try { execSync(`bash -lc 'pm2 save --force 2>/dev/null'`, { stdio: 'pipe', timeout: 5000 }); } catch {}
     return { started: true };
@@ -244,7 +234,7 @@ async function ensureAppProcess(
     ).trim();
     if (pid && fs.existsSync(`/proc/${pid}/cwd`)) {
       const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
-      if (cwd === projectPath) {
+      if (cwd === projectPath || cwd.startsWith(projectPath + '/')) {
         console.log(`[shield] Fast-path: reusing healthy process on port ${requestedPort} (pid ${pid})`);
         return { port: requestedPort };
       }
@@ -493,29 +483,40 @@ export function registerWorkflowRoutes(app: Hono): void {
           `rsync -a --exclude='node_modules' --exclude='.git' ${JSON.stringify(projectPath + '/')} ${JSON.stringify(versionDir + '/')}`,
           { stdio: 'pipe', timeout: 30000 }
         );
-        // Install production deps in snapshot if package.json exists.
-        // --prefer-offline avoids hung registry requests; 120s timeout covers slow VPSes.
-        if (fs.existsSync(`${versionDir}/package.json`)) {
-          try {
-            execSync(`bash -lc 'cd ${JSON.stringify(versionDir)} && npm install --omit=dev --prefer-offline 2>&1'`, {
-              stdio: 'pipe', timeout: 120000,
-            });
-          } catch (npmErr) {
-            const err = npmErr as Error & { killed?: boolean; signal?: string };
-            const reason = err.killed ? `killed by timeout (${err.signal || 'SIGTERM'}) after 120s` : err.message;
-            console.error(`[shield] npm install failed in snapshot: ${reason}`);
-            deployMetrics.npmInstallFailures++;
+        // Install production deps in snapshot using framework-aware install command.
+        // 120s timeout covers slow VPSes. --prefer-offline for npm avoids hung registry requests.
+        {
+          const snapAppRoot = findAppRoot(versionDir);
+          const snapFw = detectFramework(snapAppRoot);
+          const installCmd = snapFw ? getInstallCommand(snapFw, 'production') : null;
+          if (installCmd) {
+            try {
+              // For npm: add --prefer-offline to avoid hung registry requests
+              const fullCmd = snapFw?.runtime === 'node'
+                ? `${installCmd} --prefer-offline`
+                : installCmd;
+              execSync(`bash -lc 'cd ${JSON.stringify(snapAppRoot)} && ${fullCmd} 2>&1'`, {
+                stdio: 'pipe', timeout: 120000,
+              });
+            } catch (installErr) {
+              const err = installErr as Error & { killed?: boolean; signal?: string };
+              const reason = err.killed ? `killed by timeout (${err.signal || 'SIGTERM'}) after 120s` : err.message;
+              console.error(`[shield] ${installCmd} failed in snapshot: ${reason}`);
+              deployMetrics.npmInstallFailures++;
+            }
           }
 
-          // Strip hardcoded PORT=XXXX from start script
-          try {
-            const pkgPath = `${versionDir}/package.json`;
-            const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-            if (pkg.scripts?.start && /\bPORT=\d+/.test(pkg.scripts.start)) {
-              pkg.scripts.start = pkg.scripts.start.replace(/\bPORT=\d+\s*/g, '').trim();
-              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-            }
-          } catch {}
+          // Strip hardcoded PORT=XXXX from start script (Node.js only)
+          if (snapFw?.runtime === 'node') {
+            try {
+              const pkgPath = `${snapAppRoot}/package.json`;
+              const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+              if (pkg.scripts?.start && /\bPORT=\d+/.test(pkg.scripts.start)) {
+                pkg.scripts.start = pkg.scripts.start.replace(/\bPORT=\d+\s*/g, '').trim();
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+              }
+            } catch {}
+          }
         }
 
         // Atomic symlink swap: create tmp link then rename over current

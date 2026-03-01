@@ -25,6 +25,7 @@ import {
   type UploadedFile,
 } from './services/files.service';
 import { detectApps } from './services/apps.service';
+import { analyzeRoutesFromSource } from './services/openapi-analyzer';
 import { getPreviewStatus, getPreviewHealth, setPreviewApp, startPreview, stopPreview, getProjectPort, releaseProjectPort, reconcilePortRegistry, cleanupOrphanedPreviews, getPreviewMetrics, ensureCaddyRoute } from './services/preview.service';
 import {
   listContextFiles,
@@ -955,6 +956,44 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // GET /api/deployment/:name/versions - List available deployment versions
+    if (req.method === 'GET' && pathname.match(/^\/api\/deployment\/[^/]+\/versions$/)) {
+      const parts = pathname.split('/');
+      const deployName = decodeURIComponent(parts[3] || '');
+
+      if (!deployName || !/^[a-z0-9][a-z0-9-]*$/.test(deployName)) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid deployment name' }));
+        return;
+      }
+
+      const deployPath = path.join(HOME, '.ellulai', 'deployments', deployName);
+      if (!fs.existsSync(deployPath)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Deployment not found', name: deployName }));
+        return;
+      }
+
+      // Read timestamp directories, resolve current symlink
+      const entries = fs.readdirSync(deployPath).filter(e => /^\d+$/.test(e)).sort((a, b) => Number(a) - Number(b));
+      let currentTs: string | null = null;
+      try {
+        const target = fs.readlinkSync(path.join(deployPath, 'current'));
+        currentTs = path.basename(target);
+      } catch { /* no current symlink */ }
+
+      const versions = entries.map((ts, i) => ({
+        id: ts,
+        label: `Version ${i + 1}`,
+        timestamp: Number(ts),
+        isCurrent: ts === currentTs,
+      }));
+
+      res.writeHead(200);
+      res.end(JSON.stringify({ versions }));
+      return;
+    }
+
     // GET /api/deployment/:name/tree - Get file tree for a deployment snapshot
     if (req.method === 'GET' && pathname.match(/^\/api\/deployment\/[^/]+\/tree$/)) {
       const parts = pathname.split('/');
@@ -973,7 +1012,22 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const tree = getTree(deployPath);
+      // Resolve version: ?version=<timestamp> or default to current symlink
+      const versionParam = parsedUrl.query.version as string | undefined;
+      let snapshotPath: string;
+      if (versionParam && /^\d+$/.test(versionParam)) {
+        snapshotPath = path.join(deployPath, versionParam);
+      } else {
+        snapshotPath = path.join(deployPath, 'current');
+      }
+
+      if (!fs.existsSync(snapshotPath)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Version not found', name: deployName }));
+        return;
+      }
+
+      const tree = getTree(snapshotPath);
       res.writeHead(200);
       res.end(JSON.stringify({ root: deployName, tree }));
       return;
@@ -1004,7 +1058,22 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const result = getFileContent(filePath, deployPath);
+      // Resolve version: ?version=<timestamp> or default to current symlink
+      const versionParam = parsedUrl.query.version as string | undefined;
+      let snapshotPath: string;
+      if (versionParam && /^\d+$/.test(versionParam)) {
+        snapshotPath = path.join(deployPath, versionParam);
+      } else {
+        snapshotPath = path.join(deployPath, 'current');
+      }
+
+      if (!fs.existsSync(snapshotPath)) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Version not found', name: deployName }));
+        return;
+      }
+
+      const result = getFileContent(filePath, snapshotPath);
       if (result.error) {
         res.writeHead(result.statusCode);
         res.end(JSON.stringify({ error: result.error }));
@@ -1387,6 +1456,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // GET /api/openapi-spec?app=<directory> - Probe running dev server for OpenAPI spec
+    // Three-layer discovery: 1) Probe running app  2) Node.js preload  3) Static analysis
     if (req.method === 'GET' && pathname === '/api/openapi-spec') {
       const appDir = parsedUrl.query.app as string;
       if (!appDir) {
@@ -1403,100 +1473,116 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // Check preview is running (use port-level health check, not PM2 status,
-      // because the preview may be started by the ellulai-preview bash script directly)
-      const previewHealth = getPreviewHealth();
-      if (!previewHealth.active || previewHealth.app !== resolvedDir) {
-        res.writeHead(200);
-        res.end(JSON.stringify({ found: false, reason: 'Preview not running for this app' }));
-        return;
-      }
+      const appPath = path.join(ROOT_DIR, resolvedDir);
 
-      // Get the app's configured port
+      // Check preview is running
+      const previewHealth = getPreviewHealth();
+      const canProbe = previewHealth.active && previewHealth.app === resolvedDir;
+
+      // Get the app's configured port and info
       const allApps = detectApps();
       const appInfo = allApps.find(a => a.directory === resolvedDir);
       const port = appInfo?.port ?? getProjectPort(resolvedDir);
 
-      // Check in-memory cache (path → spec, 30s TTL)
+      // Check in-memory cache (path → spec, 30s TTL) — covers both probe and static
       const cacheKey = `${resolvedDir}:${port}`;
       const cached = openApiSpecCache.get(cacheKey);
       if (cached && Date.now() - cached.timestamp < 30000) {
         res.writeHead(200);
-        res.end(JSON.stringify({ found: true, path: cached.path, spec: cached.spec }));
+        res.end(JSON.stringify({ found: true, path: cached.path, spec: cached.spec, source: cached.path === 'static-analysis' ? 'static' : 'probe' }));
         return;
       }
 
-      // Common OpenAPI spec paths across frameworks (deduped, ordered by popularity)
-      const specPaths = [
-        '/openapi.json',
-        '/swagger.json',
-        '/api-docs',
-        '/api-docs/swagger.json',
-        '/api-docs/openapi.json',
-        '/documentation/json',
-        '/docs/json',
-        '/api-json',
-        '/swagger-json',
-        '/doc',
-        '/v3/api-docs',
-        '/v2/api-docs',
-        '/api/openapi.json',
-        '/api/schema/',
-        '/schema/',
-        '/swagger/v1/swagger.json',
-        '/swagger/v2/swagger.json',
-        '/apispec.json',
-      ];
+      // Check static analysis cache
+      const staticCacheKey = `static:${resolvedDir}`;
+      const staticCached = openApiSpecCache.get(staticCacheKey);
 
-      // Probe all paths in parallel with 2s timeout each
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
+      // Layer 1: Probe running app for OpenAPI spec
+      if (canProbe) {
+        const specPaths = [
+          '/openapi.json',
+          '/swagger.json',
+          '/api-docs',
+          '/api-docs/swagger.json',
+          '/api-docs/openapi.json',
+          '/documentation/json',
+          '/docs/json',
+          '/api-json',
+          '/swagger-json',
+          '/doc',
+          '/v3/api-docs',
+          '/v2/api-docs',
+          '/api/openapi.json',
+          '/api/schema/',
+          '/schema/',
+          '/swagger/v1/swagger.json',
+          '/swagger/v2/swagger.json',
+          '/apispec.json',
+        ];
+
+        const timeout = setTimeout(() => {}, 5000);
+
+        try {
+          const results = await Promise.allSettled(
+            specPaths.map(async (specPath) => {
+              const ac = new AbortController();
+              const t = setTimeout(() => ac.abort(), 2000);
+              try {
+                const response = await fetch(`http://localhost:${port}${specPath}`, {
+                  signal: ac.signal,
+                  headers: { 'Accept': 'application/json' },
+                });
+                if (!response.ok) return null;
+                const text = await response.text();
+                const json = JSON.parse(text);
+                if (json.openapi || json.swagger) {
+                  return { path: specPath, spec: json };
+                }
+                return null;
+              } finally {
+                clearTimeout(t);
+              }
+            })
+          );
+
+          clearTimeout(timeout);
+
+          for (const result of results) {
+            if (result.status === 'fulfilled' && result.value) {
+              const { path: specPath, spec } = result.value;
+              openApiSpecCache.set(cacheKey, { path: specPath, spec, timestamp: Date.now() });
+              res.writeHead(200);
+              res.end(JSON.stringify({ found: true, path: specPath, spec, source: 'probe' }));
+              return;
+            }
+          }
+        } catch {
+          clearTimeout(timeout);
+          // Probing failed — fall through to static analysis
+        }
+      }
+
+      // Layer 3: Static source analysis (works for ALL languages, even before preview starts)
+      // Return cached static result if fresh
+      if (staticCached && Date.now() - staticCached.timestamp < 30000) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ found: true, path: staticCached.path, spec: staticCached.spec, source: 'static' }));
+        return;
+      }
 
       try {
-        const results = await Promise.allSettled(
-          specPaths.map(async (specPath) => {
-            const ac = new AbortController();
-            const t = setTimeout(() => ac.abort(), 2000);
-            try {
-              const response = await fetch(`http://localhost:${port}${specPath}`, {
-                signal: ac.signal,
-                headers: { 'Accept': 'application/json' },
-              });
-              if (!response.ok) return null;
-              const text = await response.text();
-              const json = JSON.parse(text);
-              // Validate it's actually an OpenAPI/Swagger spec
-              if (json.openapi || json.swagger) {
-                return { path: specPath, spec: json };
-              }
-              return null;
-            } finally {
-              clearTimeout(t);
-            }
-          })
-        );
-
-        clearTimeout(timeout);
-
-        // Find first successful result
-        for (const result of results) {
-          if (result.status === 'fulfilled' && result.value) {
-            const { path: specPath, spec } = result.value;
-            // Cache the result
-            openApiSpecCache.set(cacheKey, { path: specPath, spec, timestamp: Date.now() });
-            res.writeHead(200);
-            res.end(JSON.stringify({ found: true, path: specPath, spec }));
-            return;
-          }
+        const framework = appInfo?.framework || 'unknown';
+        const result = analyzeRoutesFromSource(appPath, framework);
+        if (result && result.routes.length > 0) {
+          openApiSpecCache.set(staticCacheKey, { path: 'static-analysis', spec: result.spec, timestamp: Date.now() });
+          res.writeHead(200);
+          res.end(JSON.stringify({ found: true, path: 'static-analysis', spec: result.spec, source: 'static' }));
+          return;
         }
+      } catch {}
 
-        res.writeHead(200);
-        res.end(JSON.stringify({ found: false, reason: 'No OpenAPI spec found at common paths' }));
-      } catch {
-        clearTimeout(timeout);
-        res.writeHead(200);
-        res.end(JSON.stringify({ found: false, reason: 'Failed to probe dev server' }));
-      }
+      res.writeHead(200);
+      res.end(JSON.stringify({ found: false, reason: 'No routes discovered' }));
       return;
     }
 

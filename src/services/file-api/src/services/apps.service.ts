@@ -9,9 +9,108 @@ import * as path from 'path';
 import { ROOT_DIR, FRAMEWORK_PATTERNS, DEFAULT_PORTS } from '../config';
 import { safeReadFile, safeReadDir, safeStat, safeJsonParse, safeExec } from '../utils';
 
+// ---------------------------------------------------------------------------
+// Non-Node Backend Detection Helpers
+// ---------------------------------------------------------------------------
+
+function findCsproj(dir: string): boolean {
+  try {
+    const entries = fs.readdirSync(dir);
+    if (entries.some(f => f.endsWith('.csproj') || f.endsWith('.sln'))) return true;
+    for (const e of entries) {
+      try {
+        const sub = path.join(dir, e);
+        if (fs.statSync(sub).isDirectory()) {
+          const subFiles = fs.readdirSync(sub);
+          if (subFiles.some(f => f.endsWith('.csproj'))) return true;
+        }
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
+function hasBackendPython(dir: string): boolean {
+  try {
+    const markers = ['requirements.txt', 'pyproject.toml'];
+    for (const m of markers) {
+      const fp = path.join(dir, m);
+      if (fs.existsSync(fp)) {
+        const content = fs.readFileSync(fp, 'utf8');
+        if (/\b(fastapi|flask|django|uvicorn|starlette|sanic|tornado)\b/i.test(content)) return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+function detectPythonFramework(dir: string): string {
+  try {
+    for (const m of ['requirements.txt', 'pyproject.toml']) {
+      const fp = path.join(dir, m);
+      if (fs.existsSync(fp)) {
+        const content = fs.readFileSync(fp, 'utf8');
+        if (/\bfastapi\b/i.test(content)) return 'fastapi';
+        if (/\bflask\b/i.test(content)) return 'flask';
+        if (/\bdjango\b/i.test(content)) return 'django';
+      }
+    }
+  } catch {}
+  return 'python';
+}
+
+function hasBackendRuby(dir: string): boolean {
+  try {
+    const fp = path.join(dir, 'Gemfile');
+    if (fs.existsSync(fp)) {
+      const content = fs.readFileSync(fp, 'utf8');
+      if (/\b(rails|sinatra|grape|roda)\b/i.test(content)) return true;
+    }
+  } catch {}
+  return false;
+}
+
+function detectRubyFramework(dir: string): string {
+  try {
+    const fp = path.join(dir, 'Gemfile');
+    if (fs.existsSync(fp)) {
+      const content = fs.readFileSync(fp, 'utf8');
+      if (/\brails\b/i.test(content)) return 'rails';
+      if (/\bsinatra\b/i.test(content)) return 'sinatra';
+    }
+  } catch {}
+  return 'ruby';
+}
+
+function detectPhpFramework(dir: string): string {
+  try {
+    const fp = path.join(dir, 'composer.json');
+    if (fs.existsSync(fp)) {
+      const content = fs.readFileSync(fp, 'utf8');
+      if (/laravel\/framework/i.test(content)) return 'laravel';
+    }
+  } catch {}
+  return 'php';
+}
+
+function detectElixirFramework(dir: string): string {
+  try {
+    const fp = path.join(dir, 'mix.exs');
+    if (fs.existsSync(fp)) {
+      const content = fs.readFileSync(fp, 'utf8');
+      if (/\bphoenix\b/i.test(content)) return 'phoenix';
+    }
+  } catch {}
+  return 'elixir';
+}
+
 // Frameworks that are typically frontend vs backend
 const FRONTEND_FRAMEWORKS = new Set(['nextjs', 'remix', 'astro', 'vite', 'cra', 'nuxt', 'vue', 'svelte', 'gatsby', 'static', 'html']);
-const BACKEND_FRAMEWORKS = new Set(['express', 'fastify', 'hono', 'koa', 'nestjs']);
+const BACKEND_FRAMEWORKS = new Set([
+  'express', 'fastify', 'hono', 'koa', 'nestjs',
+  'go', 'rust', 'dotnet', 'fastapi', 'flask', 'django', 'python',
+  'rails', 'sinatra', 'ruby', 'laravel', 'php', 'phoenix', 'elixir',
+]);
 
 /**
  * Determine app type from framework name.
@@ -114,6 +213,25 @@ export function detectApps(): AppInfo[] {
     }
     framework = framework || 'unknown';
 
+    // Non-Node backend detection from file markers
+    if (framework === 'unknown' && !hasPackageJson) {
+      if (fs.existsSync(path.join(projectPath, 'go.mod'))) {
+        framework = 'go';
+      } else if (fs.existsSync(path.join(projectPath, 'Cargo.toml'))) {
+        framework = 'rust';
+      } else if (findCsproj(projectPath)) {
+        framework = 'dotnet';
+      } else if (hasBackendPython(projectPath)) {
+        framework = detectPythonFramework(projectPath);
+      } else if (hasBackendRuby(projectPath)) {
+        framework = detectRubyFramework(projectPath);
+      } else if (fs.existsSync(path.join(projectPath, 'composer.json'))) {
+        framework = detectPhpFramework(projectPath);
+      } else if (fs.existsSync(path.join(projectPath, 'mix.exs'))) {
+        framework = detectElixirFramework(projectPath);
+      }
+    }
+
     // Get port from scripts or use default
     let port = getDefaultPort(framework);
 
@@ -184,6 +302,7 @@ export function detectApps(): AppInfo[] {
     // Stale false from ellulai.json shouldn't block if app is clearly previewable
     const explicitPreviewable = appConfig.previewable ?? pkgEllulai?.previewable;
     const detectedPreviewable = type === 'frontend'
+      || type === 'backend'
       || fs.existsSync(path.join(projectPath, 'index.html'))
       || (hasPackageJson && !!packageJson.scripts && !!(packageJson.scripts.dev || packageJson.scripts.start));
     const previewable = explicitPreviewable === true || detectedPreviewable;

@@ -104,6 +104,14 @@ export const FRAMEWORK_PATTERNS = {
     files: [],
     packageJson: ['hono'],
   },
+  nestjs: {
+    files: ['nest-cli.json'],
+    packageJson: ['@nestjs/core'],
+  },
+  koa: {
+    files: [],
+    packageJson: ['koa'],
+  },
   html: {
     files: ['index.html'],
     packageJson: [],
@@ -120,6 +128,8 @@ export const DEFAULT_PORTS: Record<string, number> = {
   express: 3000,
   fastify: 3000,
   hono: 3000,
+  nestjs: 3000,
+  koa: 3000,
   html: 3000,
   unknown: 3000,
 };
