@@ -185,72 +185,20 @@ function sendToThread(ws: WsClient, threadId: string | null, msg: Record<string,
 }
 
 // ---------------------------------------------------------------------------
-// Preview Health Gate — ensures agent keeps going until preview works
+// Preview Health Gate — polls file-api for preview readiness
 // ---------------------------------------------------------------------------
 
 import { execSync } from 'child_process';
-import { PREVIEW_PORT_MIN, PREVIEW_PORT_MAX, PREVIEW_LIMITS } from '../../shared/constants';
+import { PREVIEW_PORT_MIN, PREVIEW_PORT_MAX } from '../../shared/constants';
+import {
+  FILE_API_PORT,
+  HEALTH_GATE_TOTAL_MS,
+  HEALTH_GATE_INITIAL_DELAY_MS,
+  HEALTH_GATE_MAX_INTERVAL_MS,
+  HEALTH_GATE_BACKOFF_FACTOR,
+} from './config';
 
-const MAX_HEALTH_RETRIES = 3;
-const HEALTH_CHECK_DELAY_MS = 4000;
-
-/**
- * Get the preview port for a project from the port registry.
- */
-function getPreviewPort(project: string | null): number {
-  if (!project) return PREVIEW_PORT_MIN;
-  try {
-    const registryPath = path.join(path.dirname(PROJECTS_DIR), '.ellulai', 'preview-ports.json');
-    const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-    return registry[project] || PREVIEW_PORT_MIN;
-  } catch {
-    return PREVIEW_PORT_MIN;
-  }
-}
-
-interface HealthGateResult {
-  healthy: boolean;
-  httpStatus?: number;
-  error?: string;
-}
-
-/**
- * Check if the preview is healthy (returning 2xx/3xx).
- * Returns structured result with error details from pm2 logs if unhealthy.
- */
-function checkPreviewHealth(port: number = PREVIEW_PORT_MIN, project?: string | null): HealthGateResult {
-  const pm2Name = project ? `preview-${project}` : 'preview-unknown';
-  try {
-    // Check if anything is listening on the preview port
-    const statusOut = execSync(
-      `curl -s -o /dev/null -w '%{http_code}' -m 3 http://localhost:${port}/`,
-      { encoding: 'utf8', timeout: 5000 }
-    ).trim();
-    const httpStatus = parseInt(statusOut, 10);
-    if (httpStatus >= 200 && httpStatus < 400) {
-      return { healthy: true, httpStatus };
-    }
-
-    // Unhealthy — extract error from pm2 logs
-    let error = `Preview returned HTTP ${httpStatus}`;
-    try {
-      const logs = execSync(`pm2 logs ${JSON.stringify(pm2Name)} --nostream --lines 30 2>&1`, {
-        encoding: 'utf8', timeout: 5000,
-      });
-      // Extract the most useful error line
-      const errorLines = logs.split('\n').filter(l =>
-        /error|Error|ERR|SyntaxError|TypeError|ModuleBuildError|Cannot find|Module not found/i.test(l)
-      );
-      if (errorLines.length > 0) {
-        error += '\n\npm2 logs:\n' + errorLines.slice(0, 10).join('\n');
-      }
-    } catch {}
-    return { healthy: false, httpStatus, error };
-  } catch {
-    // curl failed entirely — nothing listening
-    return { healthy: false, error: `Preview is not responding on port ${port} (nothing listening)` };
-  }
-}
+const bridgeSleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /**
  * Check if a project is a previewable web app (has ellulai.json with previewable: true,
@@ -273,25 +221,122 @@ function isPreviewableProject(project: string | null): boolean {
   return false;
 }
 
-/**
- * Wait for the preview to potentially start up (cold starts take a few seconds).
- * Async to avoid blocking the event loop.
- */
-const bridgeSleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-async function waitForPreview(): Promise<void> { await bridgeSleep(HEALTH_CHECK_DELAY_MS); }
+/** Result from file-api /api/preview/health */
+interface PreviewHealthResponse {
+  app: string | null;
+  phase: 'idle' | 'installing' | 'starting' | 'ready' | 'error' | 'crashed';
+  active: boolean;
+  port: number;
+  error?: string;
+  logTail?: string;
+  healAttempts?: number;
+  healStatus?: 'healing' | 'exhausted' | null;
+}
+
+/** Outcome of the preview health polling loop */
+interface PreviewPollOutcome {
+  passed: boolean;
+  needsCodeFix: boolean;
+  error?: string;
+  phase?: string;
+}
+
+// Patterns that indicate code errors (fixable by the agent)
+const CODE_ERROR_PATTERNS = [
+  /SyntaxError/i,
+  /Module not found/i,
+  /Cannot resolve/i,
+  /Cannot find module/i,
+  /TypeError.*is not/i,
+  /ReferenceError/i,
+  /Unexpected token/i,
+  /Cannot read propert/i,
+  /is not defined/i,
+  /ModuleBuildError/i,
+];
+
+// Patterns that indicate infrastructure errors (auto-recoverable by daemon)
+const INFRA_ERROR_PATTERNS = [
+  /EADDRINUSE/i,
+  /text\/jsx/i,
+  /text\/tsx/i,
+  /missing.*plugin/i,
+  /MIME type/i,
+];
 
 /**
- * Health check result cache — avoid re-checking the same port+project within TTL.
- * Keyed by "port:project" to prevent stale results if two projects share a port edge case.
+ * Fetch preview health from file-api (non-blocking HTTP GET).
  */
-const healthCache = new Map<string, { result: HealthGateResult; ts: number }>();
-function checkPreviewHealthCached(port: number = PREVIEW_PORT_MIN, project?: string | null): HealthGateResult {
-  const key = `${port}:${project ?? ''}`;
-  const cached = healthCache.get(key);
-  if (cached && Date.now() - cached.ts < PREVIEW_LIMITS.HEALTH_CACHE_TTL_MS) return cached.result;
-  const result = checkPreviewHealth(port, project);
-  healthCache.set(key, { result, ts: Date.now() });
-  return result;
+async function fetchPreviewHealth(project?: string | null): Promise<PreviewHealthResponse | null> {
+  try {
+    const qs = project ? `?project=${encodeURIComponent(project)}` : '';
+    const url = `http://localhost:${FILE_API_PORT}/api/preview/health${qs}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) return null;
+    return await resp.json() as PreviewHealthResponse;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Poll file-api for preview health with exponential backoff.
+ * Returns whether the preview is ready, and if not, whether the agent can fix it.
+ */
+async function pollPreviewHealth(project: string | null): Promise<PreviewPollOutcome> {
+  const start = Date.now();
+  let interval = HEALTH_GATE_INITIAL_DELAY_MS;
+
+  while (Date.now() - start < HEALTH_GATE_TOTAL_MS) {
+    await bridgeSleep(interval);
+    interval = Math.min(interval * HEALTH_GATE_BACKOFF_FACTOR, HEALTH_GATE_MAX_INTERVAL_MS);
+
+    const health = await fetchPreviewHealth(project);
+    if (!health) continue; // file-api not responding, keep trying
+
+    if (health.phase === 'ready') {
+      return { passed: true, needsCodeFix: false };
+    }
+
+    if (health.phase === 'installing' || health.phase === 'starting') {
+      continue; // still booting, keep waiting
+    }
+
+    if (health.phase === 'idle') {
+      // No preview active — treat as passed (nothing to gate on)
+      return { passed: true, needsCodeFix: false };
+    }
+
+    // error or crashed — classify the error
+    const errorText = (health.error || '') + '\n' + (health.logTail || '');
+
+    const isInfra = INFRA_ERROR_PATTERNS.some(p => p.test(errorText));
+    if (isInfra) {
+      // Wait 5s for daemon auto-fix, then re-check once
+      await bridgeSleep(5000);
+      const recheck = await fetchPreviewHealth(project);
+      if (recheck?.phase === 'ready') {
+        return { passed: true, needsCodeFix: false };
+      }
+      return { passed: false, needsCodeFix: false, error: health.error, phase: health.phase };
+    }
+
+    const isCodeError = CODE_ERROR_PATTERNS.some(p => p.test(errorText));
+    if (isCodeError) {
+      return { passed: false, needsCodeFix: true, error: health.error, phase: health.phase };
+    }
+
+    // Unknown error — wait for daemon to try fixing
+    await bridgeSleep(5000);
+    const recheck = await fetchPreviewHealth(project);
+    if (recheck?.phase === 'ready') {
+      return { passed: true, needsCodeFix: false };
+    }
+    return { passed: false, needsCodeFix: true, error: health.error, phase: health.phase };
+  }
+
+  // Timeout while still installing/starting — treat as passed (don't retry CLI for timing)
+  return { passed: true, needsCodeFix: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,37 +1070,18 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
 
             let clawOutput = openclawResponse.text.trim() || 'Done';
 
-            // Health check gate for Claw mode
+            // Preview health gate: poll file-api for readiness
             if (isPreviewableProject(project)) {
-              const previewPort = getPreviewPort(project);
-              const pm2Name = `preview-${project || 'app'}`;
-              for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
-                // Skip wait on first attempt if cache already shows healthy
-                if (attempt > 0 || !checkPreviewHealthCached(previewPort, project).healthy) {
-                  await waitForPreview();
-                  // Invalidate cache after waiting — force fresh check
-                  healthCache.delete(`${previewPort}:${project ?? ''}`);
-                }
-                const health = checkPreviewHealthCached(previewPort, project);
-                if (health.healthy) {
-                  console.log(`[Bridge] Claw health gate passed (HTTP ${health.httpStatus}) for project ${project}`);
-                  break;
-                }
-
-                console.log(`[Bridge] Claw health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${health.error}`);
-                if (attempt >= MAX_HEALTH_RETRIES - 1) {
-                  clawOutput += `\n\n⚠️ Preview health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${health.error}`;
-                  break;
-                }
-
+              const outcome = await pollPreviewHealth(project);
+              if (!outcome.passed && outcome.needsCodeFix) {
                 sendToThread(ws, commandThreadId, {
                   type: 'output',
-                  content: `Preview returned an error (HTTP ${health.httpStatus || 'no response'}). Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                  content: 'Preview has a code error. Auto-fixing...',
                   threadId: commandThreadId,
                   timestamp: Date.now(),
                 });
 
-                const fixMessage = `The preview is broken. Fix this error and make sure the app works on localhost:${previewPort}.\n\nError details:\n${health.error}\n\nSteps:\n1. Read the error above carefully\n2. Fix the code that's causing the error\n3. Restart the preview: pm2 delete ${pm2Name} 2>/dev/null && pm2 start npm --name ${pm2Name} -- run dev\n4. Verify: curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort} must return 200`;
+                const fixMessage = `The preview has a code error. Fix it so the app starts correctly.\n\nError: ${outcome.error}\n\nDo NOT run pm2, npm run dev, or any process management commands. Just fix the code. The preview system will auto-restart.`;
 
                 try {
                   const fixResponse = await sendToOpenClaw(
@@ -1080,31 +1106,44 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
                   );
                   const fixOutput = fixResponse.text.trim();
                   if (fixOutput) clawOutput += '\n\n' + fixOutput;
+
+                  // Re-poll after fix
+                  const recheck = await pollPreviewHealth(project);
+                  if (!recheck.passed) {
+                    clawOutput += `\n\n⚠️ Preview still has an error after fix attempt: ${recheck.error || 'unknown'}`;
+                  } else {
+                    console.log(`[Bridge] Claw health gate passed after fix for project ${project}`);
+                  }
                 } catch (fixErr) {
-                  console.error(`[Bridge] Claw health gate fix attempt ${attempt + 1} failed:`, (fixErr as Error).message);
+                  console.error(`[Bridge] Claw health gate fix failed:`, (fixErr as Error).message);
                 }
+              } else if (!outcome.passed) {
+                clawOutput += '\n\nPreview is recovering automatically — the system is fixing an infrastructure issue.';
+              } else {
+                console.log(`[Bridge] Claw health gate passed for project ${project}`);
               }
             }
 
             // Deployment health gate: if a deployment happened, verify it works
             if (hasRecentDeployment()) {
-              for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
-                await waitForPreview(); // same delay for cold start
+              const MAX_DEPLOY_RETRIES = 3;
+              for (let attempt = 0; attempt < MAX_DEPLOY_RETRIES; attempt++) {
+                await bridgeSleep(4000);
                 const deployHealth = checkDeploymentHealth();
                 if (!deployHealth) {
                   console.log(`[Bridge] Claw deployment health gate passed — all deployed apps healthy`);
                   break;
                 }
 
-                console.log(`[Bridge] Claw deployment health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${deployHealth.error}`);
-                if (attempt >= MAX_HEALTH_RETRIES - 1) {
-                  clawOutput += `\n\n⚠️ Deployment health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${deployHealth.error}`;
+                console.log(`[Bridge] Claw deployment health gate FAILED (attempt ${attempt + 1}/${MAX_DEPLOY_RETRIES}): ${deployHealth.error}`);
+                if (attempt >= MAX_DEPLOY_RETRIES - 1) {
+                  clawOutput += `\n\n⚠️ Deployment health check failed after ${MAX_DEPLOY_RETRIES} attempts. Error: ${deployHealth.error}`;
                   break;
                 }
 
                 sendToThread(ws, commandThreadId, {
                   type: 'output',
-                  content: `Deployed app "${deployHealth.appName}" returned HTTP ${deployHealth.httpStatus || 'no response'}. Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                  content: `Deployed app "${deployHealth.appName}" returned HTTP ${deployHealth.httpStatus || 'no response'}. Auto-fixing... (attempt ${attempt + 2}/${MAX_DEPLOY_RETRIES})`,
                   threadId: commandThreadId,
                   timestamp: Date.now(),
                 });
@@ -1185,70 +1224,61 @@ wss.on('connection', ((ws: WsClient, req: { url?: string; _shieldSessionId?: str
           let finalOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim()
             || (cliResponse.tools.length > 0 ? 'Done (' + cliResponse.tools.join(', ') + ')' : 'Done');
 
-          // Health check gate: if project is previewable, verify the preview works.
-          // If it doesn't, send the error back to the CLI and let it fix the code.
+          // Preview health gate: poll file-api for readiness
           if (isPreviewableProject(project)) {
-            const previewPort = getPreviewPort(project);
-            const pm2Name = `preview-${project || 'app'}`;
-            for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
-              if (attempt > 0 || !checkPreviewHealthCached(previewPort, project).healthy) {
-                await waitForPreview();
-                healthCache.delete(`${previewPort}:${project ?? ''}`);
-              }
-              const health = checkPreviewHealthCached(previewPort, project);
-              if (health.healthy) {
-                console.log(`[Bridge] Health gate passed (HTTP ${health.httpStatus}) for project ${project}`);
-                break;
-              }
-
-              // Preview is broken — send fix request to CLI
-              console.log(`[Bridge] Health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${health.error}`);
-              if (attempt >= MAX_HEALTH_RETRIES - 1) {
-                // Final attempt failed — append error info to output so user sees it
-                finalOutput += `\n\n⚠️ Preview health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${health.error}`;
-                break;
-              }
-
-              // Tell user we're auto-fixing
+            const outcome = await pollPreviewHealth(project);
+            if (!outcome.passed && outcome.needsCodeFix) {
               sendToThread(ws, commandThreadId, {
                 type: 'output',
-                content: `Preview returned an error (HTTP ${health.httpStatus || 'no response'}). Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                content: 'Preview has a code error. Auto-fixing...',
                 threadId: commandThreadId,
                 timestamp: Date.now(),
               });
 
-              // Send fix request to CLI with the actual error
-              const fixMessage = `The preview is broken. Fix this error and make sure the app works on localhost:${previewPort}.\n\nError details:\n${health.error}\n\nSteps:\n1. Read the error above carefully\n2. Fix the code that's causing the error\n3. Restart the preview: pm2 delete ${pm2Name} 2>/dev/null && pm2 start npm --name ${pm2Name} -- run dev\n4. Verify: curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort} must return 200`;
+              const fixMessage = `The preview has a code error. Fix it so the app starts correctly.\n\nError: ${outcome.error}\n\nDo NOT run pm2, npm run dev, or any process management commands. Just fix the code. The preview system will auto-restart.`;
 
               try {
                 cliResponse = await dispatchToCli(fixMessage);
                 const fixOutput = cliResponse.text.filter(t => t.trim()).join('\n\n').trim();
                 if (fixOutput) finalOutput += '\n\n' + fixOutput;
+
+                // Re-poll after fix
+                const recheck = await pollPreviewHealth(project);
+                if (!recheck.passed) {
+                  finalOutput += `\n\n⚠️ Preview still has an error after fix attempt: ${recheck.error || 'unknown'}`;
+                } else {
+                  console.log(`[Bridge] Health gate passed after fix for project ${project}`);
+                }
               } catch (fixErr) {
-                console.error(`[Bridge] Health gate fix attempt ${attempt + 1} failed:`, (fixErr as Error).message);
+                console.error(`[Bridge] Health gate fix failed:`, (fixErr as Error).message);
               }
+            } else if (!outcome.passed) {
+              finalOutput += '\n\nPreview is recovering automatically — the system is fixing an infrastructure issue.';
+            } else {
+              console.log(`[Bridge] Health gate passed for project ${project}`);
             }
           }
 
           // Deployment health gate: if a deployment happened, verify it works
           if (hasRecentDeployment()) {
-            for (let attempt = 0; attempt < MAX_HEALTH_RETRIES; attempt++) {
-              await waitForPreview(); // same delay for cold start
+            const MAX_DEPLOY_RETRIES = 3;
+            for (let attempt = 0; attempt < MAX_DEPLOY_RETRIES; attempt++) {
+              await bridgeSleep(4000);
               const deployHealth = checkDeploymentHealth();
               if (!deployHealth) {
                 console.log(`[Bridge] Deployment health gate passed — all deployed apps healthy`);
                 break;
               }
 
-              console.log(`[Bridge] Deployment health gate FAILED (attempt ${attempt + 1}/${MAX_HEALTH_RETRIES}): ${deployHealth.error}`);
-              if (attempt >= MAX_HEALTH_RETRIES - 1) {
-                finalOutput += `\n\n⚠️ Deployment health check failed after ${MAX_HEALTH_RETRIES} attempts. Error: ${deployHealth.error}`;
+              console.log(`[Bridge] Deployment health gate FAILED (attempt ${attempt + 1}/${MAX_DEPLOY_RETRIES}): ${deployHealth.error}`);
+              if (attempt >= MAX_DEPLOY_RETRIES - 1) {
+                finalOutput += `\n\n⚠️ Deployment health check failed after ${MAX_DEPLOY_RETRIES} attempts. Error: ${deployHealth.error}`;
                 break;
               }
 
               sendToThread(ws, commandThreadId, {
                 type: 'output',
-                content: `Deployed app "${deployHealth.appName}" returned HTTP ${deployHealth.httpStatus || 'no response'}. Auto-fixing... (attempt ${attempt + 2}/${MAX_HEALTH_RETRIES})`,
+                content: `Deployed app "${deployHealth.appName}" returned HTTP ${deployHealth.httpStatus || 'no response'}. Auto-fixing... (attempt ${attempt + 2}/${MAX_DEPLOY_RETRIES})`,
                 threadId: commandThreadId,
                 timestamp: Date.now(),
               });

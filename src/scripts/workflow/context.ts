@@ -75,20 +75,11 @@ Do NOT deploy or redeploy unless the user explicitly asks — they may just be i
    - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l \$PREVIEW_PORT\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:\$PREVIEW_PORT)
-5. **REQUIRED CSS RESET**: ALWAYS create a global CSS file with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\\\`
-   Import location depends on framework:
-   - Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
-   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document in App Router)
-   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
-   - Astro: src/styles/global.css → import in layout
-   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
-   - CRA: src/index.css → import in src/index.tsx
-   - Remix: app/globals.css → add to links() in app/root.tsx
-   NEVER put resets as inline styles on <body> — some bundlers strip them.
-6. **REQUIRED**: ALWAYS \\\`pm2 delete preview-\$DIR_NAME 2>/dev/null\\\` before starting a new preview to avoid stale processes
-7. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview-\$DIR_NAME-- run dev\\\` or \\\`pm2 start "npx serve -l \$PREVIEW_PORT" --name preview\\\`)
-8. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
-9. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \\\`npm install\\\`. The preview auto-detects your framework and starts the server on port \$PREVIEW_PORT.
+After making changes, the preview URL is: https://$DEV_DOMAIN
 
 ## Deployment (ONLY when user EXPLICITLY asks — never assume)
 The preview (assigned port) = live source code. The deployed site (port 3001+) = frozen snapshot.
@@ -107,7 +98,7 @@ Only deploy/redeploy when the CURRENT message says "deploy", "redeploy", "go liv
 2. Build: \\\`npm run build\\\` (if applicable — skip for static HTML)
 3. \\\`ellulai-expose NAME PORT\\\` — using the SAME name and port from ellulai.json
 4. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
-The command handles everything: fresh snapshot, PM2 restart, Caddy reload. Do NOT manually restart PM2 or copy files.
+The command handles everything: fresh snapshot, Caddy reload. Do NOT manually copy files.
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -190,35 +181,6 @@ The preview system auto-detects your framework from package.json. Follow the che
 
 **General rule:** bind to 0.0.0.0:\$PREVIEW_PORT. Preview URL: https://$DEV_DOMAIN
 
-## MANDATORY: Pre-Completion Verification Protocol
-You MUST complete ALL of these checks before reporting ANY task as done.
-Skipping verification = broken app for the user.
-
-STEP 1 — Dependency check:
-  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
-
-STEP 2 — Process check:
-  \\\`pm2 list\\\` → your app must show status "online"
-  If "errored" or "stopped": \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 20\\\` → fix the error → restart
-
-STEP 3 — HTTP check (with retry):
-  \\\`for i in 1 2 3 4 5; do STATUS=\\\$(curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT); [ "\\\$STATUS" = "200" ] && break; sleep 2; done\\\`
-  If still not 200 after 5 attempts: \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` → diagnose → fix → restart
-
-STEP 4 — Content check:
-  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT\\\` → must return 200
-  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
-  If 500: check \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` for compilation errors
-  \\\`curl -s localhost:\$PREVIEW_PORT | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
-
-STEP 5 — Report to user:
-  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
-  Give the user this tokenized URL — it works for 60 seconds without authentication.
-  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
-
-ALL 5 steps must pass. Do NOT tell the user "it's live" until they do.
-
 ## Ports
 - Dev/Preview: \$PREVIEW_PORT (→ https://$DEV_DOMAIN)
 - Production: 3001+ (→ https://<app-name>-$SHORT_ID.ellul.app)
@@ -240,7 +202,7 @@ Once a repo is linked, credentials are pre-configured. Use these commands:
 - git-flow force-backup: commit + force push with lease (VPS is source of truth)
 - git-flow pull: pull latest from remote with rebase
 - git-flow save: stage, commit with timestamp, push
-- git-flow ship: merge to main, build, deploy to production via PM2
+- git-flow ship: merge to main, build, deploy to production
 - git-flow branch: create and push a feature branch
 Standard git commands also work (git add, git commit, git push, etc.) — credentials are handled automatically.
 NEVER configure git credentials manually (no git config, no SSH keys, no tokens). The dashboard handles everything.
@@ -249,7 +211,6 @@ NEVER configure git credentials manually (no git config, no SSH keys, no tokens)
 - ellulai-expose NAME PORT: deploy + expose with SSL (creates DNS + SSL automatically)
 - ellulai-apps: list deployed apps
 - ellulai-install postgres|redis|mysql: install DB
-- pm2 logs|restart|delete NAME: manage processes
 
 ## CRITICAL SECURITY - DO NOT MODIFY
 The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
@@ -317,20 +278,11 @@ generate_global_free() {
    - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l \$PREVIEW_PORT\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:\$PREVIEW_PORT)
-5. **REQUIRED CSS RESET**: ALWAYS create a global CSS file with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\\\`
-   Import location depends on framework:
-   - Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
-   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document in App Router)
-   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
-   - Astro: src/styles/global.css → import in layout
-   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
-   - CRA: src/index.css → import in src/index.tsx
-   - Remix: app/globals.css → add to links() in app/root.tsx
-   NEVER put resets as inline styles on <body> — some bundlers strip them.
-6. **REQUIRED**: ALWAYS \\\`pm2 delete preview-\$DIR_NAME 2>/dev/null\\\` before starting a new preview to avoid stale processes
-7. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview-\$DIR_NAME-- run dev\\\` or \\\`pm2 start "npx serve -l \$PREVIEW_PORT" --name preview\\\`)
-8. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
-9. **REQUIRED**: Run the FULL verification protocol below — do NOT skip any step
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \\\`npm install\\\`. The preview auto-detects your framework and starts the server on port \$PREVIEW_PORT.
+After making changes, the preview URL is: https://$DEV_DOMAIN
 
 ## Metadata (CRITICAL - dashboard won't detect app without this)
 ALWAYS create a \\\`ellulai.json\\\` file in the project root:
@@ -348,74 +300,32 @@ When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`G
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
-- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type="module" src="/src/main.tsx">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
-- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: $PREVIEW_PORT, allowedHosts: true }\\\` and framework plugin
-- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+- \\\`vite.config.ts\\\` with framework plugin
 
 **Next.js (App Router):**
-- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
 - \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
 - \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript — Next.js auto-creates it, but verify it exists)
-- \\\`next.config.mjs\\\` (recommended)
-- Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p \$PREVIEW_PORT"\\\`
 
 **Next.js (Pages Router):**
-- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
 - \\\`tsconfig.json\\\` for TypeScript
-- Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p \$PREVIEW_PORT"\\\`
 
 **Astro:**
-- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
-- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: $PREVIEW_PORT }\\\`
 
 **Nuxt:**
-- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
-- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: $PREVIEW_PORT }\\\`
 
 **CRA (Create React App):**
 - \\\`public/index.html\\\` and \\\`src/index.tsx\\\` (or .jsx)
-- Dev server uses PORT env var automatically
 
 **Remix:**
 - \\\`app/root.tsx\\\` and route files in \\\`app/routes/\\\`
-- Vite config with Remix plugin
 
 **General rule:** bind to 0.0.0.0:\$PREVIEW_PORT. Preview URL: https://$DEV_DOMAIN
-
-## MANDATORY: Pre-Completion Verification Protocol
-You MUST complete ALL of these checks before reporting ANY task as done.
-Skipping verification = broken app for the user.
-
-STEP 1 — Dependency check:
-  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
-
-STEP 2 — Process check:
-  \\\`pm2 list\\\` → your app must show status "online"
-  If "errored" or "stopped": \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 20\\\` → fix the error → restart
-
-STEP 3 — HTTP check (with retry):
-  \\\`for i in 1 2 3 4 5; do STATUS=\\\$(curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT); [ "\\\$STATUS" = "200" ] && break; sleep 2; done\\\`
-  If still not 200 after 5 attempts: \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` → diagnose → fix → restart
-
-STEP 4 — Content check:
-  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT\\\` → must return 200
-  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
-  If 500: check \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` for compilation errors
-  \\\`curl -s localhost:\$PREVIEW_PORT | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
-
-STEP 5 — Report to user:
-  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
-  Give the user this tokenized URL — it works for 60 seconds without authentication.
-  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
-
-ALL 5 steps must pass. Do NOT tell the user "it's live" until they do.
 
 ## Ports
 - Dev/Preview: \$PREVIEW_PORT (→ https://$DEV_DOMAIN)
@@ -442,7 +352,7 @@ NEVER configure git credentials manually (no SSH keys, no tokens).
 Upgrade to Sovereign for full features: https://coemad.com/pricing
 
 ## Commands
-- pm2 start|logs|restart|delete NAME: manage processes
+- npm install: install dependencies (preview auto-restarts after)
 
 ## CRITICAL SECURITY - DO NOT MODIFY
 The following files and directories are security-critical. Modifying, deleting, or tampering with them can permanently brick the server or create security vulnerabilities:
@@ -613,10 +523,11 @@ $APP_NAME_LINE
 3. **MANDATORY FIRST**: ALWAYS run \\\`npm install --include=dev\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
    - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l \$PREVIEW_PORT\\\` (the \\\`-y\\\` flag auto-installs serve)
-4. ALWAYS \\\`pm2 delete preview-\$DIR_NAME 2>/dev/null\\\` before starting a new preview to avoid stale processes
-5. PM2: \\\`pm2 start npm --name preview-\$DIR_NAME-- run dev\\\` or \\\`pm2 start \\"npx serve -l \$PREVIEW_PORT\\" --name preview\\\`
-6. Wait for startup: \\\`sleep 3\\\`
-7. Run the FULL verification protocol below — do NOT skip any step
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \\\`npm install\\\`. The preview auto-detects your framework and starts the server on port \$PREVIEW_PORT.
+After making changes, the preview URL is: https://$DEV_DOMAIN
 
 ## Backend Apps — OpenAPI Spec (REQUIRED)
 When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
@@ -625,68 +536,28 @@ When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`G
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
-- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type=\\"module\\" src=\\"/src/main.tsx\\">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
-- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: $PREVIEW_PORT, allowedHosts: true }\\\` and framework plugin
-- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+- \\\`vite.config.ts\\\` with framework plugin
 
 **Next.js (App Router):**
-- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
 - \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
 - \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript)
-- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p \$PREVIEW_PORT\\"\\\`
 
 **Next.js (Pages Router):**
-- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
-- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p \$PREVIEW_PORT\\"\\\`
+- \\\`tsconfig.json\\\` for TypeScript
 
 **Astro:**
-- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
-- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: $PREVIEW_PORT }\\\`
 
 **Nuxt:**
-- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
-- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: $PREVIEW_PORT }\\\`
 
-**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` + \\\`src/index.css\\\` with CSS reset — PORT env var used automatically
+**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\`
 
-**Remix:** \\\`app/root.tsx\\\` + \\\`app/globals.css\\\` with CSS reset (add to links() in root.tsx) + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
-
-**General rule:** bind to 0.0.0.0:\$PREVIEW_PORT
-
-## MANDATORY: Pre-Completion Verification Protocol
-You MUST complete ALL of these checks before reporting ANY task as done.
-Skipping verification = broken app for the user.
-
-STEP 1 — Dependency check:
-  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
-
-STEP 2 — Process check:
-  \\\`pm2 list\\\` → your app must show status \\"online\\"
-  If \\"errored\\" or \\"stopped\\": \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 20\\\` → fix the error → restart
-
-STEP 3 — HTTP check (with retry):
-  \\\`for i in 1 2 3 4 5; do STATUS=\\$(curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT); [ \\"\\$STATUS\\" = \\"200\\" ] && break; sleep 2; done\\\`
-  If still not 200 after 5 attempts: \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` → diagnose → fix → restart
-
-STEP 4 — Content check:
-  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT\\\` → must return 200
-  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
-  If 500: check \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` for compilation errors
-  \\\`curl -s localhost:\$PREVIEW_PORT | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
-
-STEP 5 — Report to user:
-  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
-  Give the user this tokenized URL — it works for 60 seconds without authentication.
-  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
-
-ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
+**Remix:** \\\`app/root.tsx\\\` + route files in \\\`app/routes/\\\`
 
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
@@ -698,7 +569,7 @@ Deployment, outbound push, database installation, and SSH are not available.
 Upgrade to Sovereign for full features: https://coemad.com/pricing
 
 ## Commands
-pm2 start|logs|restart|delete NAME
+npm install — install dependencies (preview auto-restarts after)
 <!-- ELLULAI:END -->"
   else
     # Check if this project is already deployed (paid tier only)
@@ -746,10 +617,11 @@ $DEPLOYMENT_SECTION
 3. **MANDATORY FIRST**: ALWAYS run \\\`npm install --include=dev\\\` BEFORE any other step — even if you just created the project. Framework CLIs sometimes skip installing all deps.
    - If using Vite/React/Vue: verify the binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l \$PREVIEW_PORT\\\` (the \\\`-y\\\` flag auto-installs serve)
-4. ALWAYS \\\`pm2 delete preview-\$DIR_NAME 2>/dev/null\\\` before starting a new preview to avoid stale processes
-5. PM2: \\\`pm2 start npm --name preview-\$DIR_NAME-- run dev\\\` or \\\`pm2 start \\"npx serve -l \$PREVIEW_PORT\\" --name preview\\\`
-6. Wait for startup: \\\`sleep 3\\\`
-7. Run the FULL verification protocol below — do NOT skip any step
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \\\`npm install\\\`. The preview auto-detects your framework and starts the server on port \$PREVIEW_PORT.
+After making changes, the preview URL is: https://$DEV_DOMAIN
 
 ## Backend Apps — OpenAPI Spec (REQUIRED)
 When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`GET /openapi.json\\\`) so the dashboard renders interactive API docs in the Preview tab. Include all endpoints with parameters, request bodies, response schemas, and model definitions. See the global context for framework-specific examples.
@@ -758,68 +630,28 @@ When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`G
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
-- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type=\\"module\\" src=\\"/src/main.tsx\\">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
-- \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: $PREVIEW_PORT, allowedHosts: true }\\\` and framework plugin
-- Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
+- \\\`vite.config.ts\\\` with framework plugin
 
 **Next.js (App Router):**
-- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
 - \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
 - \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript)
-- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p \$PREVIEW_PORT\\"\\\`
 
 **Next.js (Pages Router):**
-- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
-- Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p \$PREVIEW_PORT\\"\\\`
+- \\\`tsconfig.json\\\` for TypeScript
 
 **Astro:**
-- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
-- \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: $PREVIEW_PORT }\\\`
 
 **Nuxt:**
-- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
-- \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: $PREVIEW_PORT }\\\`
 
-**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` + \\\`src/index.css\\\` with CSS reset — PORT env var used automatically
+**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\`
 
-**Remix:** \\\`app/root.tsx\\\` + \\\`app/globals.css\\\` with CSS reset (add to links() in root.tsx) + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
-
-**General rule:** bind to 0.0.0.0:\$PREVIEW_PORT
-
-## MANDATORY: Pre-Completion Verification Protocol
-You MUST complete ALL of these checks before reporting ANY task as done.
-Skipping verification = broken app for the user.
-
-STEP 1 — Dependency check:
-  \\\`ls node_modules/.bin/ | head -5\\\` → must show binaries (vite, next, etc.)
-  If empty or node_modules missing: \\\`npm install --include=dev\\\` and retry
-
-STEP 2 — Process check:
-  \\\`pm2 list\\\` → your app must show status \\"online\\"
-  If \\"errored\\" or \\"stopped\\": \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 20\\\` → fix the error → restart
-
-STEP 3 — HTTP check (with retry):
-  \\\`for i in 1 2 3 4 5; do STATUS=\\$(curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT); [ \\"\\$STATUS\\" = \\"200\\" ] && break; sleep 2; done\\\`
-  If still not 200 after 5 attempts: \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` → diagnose → fix → restart
-
-STEP 4 — Content check:
-  \\\`curl -s -o /dev/null -w '%{http_code}' localhost:\$PREVIEW_PORT\\\` → must return 200
-  If 404: route files are missing (Next.js needs app/page.tsx, Astro needs src/pages/index.astro, etc.)
-  If 500: check \\\`pm2 logs preview-\$DIR_NAME --nostream --lines 30\\\` for compilation errors
-  \\\`curl -s localhost:\$PREVIEW_PORT | head -5\\\` → must contain actual HTML (<!DOCTYPE or <html>), NOT an error page
-
-STEP 5 — Report to user:
-  Get a one-time preview link: \\\`curl -s http://localhost:3005/api/preview-url | jq -r '.url'\\\`
-  Give the user this tokenized URL — it works for 60 seconds without authentication.
-  Only mention a deployed/production URL when the user explicitly deploys with ellulai-expose.
-
-ALL 5 steps must pass. Do NOT tell the user \\"it's live\\" until they do.
+**Remix:** \\\`app/root.tsx\\\` + route files in \\\`app/routes/\\\`
 
 ## Rules
 - Secrets: NEVER .env files (git hook blocks commits with them). Use Dashboard → process.env
@@ -846,7 +678,7 @@ Only deploy/redeploy when the CURRENT message says \\"deploy\\", \\"redeploy\\",
 2. Build: \\\`npm run build\\\` (if applicable — skip for static HTML)
 3. \\\`ellulai-expose NAME PORT\\\` — using the SAME name and port from ellulai.json
 4. Verify: \\\`curl -s https://DEPLOYED_URL | head -5\\\`
-The command handles everything: fresh snapshot, PM2 restart, Caddy reload. Do NOT manually restart PM2 or copy files.
+The command handles everything: fresh snapshot, Caddy reload. Do NOT manually copy files.
 
 ## Git (Code Backup)
 Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If not, tell user to link a repo from Dashboard → Git tab.
@@ -854,7 +686,7 @@ Check \\\`git remote -v\\\` — if a remote exists, credentials are ready. If no
 Standard git commands also work. NEVER configure git credentials manually (no SSH keys, no tokens).
 
 ## Commands
-ellulai-expose NAME PORT | ellulai-apps | ellulai-install postgres|redis|mysql | pm2 logs|restart|delete NAME
+ellulai-expose NAME PORT | ellulai-apps | ellulai-install postgres|redis|mysql
 <!-- ELLULAI:END -->"
   fi
 

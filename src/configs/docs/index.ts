@@ -46,11 +46,11 @@ Tampering with security files = PERMANENT LOCKOUT with no recovery.
 Preview URL: https://${devDomain} (preview port from ~/.ellulai/preview-ports.json)
 Start your dev server → it's live immediately at the preview URL.
 
-## Key Commands
-- pm2 start npm --name preview-{project} -- run dev — Start dev server
-- pm2 logs NAME — View logs
-- pm2 restart NAME — Restart app
-- curl localhost:{port} — Verify internally, then preview is live at https://${devDomain}
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \`npm install\`. The preview auto-detects your framework and starts the server.
+After making changes, the preview URL is: https://${devDomain}
 
 ## Sandbox Boundaries
 - Preview only (assigned port) — no external deployment
@@ -92,21 +92,20 @@ Run: ship
 
 This will build and deploy with auto-SSL.
 
-## Manual Deploy
-1. npm install (ALWAYS run first — framework CLIs sometimes skip deps)
-2. npm run build
-3. pm2 delete <app-name> 2>/dev/null
-4. pm2 start npm --name <app-name> -- start -- -p 3000
-5. sleep 3
-6. Verify before sharing URL: \`pm2 list\` → online AND \`curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}\` → 200 AND \`curl -s localhost:{PREVIEW_PORT} | head -5\` → actual HTML
-7. sudo ellulai-expose <app-name> 3000
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \`npm install\`. The preview auto-detects your framework and starts the server.
+After making changes, the preview is live at the preview URL.
+
+## Deploy
+Run: ship (auto-build + deploy with SSL)
+Manual: npm run build → sudo ellulai-expose <app-name> 3000
 
 ## Key Commands
 - ship - Auto-deploy current project
 - ellulai-apps - List all deployed apps with URLs
 - ellulai-expose NAME PORT - Expose app with SSL
-- pm2 logs NAME - View logs
-- pm2 restart NAME - Restart app
 
 ## Security (Enforced by Git Hook)
 - Never commit .env files
@@ -154,15 +153,11 @@ Vite: server: { host: true, port: {PREVIEW_PORT}, allowedHosts: true }
 Next.js: "dev": "next dev -H 0.0.0.0 -p {PREVIEW_PORT}"
 Preview port is read from ~/.ellulai/preview-ports.json (range 4000-4099).
 
-## After changes: verify preview
-ALWAYS npm install before starting any server — framework CLIs sometimes skip deps.
-pm2 delete preview-{project} 2>/dev/null → npm install → pm2 start npm --name preview-{project} -- run dev → sleep 3
-Then verify ALL 4 steps:
-1. \`ls node_modules/.bin/ | head -5\` → must show binaries
-2. \`pm2 list\` → app must be "online"
-3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-4. \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
-ALL 4 must pass before telling user "it's live" at: https://${devDomain}
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \`npm install\`. The preview auto-detects your framework and starts the server on the assigned port.
+After making changes, the preview URL is: https://${devDomain}
 
 ## Sandbox Boundaries
 - Preview only (assigned port) — no external deployment
@@ -174,7 +169,7 @@ ALL 4 must pass before telling user "it's live" at: https://${devDomain}
 Upgrade to Sovereign for full features: https://coemad.com/pricing
 
 ## Commands
-pm2 start|logs|restart|delete NAME`;
+npm install — install dependencies (preview auto-restarts after)`;
   }
 
   return `# ellul.ai Server: ${domain}
@@ -202,22 +197,18 @@ Vite: server: { host: true, port: {PREVIEW_PORT}, allowedHosts: true }
 Next.js: "dev": "next dev -H 0.0.0.0 -p {PREVIEW_PORT}"
 Preview port is read from ~/.ellulai/preview-ports.json (range 4000-4099).
 
-## After changes: verify preview
-ALWAYS npm install before starting any server — framework CLIs sometimes skip deps.
-pm2 delete preview-{project} 2>/dev/null → npm install → pm2 start npm --name preview-{project} -- run dev → sleep 3
-Then verify ALL 4 steps:
-1. \`ls node_modules/.bin/ | head -5\` → must show binaries
-2. \`pm2 list\` → app must be "online"
-3. \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-4. \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
-ALL 4 must pass before telling user "it's live" at: https://${devDomain}
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \`npm install\`. The preview auto-detects your framework and starts the server on the assigned port.
+After making changes, the preview URL is: https://${devDomain}
 
 ## Deploy
 Run: ship (auto-build + deploy with SSL)
-Manual: npm run build → pm2 start npm --name <app-name> -- start -- -p 3000 → sudo ellulai-expose <app-name> 3000
+Manual: npm run build → sudo ellulai-expose <app-name> 3000
 
 ## Commands
-ship | ellulai-expose NAME PORT | ellulai-apps | pm2 logs|restart NAME`;
+ship | ellulai-expose NAME PORT | ellulai-apps`;
 }
 
 /**
@@ -261,31 +252,12 @@ Apps on the assigned preview port are automatically served at this URL. Always t
    - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
    - For static HTML without a framework: use \`npx -y serve -l 3000\`
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:{PREVIEW_PORT}
-5. **REQUIRED CSS RESET**: Create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
-   Import location depends on framework:
-   - Vite: src/index.css → import in src/main.tsx
-   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document)
-   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
-   - Astro: src/styles/global.css → import in layout
-   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
-   - CRA: src/index.css → import in src/index.tsx
-   NEVER use inline styles on <body> for resets — some bundlers strip them.
-6. ALWAYS \`pm2 delete preview-{project} 2>/dev/null\` before starting a new preview
-7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview-{project} -- run dev\`)
-8. Wait for startup: \`sleep 3\`
-9. Run the FULL verification protocol below — ALL 4 steps must pass
-10. Tell the user: preview is live at https://${devDomain}
 
-## Dev Server Config (CRITICAL)
-Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`
-Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
-
-## MANDATORY: Pre-Completion Verification Protocol
-STEP 1 — \`ls node_modules/.bin/ | head -5\` → must show binaries. If empty: \`npm install\` and retry
-STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview-{project} --nostream --lines 20\` → fix → restart
-STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-STEP 4 — \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
-ALL 4 must pass. Do NOT tell user "it's live" until they do.
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \`npm install\`. The preview auto-detects your framework and starts the server on port {PREVIEW_PORT}.
+After making changes, the preview URL is: https://${devDomain}
 
 ## Sandbox Boundaries
 - Preview only (assigned port) — no external deployment
@@ -293,7 +265,7 @@ ALL 4 must pass. Do NOT tell user "it's live" until they do.
 - No database servers — use SQLite or in-memory stores
 
 ## Commands
-pm2 start|logs|restart|delete NAME`;
+npm install — install dependencies (preview auto-restarts after)`;
   }
 
   return `# Projects Directory
@@ -322,32 +294,13 @@ Apps on the assigned preview port are automatically served at this URL. Always t
    - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
    - For static HTML without a framework: use \`npx -y serve -l 3000\`
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:{PREVIEW_PORT}
-5. **REQUIRED CSS RESET**: Create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
-   Import location depends on framework:
-   - Vite: src/index.css → import in src/main.tsx
-   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document)
-   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
-   - Astro: src/styles/global.css → import in layout
-   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
-   - CRA: src/index.css → import in src/index.tsx
-   NEVER use inline styles on <body> for resets — some bundlers strip them.
-6. ALWAYS \`pm2 delete preview-{project} 2>/dev/null\` before starting a new preview
-7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\`)
-8. Wait for startup: \`sleep 3\`
-9. Run the FULL verification protocol below — ALL 4 steps must pass
-10. Tell the user: preview is live at https://${devDomain}
 
-## Dev Server Config (CRITICAL)
-Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`
-Next.js: \`"dev": "next dev -H 0.0.0.0 -p 3000"\`
-
-## MANDATORY: Pre-Completion Verification Protocol
-STEP 1 — \`ls node_modules/.bin/ | head -5\` → must show binaries. If empty: \`npm install\` and retry
-STEP 2 — \`pm2 list\` → app must be "online". If errored: \`pm2 logs preview-{project} --nostream --lines 20\` → fix → restart
-STEP 3 — \`for i in 1 2 3 4 5; do STATUS=$(curl -s -o /dev/null -w '%{http_code}' localhost:{PREVIEW_PORT}); [ "$STATUS" = "200" ] && break; sleep 2; done\`
-STEP 4 — \`curl -s localhost:{PREVIEW_PORT} | head -5\` → must contain actual HTML (<!DOCTYPE or <html>)
-ALL 4 must pass. Do NOT tell user "it's live" until they do.
+## DO NOT manage the dev server
+The preview system starts and restarts the dev server automatically.
+**DO NOT** run pm2, npx next dev, npx vite, npm run dev, or any process management commands for the preview.
+Just write code, create config files, and run \`npm install\`. The preview auto-detects your framework and starts the server on port {PREVIEW_PORT}.
+After making changes, the preview URL is: https://${devDomain}
 
 ## Commands
-ship | ellulai-apps | pm2 logs|restart NAME`;
+ship | ellulai-apps | ellulai-expose NAME PORT`;
 }

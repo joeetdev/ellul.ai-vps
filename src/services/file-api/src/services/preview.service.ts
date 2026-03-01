@@ -31,8 +31,8 @@ interface HealState {
 }
 
 const healStates = new Map<string, HealState>();
-const MAX_HEAL_ATTEMPTS = 3;
-const HEAL_DEBOUNCE_MS = 30_000;
+const MAX_HEAL_ATTEMPTS = 2;
+const HEAL_DEBOUNCE_MS = 60_000;
 
 // LRU access tracker for preview eviction
 const previewLastAccess = new Map<string, number>();
@@ -78,7 +78,7 @@ export function getPreviewMetrics(): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 interface PreviewConfig {
-  runtime: 'node' | 'python' | 'rust' | 'go' | 'static' | 'custom';
+  runtime: 'node' | 'python' | 'ruby' | 'rust' | 'go' | 'elixir' | 'dart' | 'php' | 'static' | 'custom';
   install: string | null;
   command: string;
   env: Record<string, string>;
@@ -233,12 +233,66 @@ function resolvePreviewConfig(appPath: string, port: number): ResolveResult {
     return { ok: true, config: { runtime: 'go', install: null, command: 'go run .', env: { PORT: String(port), HOST: '0.0.0.0' }, source: 'convention', description: 'Go (go run)' } };
   }
 
-  // 6. Static (index.html without package.json)
+  // 6. Ruby (Gemfile)
+  if (fs.existsSync(path.join(appPath, 'Gemfile'))) {
+    let gemContent = '';
+    try { gemContent = fs.readFileSync(path.join(appPath, 'Gemfile'), 'utf8'); } catch {}
+    const rubyEnv: Record<string, string> = { PORT: String(port), HOST: '0.0.0.0', RAILS_ENV: 'development', BINDING: '0.0.0.0' };
+    if (/\brails\b/i.test(gemContent)) {
+      return { ok: true, config: { runtime: 'ruby', install: 'bundle install', command: `bundle exec rails server -b 0.0.0.0 -p ${port}`, env: rubyEnv, source: 'convention', description: 'Rails' } };
+    }
+    if (/\bsinatra\b/i.test(gemContent)) {
+      return { ok: true, config: { runtime: 'ruby', install: 'bundle install', command: `bundle exec ruby app.rb -p ${port} -o 0.0.0.0`, env: rubyEnv, source: 'convention', description: 'Sinatra' } };
+    }
+    // Generic Ruby with Gemfile
+    return { ok: true, config: { runtime: 'ruby', install: 'bundle install', command: 'bundle exec ruby app.rb', env: rubyEnv, source: 'convention', description: 'Ruby' } };
+  }
+
+  // 7. Elixir (mix.exs)
+  if (fs.existsSync(path.join(appPath, 'mix.exs'))) {
+    let mixContent = '';
+    try { mixContent = fs.readFileSync(path.join(appPath, 'mix.exs'), 'utf8'); } catch {}
+    const elixirEnv: Record<string, string> = { PORT: String(port), MIX_ENV: 'dev', PHX_HOST: '0.0.0.0' };
+    if (/\bphoenix\b/i.test(mixContent)) {
+      return { ok: true, config: { runtime: 'elixir', install: 'mix deps.get', command: 'mix phx.server', env: elixirEnv, source: 'convention', description: 'Phoenix' } };
+    }
+    return { ok: true, config: { runtime: 'elixir', install: 'mix deps.get', command: 'mix run --no-halt', env: elixirEnv, source: 'convention', description: 'Elixir' } };
+  }
+
+  // 8. Dart/Flutter (pubspec.yaml)
+  if (fs.existsSync(path.join(appPath, 'pubspec.yaml'))) {
+    let pubContent = '';
+    try { pubContent = fs.readFileSync(path.join(appPath, 'pubspec.yaml'), 'utf8'); } catch {}
+    if (/\bflutter\b/i.test(pubContent)) {
+      return { ok: true, config: { runtime: 'dart', install: 'flutter pub get', command: `flutter run -d web-server --web-port ${port} --web-hostname 0.0.0.0`, env: { PORT: String(port) }, source: 'convention', description: 'Flutter' } };
+    }
+    return { ok: true, config: { runtime: 'dart', install: 'dart pub get', command: 'dart run', env: { PORT: String(port) }, source: 'convention', description: 'Dart' } };
+  }
+
+  // 9. PHP (composer.json or *.php files)
+  if (fs.existsSync(path.join(appPath, 'composer.json'))) {
+    let composerContent = '';
+    try { composerContent = fs.readFileSync(path.join(appPath, 'composer.json'), 'utf8'); } catch {}
+    const phpEnv: Record<string, string> = { PORT: String(port), PHP_CLI_SERVER_WORKERS: '4' };
+    if (/\blaravel\b/i.test(composerContent)) {
+      return { ok: true, config: { runtime: 'php', install: 'composer install', command: `php artisan serve --host 0.0.0.0 --port ${port}`, env: phpEnv, source: 'convention', description: 'Laravel' } };
+    }
+    return { ok: true, config: { runtime: 'php', install: 'composer install', command: `php -S 0.0.0.0:${port}`, env: phpEnv, source: 'convention', description: 'PHP' } };
+  }
+  // Bare PHP files without composer
+  try {
+    const files = fs.readdirSync(appPath);
+    if (files.some(f => f.endsWith('.php'))) {
+      return { ok: true, config: { runtime: 'php', install: null, command: `php -S 0.0.0.0:${port}`, env: { PORT: String(port), PHP_CLI_SERVER_WORKERS: '4' }, source: 'convention', description: 'PHP (built-in server)' } };
+    }
+  } catch {}
+
+  // 10. Static (index.html without package.json)
   if (fs.existsSync(path.join(appPath, 'index.html'))) {
     return { ok: true, config: { runtime: 'static', install: null, command: `npx serve -l ${port}`, env: { PORT: String(port) }, source: 'convention', description: 'Static (npx serve)' } };
   }
 
-  return { ok: false, reason: 'No recognized project structure found (no package.json, requirements.txt, Cargo.toml, go.mod, or index.html)' };
+  return { ok: false, reason: 'No recognized project structure found (no package.json, requirements.txt, Cargo.toml, go.mod, Gemfile, mix.exs, pubspec.yaml, composer.json, or index.html)' };
 }
 
 /**
@@ -496,6 +550,7 @@ handle @dev {
         uri query -_preview_token
         reverse_proxy localhost:${port} {
             header_up Host localhost
+            header_up -X-Forwarded-Host
             header_up X-Real-IP {remote_host}
         }
     }
@@ -710,6 +765,60 @@ async function ensurePortFreeAsync(port: number): Promise<boolean> {
 
 
 /**
+ * Patch framework host authorization config — defense-in-depth.
+ * Primary fix is Caddy stripping X-Forwarded-Host; this patches app-level config as a safety net.
+ */
+function patchHostAuth(appPath: string, description: string): void {
+  try {
+    if (/rails/i.test(description)) {
+      const devRb = path.join(appPath, 'config', 'environments', 'development.rb');
+      if (!fs.existsSync(devRb)) return;
+      let content = fs.readFileSync(devRb, 'utf8');
+      if (/hosts\.clear|hosts\s*<<|hosts\s*=/.test(content)) return;
+      content = content.replace(
+        /(Rails\.application\.configure\s+do)/,
+        '$1\n  config.hosts.clear'
+      );
+      fs.writeFileSync(devRb, content);
+      log('info', 'patched Rails config.hosts.clear', { appPath });
+    } else if (/django/i.test(description)) {
+      const managePy = path.join(appPath, 'manage.py');
+      let settingsPath = '';
+      if (fs.existsSync(managePy)) {
+        const mContent = fs.readFileSync(managePy, 'utf8');
+        const m = mContent.match(/DJANGO_SETTINGS_MODULE['"]\s*,\s*['"]([\w.]+)['"]/);
+        if (m) {
+          settingsPath = path.join(appPath, ...m[1]!.split('.').slice(0, -1), 'settings.py');
+        }
+      }
+      if (!settingsPath || !fs.existsSync(settingsPath)) {
+        // Convention scan
+        const candidates = [path.join(appPath, 'settings.py')];
+        try {
+          for (const d of fs.readdirSync(appPath, { withFileTypes: true })) {
+            if (d.isDirectory()) candidates.push(path.join(appPath, d.name, 'settings.py'));
+          }
+        } catch {}
+        settingsPath = candidates.find(p => fs.existsSync(p)) || '';
+      }
+      if (!settingsPath) return;
+      let content = fs.readFileSync(settingsPath, 'utf8');
+      if (/ALLOWED_HOSTS\s*=\s*\[\s*['"]?\*['"]?\s*\]/.test(content)) return;
+      if (/ALLOWED_HOSTS\s*=/.test(content)) {
+        content = content.replace(/ALLOWED_HOSTS\s*=\s*\[.*?\]/s, "ALLOWED_HOSTS = ['*']");
+      } else {
+        content += "\nALLOWED_HOSTS = ['*']\n";
+      }
+      fs.writeFileSync(settingsPath, content);
+      log('info', 'patched Django ALLOWED_HOSTS', { appPath });
+    }
+    // Laravel and Phoenix don't block hosts by default in dev — no patch needed
+  } catch (e) {
+    log('warn', 'patchHostAuth failed', { error: (e as Error).message, appPath });
+  }
+}
+
+/**
  * Preview start result.
  */
 export interface PreviewStartResult {
@@ -827,6 +936,9 @@ export async function startPreview(appDirectory: string, requestId?: number): Pr
     } catch {}
     return { success: true, ready: false, failReason: null };
   }
+
+  // Patch host authorization for frameworks that block dev domain
+  patchHostAuth(appPath, config.description);
 
   // Build env exports for the PM2 bash wrapper
   const pathEnv = `${NVM_BIN}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`;

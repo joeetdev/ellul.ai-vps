@@ -63,6 +63,13 @@ export const DEFAULT_INTERACTIVE_COMMANDS: Record<string, string> = {
   gemini: 'gemini auth login',
 };
 
+// Preview health gate (agent-bridge polls file-api for preview readiness)
+export const FILE_API_PORT = 3002;
+export const HEALTH_GATE_TOTAL_MS = 45_000;
+export const HEALTH_GATE_INITIAL_DELAY_MS = 2_000;
+export const HEALTH_GATE_MAX_INTERVAL_MS = 6_000;
+export const HEALTH_GATE_BACKOFF_FACTOR = 1.5;
+
 // Zen model discovery
 export const ZEN_MODELS_URL = 'https://opencode.ai/zen/v1/models';
 export const ZEN_REFRESH_MS = 30 * 60 * 1000; // 30 minutes

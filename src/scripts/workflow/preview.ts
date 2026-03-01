@@ -186,6 +186,159 @@ if (fw === 'next') {
   }
 }`;
 
+  // Fix A: TS syntax in .js config files, Fix B: ESM without type:module,
+  // Fix C: next.config.ts on Next.js < 15, Fix D: Tailwind v3/v4 CSS mismatch
+  const CONFIG_SYNTAX_FIXER = String.raw`const fs = require('fs'), path = require('path');
+const dir = process.env.CFG_FIX_DIR;
+if (!dir) process.exit(0);
+try { JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')); } catch { process.exit(0); }
+const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+// --- Fix A: TypeScript syntax in .js config files ---
+const jsConfigs = ['next.config.js', 'vite.config.js', 'astro.config.js'];
+for (const cfgName of jsConfigs) {
+  const cfgPath = path.join(dir, cfgName);
+  if (!fs.existsSync(cfgPath)) continue;
+  const content = fs.readFileSync(cfgPath, 'utf8');
+  const hasTs = /import\s+type\s|:\s*(NextConfig|AstroConfig|UserConfig)\b|interface\s+\w+|<\w+>/.test(content);
+  if (!hasTs) continue;
+  // Strip type annotations and rename to .mjs
+  let fixed = content
+    .replace(/import\s+type\s+\{[^}]*\}\s+from\s+['"][^'"]+['"];?\s*/g, '')
+    .replace(/:\s*(NextConfig|AstroConfig|UserConfig|Record<[^>]+>)\s*/g, ' ')
+    .replace(/<[A-Z]\w*(?:,\s*[A-Z]\w*)*>/g, '')
+    .replace(/\bas\s+\w+/g, '')
+    .replace(/satisfies\s+\w+/g, '');
+  const mjsName = cfgName.replace('.js', '.mjs');
+  fs.writeFileSync(path.join(dir, mjsName), fixed);
+  fs.unlinkSync(cfgPath);
+  console.log('Fixed TS-in-JS: ' + cfgName + ' -> ' + mjsName);
+}
+
+// --- Fix B: ESM syntax in .js without "type":"module" ---
+const hasTypeModule = pkg.type === 'module';
+if (!hasTypeModule) {
+  for (const cfgName of jsConfigs) {
+    const cfgPath = path.join(dir, cfgName);
+    if (!fs.existsSync(cfgPath)) continue;
+    const content = fs.readFileSync(cfgPath, 'utf8');
+    if (/^\s*(import\s+|export\s+default\s)/m.test(content)) {
+      const mjsName = cfgName.replace('.js', '.mjs');
+      fs.renameSync(cfgPath, path.join(dir, mjsName));
+      console.log('Fixed ESM-in-JS: ' + cfgName + ' -> ' + mjsName);
+    }
+  }
+}
+
+// --- Fix C: next.config.ts on Next.js < 15 ---
+if (deps['next']) {
+  const nextConfigTs = path.join(dir, 'next.config.ts');
+  const hasAlt = ['next.config.js', 'next.config.mjs'].some(f => fs.existsSync(path.join(dir, f)));
+  if (fs.existsSync(nextConfigTs) && !hasAlt) {
+    const nextVer = deps['next'].replace(/[\^~>=<]/g, '').split('.')[0];
+    if (nextVer && parseInt(nextVer) < 15) {
+      let content = fs.readFileSync(nextConfigTs, 'utf8');
+      content = content
+        .replace(/import\s+type\s+\{[^}]*\}\s+from\s+['"][^'"]+['"];?\s*/g, '')
+        .replace(/:\s*NextConfig\s*/g, ' ')
+        .replace(/\bas\s+\w+/g, '')
+        .replace(/satisfies\s+\w+/g, '');
+      fs.writeFileSync(path.join(dir, 'next.config.mjs'), content);
+      fs.unlinkSync(nextConfigTs);
+      console.log('Fixed next.config.ts -> next.config.mjs (Next.js < 15)');
+    }
+  }
+}
+
+// --- Fix D: Tailwind v3/v4 CSS mismatch ---
+const twVer = (deps['tailwindcss'] || '').replace(/[\^~>=<]/g, '').split('.')[0];
+if (twVer) {
+  const cssFiles = [
+    'src/index.css', 'src/globals.css', 'app/globals.css',
+    'styles/globals.css', 'src/styles/global.css', 'assets/css/main.css',
+  ];
+  for (const rel of cssFiles) {
+    const cssPath = path.join(dir, rel);
+    if (!fs.existsSync(cssPath)) continue;
+    let css = fs.readFileSync(cssPath, 'utf8');
+    if (parseInt(twVer) >= 4 && css.includes('@tailwind base')) {
+      // v3 syntax but v4 installed -> rewrite to v4
+      css = css
+        .replace(/@tailwind\s+base\s*;?\s*/g, '')
+        .replace(/@tailwind\s+components\s*;?\s*/g, '')
+        .replace(/@tailwind\s+utilities\s*;?\s*/g, '');
+      css = '@import "tailwindcss";\n' + css.trim() + '\n';
+      fs.writeFileSync(cssPath, css);
+      console.log('Fixed Tailwind CSS: v3 syntax -> v4 in ' + rel);
+    } else if (parseInt(twVer) < 4 && css.includes('@import "tailwindcss"')) {
+      // v4 syntax but v3 installed -> rewrite to v3
+      css = css.replace(/@import\s+["']tailwindcss["']\s*;?\s*/g, '');
+      css = '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n' + css.trim() + '\n';
+      fs.writeFileSync(cssPath, css);
+      console.log('Fixed Tailwind CSS: v4 syntax -> v3 in ' + rel);
+    }
+  }
+}`;
+
+  const HOST_AUTH_FIXER = String.raw`const fs = require('fs'), path = require('path');
+const dir = process.env.HOST_FIX_DIR;
+const fw = process.env.HOST_FIX_FW;
+
+if (fw === 'rails') {
+  const devRb = path.join(dir, 'config', 'environments', 'development.rb');
+  if (!fs.existsSync(devRb)) process.exit(0);
+  let content = fs.readFileSync(devRb, 'utf8');
+  if (/hosts\.clear|hosts\s*<<|hosts\s*=/.test(content)) process.exit(0);
+  content = content.replace(
+    /(Rails\.application\.configure\s+do)/,
+    '$1\n  config.hosts.clear'
+  );
+  fs.writeFileSync(devRb, content);
+  console.log('Patched Rails host authorization: config.hosts.clear');
+} else if (fw === 'django') {
+  // Find settings module
+  let settingsPath = '';
+  const managePy = path.join(dir, 'manage.py');
+  if (fs.existsSync(managePy)) {
+    const mContent = fs.readFileSync(managePy, 'utf8');
+    const m = mContent.match(/DJANGO_SETTINGS_MODULE['"]\s*,\s*['"]([\w.]+)['"]/);
+    if (m) {
+      settingsPath = path.join(dir, ...m[1].split('.').slice(0, -1), 'settings.py');
+    }
+  }
+  if (!settingsPath || !fs.existsSync(settingsPath)) {
+    // Convention scan
+    const candidates = [
+      path.join(dir, 'settings.py'),
+      ...(() => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => path.join(dir, d.name, 'settings.py')); } catch { return []; } })(),
+    ];
+    settingsPath = candidates.find(p => fs.existsSync(p)) || '';
+  }
+  if (!settingsPath) process.exit(0);
+  let content = fs.readFileSync(settingsPath, 'utf8');
+  if (/ALLOWED_HOSTS\s*=\s*\[\s*['"]?\*['"]?\s*\]/.test(content)) process.exit(0);
+  if (/ALLOWED_HOSTS\s*=/.test(content)) {
+    content = content.replace(/ALLOWED_HOSTS\s*=\s*\[.*?\]/s, "ALLOWED_HOSTS = ['*']");
+  } else {
+    content += "\nALLOWED_HOSTS = ['*']\n";
+  }
+  fs.writeFileSync(settingsPath, content);
+  console.log('Patched Django ALLOWED_HOSTS = ["*"]');
+} else if (fw === 'phoenix') {
+  const devExs = path.join(dir, 'config', 'dev.exs');
+  if (!fs.existsSync(devExs)) process.exit(0);
+  let content = fs.readFileSync(devExs, 'utf8');
+  if (/check_origin:\s*false/.test(content)) process.exit(0);
+  if (/check_origin:/.test(content)) {
+    content = content.replace(/check_origin:\s*\[.*?\]/s, 'check_origin: false');
+  } else if (/Endpoint,/.test(content)) {
+    content = content.replace(/(Endpoint,\s*\n)/, '$1  check_origin: false,\n');
+  }
+  fs.writeFileSync(devExs, content);
+  console.log('Patched Phoenix check_origin: false');
+}`;
+
   return `#!/bin/bash
 # Preview Server — serves user-selected app on its dedicated preview port.
 # Reads ~/.ellulai/preview-app to determine which project to serve.
@@ -226,8 +379,55 @@ log() { echo "[$(date -Iseconds)] $1"; }
 # ── Framework detection ──────────────────────────────────────────────────
 detect_framework() {
   local dir="$1"
-  [ ! -f "$dir/package.json" ] && echo "static" && return
-  # Validate JSON — if file is being written, it may be truncated
+
+  # Non-Node detection (before package.json check)
+  if [ ! -f "$dir/package.json" ]; then
+    if [ -f "$dir/Gemfile" ]; then
+      if grep -q 'rails' "$dir/Gemfile" 2>/dev/null; then echo "rails"
+      elif grep -q 'sinatra' "$dir/Gemfile" 2>/dev/null; then echo "sinatra"
+      elif grep -q 'hanami' "$dir/Gemfile" 2>/dev/null; then echo "ruby"
+      else echo "ruby"
+      fi
+      return
+    fi
+    if [ -f "$dir/manage.py" ] && { [ -f "$dir/requirements.txt" ] || [ -f "$dir/pyproject.toml" ]; }; then
+      echo "django" && return
+    fi
+    if [ -f "$dir/requirements.txt" ]; then
+      if grep -qi 'fastapi\\|uvicorn' "$dir/requirements.txt" 2>/dev/null; then echo "fastapi"
+      elif grep -qi 'flask' "$dir/requirements.txt" 2>/dev/null; then echo "flask"
+      elif grep -qi 'streamlit' "$dir/requirements.txt" 2>/dev/null; then echo "streamlit"
+      else echo "python"
+      fi
+      return
+    fi
+    if [ -f "$dir/pyproject.toml" ]; then echo "python" && return; fi
+    if [ -f "$dir/Cargo.toml" ]; then echo "rust" && return; fi
+    if [ -f "$dir/go.mod" ]; then echo "golang" && return; fi
+    if [ -f "$dir/mix.exs" ]; then
+      if grep -q 'phoenix' "$dir/mix.exs" 2>/dev/null; then echo "phoenix"
+      else echo "elixir"
+      fi
+      return
+    fi
+    if [ -f "$dir/pubspec.yaml" ]; then
+      if grep -q 'flutter' "$dir/pubspec.yaml" 2>/dev/null; then echo "flutter"
+      else echo "dart"
+      fi
+      return
+    fi
+    if [ -f "$dir/composer.json" ]; then
+      if grep -q 'laravel' "$dir/composer.json" 2>/dev/null; then echo "laravel"
+      else echo "php"
+      fi
+      return
+    fi
+    # Static HTML fallback (no package manager files)
+    if ls "$dir"/*.html >/dev/null 2>&1; then echo "static" && return; fi
+    echo "static" && return
+  fi
+
+  # Node.js: validate package.json
   local pkg
   pkg=$(cat "$dir/package.json" 2>/dev/null)
   echo "$pkg" | node -e "try{JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'))}catch{process.exit(1)}" 2>/dev/null
@@ -245,6 +445,12 @@ detect_framework() {
   elif echo "$pkg" | grep -q '"gatsby"'; then echo "gatsby"
   elif echo "$pkg" | grep -q '"remix"'; then echo "remix"
   elif echo "$pkg" | grep -q '"scripts"' && echo "$pkg" | grep -q '"dev"'; then echo "npm-dev"
+  # Fallback: check for non-Node markers alongside package.json
+  elif [ -f "$dir/Gemfile" ]; then
+    if grep -q 'rails' "$dir/Gemfile" 2>/dev/null; then echo "rails"
+    elif grep -q 'sinatra' "$dir/Gemfile" 2>/dev/null; then echo "sinatra"
+    else echo "ruby"
+    fi
   else echo "static"
   fi
 }
@@ -254,17 +460,33 @@ detect_framework() {
 get_dev_command() {
   local framework="$1"
   case "$framework" in
-    next)     echo "npx next dev -H 0.0.0.0 -p $PORT" ;;
-    nuxt)     echo "npx nuxi dev --port $PORT" ;;
-    vite)     echo "npx vite --port $PORT --host 0.0.0.0" ;;
-    vue)      echo "npx vue-cli-service serve --port $PORT" ;;
-    cra)      echo "PORT=$PORT npx react-scripts start" ;;
-    svelte)   echo "npx vite --port $PORT --host 0.0.0.0" ;;
-    astro)    echo "npx astro dev --port $PORT --host 0.0.0.0" ;;
-    gatsby)   echo "npx gatsby develop -p $PORT" ;;
-    remix)    echo "npx remix vite:dev --port $PORT --host 0.0.0.0" ;;
-    npm-dev)  echo "npm run dev" ;;
-    *)        echo "" ;;
+    next)       echo "npx next dev -H 0.0.0.0 -p $PORT" ;;
+    nuxt)       echo "npx nuxi dev --port $PORT" ;;
+    vite)       echo "npx vite --port $PORT --host 0.0.0.0" ;;
+    vue)        echo "npx vue-cli-service serve --port $PORT" ;;
+    cra)        echo "PORT=$PORT npx react-scripts start" ;;
+    svelte)     echo "npx vite --port $PORT --host 0.0.0.0" ;;
+    astro)      echo "npx astro dev --port $PORT --host 0.0.0.0" ;;
+    gatsby)     echo "npx gatsby develop -p $PORT" ;;
+    remix)      echo "npx remix vite:dev --port $PORT --host 0.0.0.0" ;;
+    npm-dev)    echo "npm run dev" ;;
+    rails)      echo "bundle exec rails server -b 0.0.0.0 -p $PORT" ;;
+    sinatra)    echo "bundle exec ruby app.rb -p $PORT -o 0.0.0.0" ;;
+    ruby)       echo "bundle exec ruby app.rb" ;;
+    django)     echo "python manage.py runserver 0.0.0.0:$PORT" ;;
+    flask)      echo "flask run --host 0.0.0.0 --port $PORT" ;;
+    fastapi)    echo "uvicorn main:app --host 0.0.0.0 --port $PORT --reload" ;;
+    streamlit)  echo "streamlit run app.py --server.port $PORT --server.address 0.0.0.0" ;;
+    python)     echo "python app.py" ;;
+    rust)       echo "cargo run" ;;
+    golang)     echo "go run ." ;;
+    phoenix)    echo "mix phx.server" ;;
+    elixir)     echo "mix run --no-halt" ;;
+    flutter)    echo "flutter run -d web-server --web-port $PORT --web-hostname 0.0.0.0" ;;
+    dart)       echo "dart run" ;;
+    laravel)    echo "php artisan serve --host 0.0.0.0 --port $PORT" ;;
+    php)        echo "php -S 0.0.0.0:$PORT" ;;
+    *)          echo "" ;;
   esac
 }
 
@@ -312,9 +534,64 @@ port_in_use_by_other() {
 wait_for_install() {
   local dir="$1"
   local framework="$2"
+
+  # Non-Node frameworks: handle their own package managers
+  case "$framework" in
+    rails|sinatra|ruby)
+      [ ! -f "$dir/Gemfile" ] && return 0
+      if [ ! -f "$dir/Gemfile.lock" ] || [ ! -d "$dir/vendor/bundle" ]; then
+        log "Running bundle install..."
+        cd "$dir" && bundle install 2>&1 | tail -5
+      fi
+      return 0
+      ;;
+    django|flask|fastapi|streamlit|python)
+      if [ -f "$dir/requirements.txt" ]; then
+        log "Running pip install..."
+        cd "$dir" && pip install -r requirements.txt 2>&1 | tail -5
+      fi
+      return 0
+      ;;
+    rust|golang)
+      return 0  # cargo run / go run handle deps automatically
+      ;;
+    phoenix|elixir)
+      [ ! -f "$dir/mix.exs" ] && return 0
+      if [ ! -f "$dir/mix.lock" ] || [ ! -d "$dir/deps" ]; then
+        log "Running mix deps.get..."
+        cd "$dir" && mix deps.get 2>&1 | tail -5
+      fi
+      return 0
+      ;;
+    flutter)
+      [ ! -f "$dir/pubspec.yaml" ] && return 0
+      if [ ! -d "$dir/.dart_tool" ]; then
+        log "Running flutter pub get..."
+        cd "$dir" && flutter pub get 2>&1 | tail -5
+      fi
+      return 0
+      ;;
+    dart)
+      [ ! -f "$dir/pubspec.yaml" ] && return 0
+      if [ ! -d "$dir/.dart_tool" ]; then
+        log "Running dart pub get..."
+        cd "$dir" && dart pub get 2>&1 | tail -5
+      fi
+      return 0
+      ;;
+    laravel|php)
+      [ ! -f "$dir/composer.json" ] && return 0
+      if [ ! -d "$dir/vendor" ]; then
+        log "Running composer install..."
+        cd "$dir" && composer install 2>&1 | tail -5
+      fi
+      return 0
+      ;;
+  esac
+
+  # Node.js frameworks: wait for node_modules
   [ ! -f "$dir/package.json" ] && return 0
 
-  # Map framework to expected binary in node_modules
   local expected_bin=""
   case "$framework" in
     vite|svelte|remix) expected_bin="node_modules/.bin/vite" ;;
@@ -325,7 +602,7 @@ wait_for_install() {
     gatsby)   expected_bin="node_modules/.bin/gatsby" ;;
     vue)      expected_bin="node_modules/.bin/vue-cli-service" ;;
     npm-dev)  expected_bin="node_modules" ;;
-    *)        return 0 ;;  # static — no install needed
+    *)        return 0 ;;
   esac
 
   if [ -e "$dir/$expected_bin" ]; then
@@ -409,6 +686,16 @@ SCAFFOLD_EOF2
   return 0
 }
 
+# ── Config syntax fixup (TS-in-JS, ESM, Tailwind mismatch) ────────────
+# Fixes common AI-generated config issues BEFORE framework-specific fixups.
+ensure_config_syntax() {
+  local dir="$1"
+  [ ! -f "$dir/package.json" ] && return
+  CFG_FIX_DIR="$dir" node << 'CFGSYNTAX_EOF'
+${CONFIG_SYNTAX_FIXER}
+CFGSYNTAX_EOF
+}
+
 # ── Framework config fixup ────────────────────────────────────────────
 # Ensures framework-specific config files exist (tsconfig, next.config, astro.config, etc.)
 ensure_framework_config() {
@@ -422,6 +709,21 @@ ensure_framework_config() {
   FW_FIX_DIR="$dir" FW_FIX_FW="$framework" FW_FIX_PORT="$PORT" node << 'FWCFG_EOF'
 ${FRAMEWORK_CONFIG_FIXER}
 FWCFG_EOF
+}
+
+# ── Host authorization fixup (Rails, Django, Phoenix) ─────────────────────
+# Defense-in-depth: patches framework host auth config to allow dev domain.
+# Primary fix is Caddy stripping X-Forwarded-Host, this is a safety net.
+ensure_host_authorization() {
+  local dir="$1"
+  local framework="$2"
+  case "$framework" in
+    rails|django|phoenix) ;;
+    *) return ;;
+  esac
+  HOST_FIX_DIR="$dir" HOST_FIX_FW="$framework" node << 'HOSTFIX_EOF'
+\${HOST_AUTH_FIXER}
+HOSTFIX_EOF
 }
 
 # ── Install missing Vite plugin packages ─────────────────────────────────
@@ -461,6 +763,27 @@ health_check() {
       fi
       ;;
   esac
+
+  # Host authorization check — detect frameworks blocking the dev domain
+  if [ "$status" = "403" ] || [ "$status" = "400" ]; then
+    local body
+    body=$(curl -s http://localhost:$PORT/ 2>/dev/null | head -20)
+    if echo "$body" | grep -qi "blocked host\\|blocked hostname"; then
+      log "HEALTH FAIL: Rails host authorization blocked request, patching..."
+      ensure_host_authorization "$dir" "rails"
+      return 1
+    fi
+    if echo "$body" | grep -qi "disallowed host\\|invalid http_host"; then
+      log "HEALTH FAIL: Django ALLOWED_HOSTS blocked request, patching..."
+      ensure_host_authorization "$dir" "django"
+      return 1
+    fi
+    if echo "$body" | grep -qi "check_origin"; then
+      log "HEALTH FAIL: Phoenix check_origin blocked request, patching..."
+      ensure_host_authorization "$dir" "phoenix"
+      return 1
+    fi
+  fi
 
   # Check port is responding with HTML
   local ct
@@ -590,9 +913,11 @@ while true; do
         kill_tree $DEV_PID
         sleep 1
         rm -rf "$PROJECT_DIR/node_modules/.vite" "$PROJECT_DIR/.next" "$PROJECT_DIR/.nuxt" "$PROJECT_DIR/.astro" 2>/dev/null
+        ensure_config_syntax "$PROJECT_DIR"
         ensure_vite_config "$PROJECT_DIR"
         ensure_vite_plugins_installed "$PROJECT_DIR"
         ensure_framework_config "$PROJECT_DIR" "$CURRENT_FRAMEWORK"
+        ensure_host_authorization "$PROJECT_DIR" "$CURRENT_FRAMEWORK"
         DEV_PID=""
         CURRENT_FRAMEWORK=""
         # Don't set HEALTH_CHECKED — will re-check after restart
@@ -646,7 +971,9 @@ while true; do
 
       # Universal: wait for scaffold readiness + ensure config
       wait_for_scaffold "$PROJECT_DIR" "$FRAMEWORK"
+      ensure_config_syntax "$PROJECT_DIR"
       ensure_framework_config "$PROJECT_DIR" "$FRAMEWORK"
+      ensure_host_authorization "$PROJECT_DIR" "$FRAMEWORK"
 
       # Clear stale caches before starting
       rm -rf "$PROJECT_DIR/.next" "$PROJECT_DIR/.nuxt" "$PROJECT_DIR/.astro" "$PROJECT_DIR/node_modules/.vite" 2>/dev/null
@@ -668,6 +995,13 @@ while true; do
     export DANGEROUSLY_DISABLE_HOST_CHECK=true
     export HOST=0.0.0.0
     export BROWSER=none
+    export RAILS_ENV=development
+    export BINDING=0.0.0.0
+    export FLASK_ENV=development
+    export FLASK_RUN_HOST=0.0.0.0
+    export MIX_ENV=dev
+    export PHX_HOST=0.0.0.0
+    export PHP_CLI_SERVER_WORKERS=4
 
     eval "$DEV_CMD &"
     DEV_PID=$!

@@ -533,7 +533,8 @@ export class ThreadSSEHandler {
 
     // session.error
     if (parsed.type === 'session.error' && parsed.properties?.sessionID === this.sessionId) {
-      const errMsg = parsed.properties?.error || 'Session error';
+      const rawErr = parsed.properties?.error;
+      const errMsg = typeof rawErr === 'string' ? rawErr : rawErr ? JSON.stringify(rawErr) : 'Session error';
       this.error(`Session error: ${errMsg}`);
       if (!this.settled) {
         this.settled = true;

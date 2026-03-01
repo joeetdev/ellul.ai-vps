@@ -1723,6 +1723,21 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // GET /api/preview/health — structured health for agent-bridge polling
+    if (req.method === 'GET' && pathname === '/api/preview/health') {
+      const queryProject = parsedUrl.query.project as string | undefined;
+      const health = getPreviewHealth();
+      // If a specific project was requested and it doesn't match the active preview, return idle
+      if (queryProject && health.app && queryProject !== health.app) {
+        res.writeHead(200);
+        res.end(JSON.stringify({ phase: 'idle', active: false, app: health.app, requestedProject: queryProject }));
+        return;
+      }
+      res.writeHead(200);
+      res.end(JSON.stringify(health));
+      return;
+    }
+
     // GET /api/preview/metrics — operational counters for observability
     if (req.method === 'GET' && pathname === '/api/preview/metrics') {
       res.writeHead(200);

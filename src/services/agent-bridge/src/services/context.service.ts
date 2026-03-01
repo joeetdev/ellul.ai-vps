@@ -165,9 +165,8 @@ const VITE_PLUGIN_MAP: Record<string, string> = {
  * Returns targeted instructions based on the actual project stack.
  * Covers Vite, Next.js, Astro, Nuxt, CRA, Remix, and Gatsby.
  */
-function buildPreviewHints(projectName: string | null, previewPort?: number): string {
+function buildPreviewHints(projectName: string | null, _previewPort?: number): string {
   if (!projectName) return '';
-  const port = previewPort ?? getProjectPreviewPort(projectName);
   const projectPath = path.join(PROJECTS_DIR, projectName);
   const pkgPath = path.join(projectPath, 'package.json');
   if (!fs.existsSync(pkgPath)) return '';
@@ -199,23 +198,7 @@ function buildPreviewHints(projectName: string | null, previewPort?: number): st
     const uiLib = Object.keys(VITE_PLUGIN_MAP).find((k) => !!allDeps[k]);
     if (uiLib) {
       const pluginPkg = VITE_PLUGIN_MAP[uiLib]!;
-      const srcDir = path.join(projectPath, 'src');
-      let entryFile = '';
-      if (fs.existsSync(srcDir)) {
-        const entryExts = ['.tsx', '.jsx', '.vue', '.svelte', '.ts', '.js'];
-        try {
-          const files = fs.readdirSync(srcDir);
-          const main = files.find((f) => {
-            const base = f.replace(/\.[^.]+$/, '');
-            return (base === 'main' || base === 'index' || base === 'App') && entryExts.some((ext) => f.endsWith(ext));
-          });
-          if (main) entryFile = `/src/${main}`;
-        } catch {}
-      }
-      const entryCheck = entryFile
-        ? `\`curl -sI localhost:${port}${entryFile} | grep content-type\` — must return \`application/javascript\`, NOT \`text/${entryFile.endsWith('.tsx') ? 'tsx' : entryFile.endsWith('.jsx') ? 'jsx' : entryFile.endsWith('.vue') ? 'x-vue' : 'plain'}\`.`
-        : '';
-      return `**Project check:** Vite+${uiLib.charAt(0).toUpperCase() + uiLib.slice(1)} detected. Ensure \`${pluginPkg}\` is in devDependencies and configured in vite.config plugins.${entryCheck ? `\nAfter preview starts, run: ${entryCheck}` : ''}\nIf MIME type is wrong, install \`${pluginPkg}\` and add it to vite.config plugins, then restart.`;
+      return `**Project check:** Vite+${uiLib.charAt(0).toUpperCase() + uiLib.slice(1)} detected. Ensure \`${pluginPkg}\` is in devDependencies and configured in vite.config plugins.`;
     }
   }
 
@@ -234,7 +217,7 @@ function buildPreviewHints(projectName: string | null, previewPort?: number): st
     if (!hasTsconfig && hasTs) {
       hints.push(`WARNING: No tsconfig.json found. Run \`npx next dev\` once to auto-generate it, or create one manually.`);
     }
-    hints.push(`Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:${port}\` must return 200, NOT 404.`);
+    hints.push(`The preview system will auto-start the dev server.`);
     return hints.join('\n');
   }
 
@@ -244,7 +227,7 @@ function buildPreviewHints(projectName: string | null, previewPort?: number): st
     if (!hasPagesDir) {
       return `**Project check:** Astro detected but src/pages/ missing. Create src/pages/index.astro as the home page.`;
     }
-    return `**Project check:** Astro detected. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:${port}\` returns 200.`;
+    return `**Project check:** Astro detected. Ensure src/pages/index.astro exists.`;
   }
 
   // --- Nuxt ---
@@ -254,7 +237,7 @@ function buildPreviewHints(projectName: string | null, previewPort?: number): st
     if (!hasAppVue && !hasPagesDir) {
       return `**Project check:** Nuxt detected but no app.vue or pages/ found. Create app.vue or pages/index.vue.`;
     }
-    return `**Project check:** Nuxt detected. Ensure app.vue or pages/index.vue exists. Verify: \`curl -s -o /dev/null -w '%{http_code}' localhost:${port}\` returns 200.`;
+    return `**Project check:** Nuxt detected. Ensure app.vue or pages/index.vue exists.`;
   }
 
   // --- CRA ---
@@ -315,7 +298,6 @@ export function buildSystemPrompt(
 ): string {
   const parts: string[] = [];
   const previewPort = getProjectPreviewPort(projectName ?? null);
-  const pm2PreviewName = `preview-${projectName || 'app'}`;
 
   // Core identity + exact command template. The model gets a concrete, mechanical
   // pattern to follow — no skill file reading or command construction needed.
@@ -345,23 +327,9 @@ process action:poll sessionId:SESSION_ID
 process action:log sessionId:SESSION_ID
 Repeat poll/log until the CLI finishes. If you see meaningful progress in the logs, briefly summarize in 1 sentence.
 
-STEP 4: Tell the user the result. If the CLI created or modified a web app, verify it's working before sharing the preview URL:
-1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` → MUST return 200 (not 404, not 500)
-3. \`curl -s localhost:${previewPort} | head -20\` → must show actual HTML content (not error pages, not stack traces)
-4. \`pm2 logs preview-${projectName} --nostream --lines 20\` → must have no errors
-${buildPreviewHints(projectName ?? null, previewPort) || `Check for module script errors: \`curl -sI localhost:${previewPort}/src/main.jsx 2>/dev/null | grep content-type\` — must return \`application/javascript\`, not \`text/jsx\`. If wrong, install the missing Vite plugin and restart.`}
-
-If ANY check fails:
-  a. Read the error from pm2 logs or curl output
-  b. Launch the CLI again to fix: "${info.cmd}" with "Fix this error: [paste the actual error]"
-  c. Wait for fix to complete, then re-verify ALL checks
-  d. Repeat up to 3 times
-
-Your project's preview port is **${previewPort}** and PM2 process name is **${pm2PreviewName}**.
-
-NEVER tell the user "it's live" until ALL checks pass.
-If after 3 fix attempts it still fails, tell the user what's wrong and ask for guidance.
+STEP 4: Tell the user the result. The preview system handles dev servers automatically.
+Share the preview URL: https://${DEV_DOMAIN}
+Do NOT run pm2, curl, npm run dev, or any server management commands.
 
 ## Model Selection (opencode only)
 The CLI uses free models from OpenCode Zen. You can pick the model with the \`-m\` flag:
@@ -426,15 +394,9 @@ NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — Tailwind'
     const previewHints = buildPreviewHints(projectName ?? null, previewPort);
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
-Apps listening on port ${previewPort} are served at this URL via reverse proxy.
-When configuring a dev server, bind to \`0.0.0.0:${previewPort}\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
-Before telling the user the preview is live, verify ALL of:
-1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` returns 200
-3. \`curl -s localhost:${previewPort} | head -20\` shows actual HTML
-4. \`pm2 logs ${pm2PreviewName} --nostream --lines 20\` — no errors
-${previewHints || `Check for module script errors: \`curl -sI localhost:${previewPort}/src/main.jsx 2>/dev/null | grep content-type\` — must return \`application/javascript\`, not \`text/jsx\`. If wrong, install the missing Vite framework plugin and restart.`}
-If ANY check fails, diagnose and fix before sharing the URL.`);
+Apps on port ${previewPort} are served here. The preview system auto-starts the dev server.
+You do NOT need to start or verify it.
+${previewHints}`);
   }
 
   // CLI auth status — accurate for ALL tools including active session
@@ -494,16 +456,11 @@ Where to put the CSS file (with \`@import "tailwindcss";\`):
 Use Tailwind utility classes for ALL styling. Avoid writing custom CSS unless absolutely necessary.
 NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — Tailwind's preflight handles resets automatically.
 
-## After creating or modifying a web app, ALWAYS verify:
-1. Restart preview: \`pm2 delete ${pm2PreviewName} 2>/dev/null && pm2 start npm --name ${pm2PreviewName} -- run dev\`
-2. Wait: \`sleep 3\`
-3. Check: \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` → must be 200
-4. Check: \`curl -s localhost:${previewPort} | head -10\` → must show HTML content, no errors
-5. Check: \`pm2 logs ${pm2PreviewName} --nostream --lines 20\` → no errors
-If any check fails, read the error, fix the code, restart, and re-verify.
-Repeat until ALL checks pass. Do not report success until the preview works.
-
-Your project's preview port is **${previewPort}** and PM2 process name is **${pm2PreviewName}**.`);
+## Dev Server (AUTOMATIC)
+The preview system auto-detects your framework, installs deps, and starts the dev server.
+DO NOT run pm2, npm run dev, npx next dev, or any process management commands.
+Just write code, create config files, and run npm install when adding dependencies.
+Preview port: ${previewPort}. PM2 name: ${pm2PreviewName} (managed by the system, not you).`);
 
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);
@@ -529,15 +486,9 @@ Your project's preview port is **${previewPort}** and PM2 process name is **${pm
     const previewHints = buildPreviewHints(projectName ?? null, previewPort);
     parts.push(`## Dev Preview
 Your dev preview URL: **https://${DEV_DOMAIN}**
-Apps listening on port ${previewPort} are served at this URL via reverse proxy.
-When configuring a dev server, bind to \`0.0.0.0:${previewPort}\` internally — but always tell the user their app is live at **https://${DEV_DOMAIN}**.
-Before telling the user the preview is live, verify ALL of:
-1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:${previewPort}\` returns 200
-3. \`curl -s localhost:${previewPort} | head -20\` shows actual HTML
-4. \`pm2 logs ${pm2PreviewName} --nostream --lines 20\` — no errors
-${previewHints || `Check for module script errors: \`curl -sI localhost:${previewPort}/src/main.jsx 2>/dev/null | grep content-type\` — must return \`application/javascript\`, not \`text/jsx\`. If wrong, install the missing Vite framework plugin and restart.`}
-If ANY check fails, diagnose and fix before sharing the URL.`);
+Apps on port ${previewPort} are served here. The preview system auto-starts the dev server.
+You do NOT need to start or verify it.
+${previewHints}`);
   }
 
   if (globalContext) parts.push(globalContext);

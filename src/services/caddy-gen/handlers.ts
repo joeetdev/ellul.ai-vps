@@ -297,6 +297,7 @@ handle @dev {
         uri query -_preview_token
         reverse_proxy localhost:${port} {
             header_up Host localhost
+            header_up -X-Forwarded-Host
             header_up X-Real-IP {remote_host}
         }
     }
