@@ -81,6 +81,15 @@ This is an ellul.ai cloud workspace. Each project has its own directory under ~/
 - Do not create new projects or re-scaffold existing ones.
 - Do not modify the "name" field in ellulai.json or package.json.
 - Use port 3000 for dev servers (bound to 0.0.0.0 internally).
+- After creating or modifying a web app, ALWAYS verify the preview works:
+  1. pm2 preview is online (\`pm2 list\`)
+  2. curl localhost:3000 returns 200 (\`curl -s -o /dev/null -w '%{http_code}' localhost:3000\`)
+  3. No errors in pm2 logs (\`pm2 logs preview --nostream --lines 20\`)
+  If verification fails, diagnose and fix until it passes. Never leave a broken preview.
+- ALWAYS create a global CSS reset file for your framework and import it in the entry point.
+  CSS reset: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
+  Where to put it: Vite → src/index.css, Next.js App Router → app/globals.css, Pages Router → styles/globals.css, Astro → src/styles/global.css, Nuxt → assets/css/main.css, CRA → src/index.css
+  NEVER import from next/document in Next.js App Router — layout.tsx IS the document.
 `;
 }
 

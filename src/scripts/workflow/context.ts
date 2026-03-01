@@ -72,7 +72,16 @@ Do NOT deploy or redeploy unless the user explicitly asks — they may just be i
    - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
-5. **REQUIRED CSS RESET**: ALWAYS create a CSS file (index.css or globals.css) with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { width: 100%; height: 100%; }\\\` and import it in your entry point (main.jsx/main.tsx). NEVER put resets as inline styles on <body> — Vite strips them.
+5. **REQUIRED CSS RESET**: ALWAYS create a global CSS file with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\\\`
+   Import location depends on framework:
+   - Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
+   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document in App Router)
+   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
+   - Astro: src/styles/global.css → import in layout
+   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
+   - CRA: src/index.css → import in src/index.tsx
+   - Remix: app/globals.css → add to links() in app/root.tsx
+   NEVER put resets as inline styles on <body> — some bundlers strip them.
 6. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
 7. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
 8. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
@@ -138,27 +147,33 @@ The spec MUST include: all endpoints with methods, path/query parameters, reques
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
+- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type="module" src="/src/main.tsx">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
 - \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
 - Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
 
 **Next.js (App Router):**
-- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
+- \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
+- \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript — Next.js auto-creates it, but verify it exists)
 - \\\`next.config.mjs\\\` (recommended)
 - Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
 
 **Next.js (Pages Router):**
+- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
 - \\\`tsconfig.json\\\` for TypeScript
 - Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
 
 **Astro:**
+- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
 - \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
 
 **Nuxt:**
+- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
 - \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
 
@@ -299,7 +314,16 @@ generate_global_free() {
    - If using Vite/React/Vue: verify the framework binary exists: \\\`npx vite --version\\\` or \\\`npx next --version\\\`. If it fails, run \\\`npm install --include=dev\\\` again.
    - For static HTML without a framework: use \\\`npx -y serve -l 3000\\\` (the \\\`-y\\\` flag auto-installs serve)
 4. **REQUIRED**: Configure dev server (bind 0.0.0.0:3000)
-5. **REQUIRED CSS RESET**: ALWAYS create a CSS file (index.css or globals.css) with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { width: 100%; height: 100%; }\\\` and import it in your entry point (main.jsx/main.tsx). NEVER put resets as inline styles on <body> — Vite strips them.
+5. **REQUIRED CSS RESET**: ALWAYS create a global CSS file with: \\\`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\\\`
+   Import location depends on framework:
+   - Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
+   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document in App Router)
+   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
+   - Astro: src/styles/global.css → import in layout
+   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
+   - CRA: src/index.css → import in src/index.tsx
+   - Remix: app/globals.css → add to links() in app/root.tsx
+   NEVER put resets as inline styles on <body> — some bundlers strip them.
 6. **REQUIRED**: ALWAYS \\\`pm2 delete preview 2>/dev/null\\\` before starting a new preview to avoid stale processes
 7. **REQUIRED**: Start with pm2 (e.g., \\\`pm2 start npm --name preview -- run dev\\\` or \\\`pm2 start "npx serve -l 3000" --name preview\\\`)
 8. **REQUIRED**: Wait for startup: \\\`sleep 3\\\`
@@ -321,27 +345,33 @@ When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`G
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
+- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type="module" src="/src/main.tsx">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
 - \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
 - Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
 
 **Next.js (App Router):**
-- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
+- \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
+- \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript — Next.js auto-creates it, but verify it exists)
 - \\\`next.config.mjs\\\` (recommended)
 - Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
 
 **Next.js (Pages Router):**
+- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
 - \\\`tsconfig.json\\\` for TypeScript
 - Dev script: \\\`"dev": "next dev -H 0.0.0.0 -p 3000"\\\`
 
 **Astro:**
+- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
 - \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
 
 **Nuxt:**
+- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
 - \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
 
@@ -591,31 +621,37 @@ When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`G
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
+- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type=\\"module\\" src=\\"/src/main.tsx\\">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
 - \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
 - Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
 
 **Next.js (App Router):**
-- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
+- \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
+- \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript)
 - Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
 
 **Next.js (Pages Router):**
+- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
 - Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
 
 **Astro:**
+- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
 - \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
 
 **Nuxt:**
+- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
 - \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
 
-**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` — PORT env var used automatically
+**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` + \\\`src/index.css\\\` with CSS reset — PORT env var used automatically
 
-**Remix:** \\\`app/root.tsx\\\` + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
+**Remix:** \\\`app/root.tsx\\\` + \\\`app/globals.css\\\` with CSS reset (add to links() in root.tsx) + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
 
 **General rule:** bind to 0.0.0.0:3000
 
@@ -718,31 +754,37 @@ When creating a backend/API app, ALWAYS add an OpenAPI spec endpoint (e.g. \\\`G
 The preview system auto-detects your framework from package.json. Follow the checklist for your framework:
 
 **Vite + React/Vue/Svelte:**
+- \\\`src/index.css\\\` with CSS reset (see above), imported in \\\`src/main.tsx\\\`
 - \\\`index.html\\\` at project root with \\\`<script type=\\"module\\" src=\\"/src/main.tsx\\">\\\` (or .jsx/.vue)
 - \\\`src/main.tsx\\\` (or .jsx) entry point that renders to \\\`#root\\\`
 - \\\`vite.config.ts\\\` with: \\\`server: { host: true, port: 3000, allowedHosts: true }\\\` and framework plugin
 - Install plugin: \\\`npm install -D @vitejs/plugin-react\\\` (or vue/svelte equivalent)
 
 **Next.js (App Router):**
-- \\\`app/layout.tsx\\\` and \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
+- \\\`app/globals.css\\\` with CSS reset, imported in \\\`app/layout.tsx\\\`
+- \\\`app/layout.tsx\\\` MUST return \\\`<html><body>{children}</body></html>\\\` — NEVER import from \\\`next/document\\\` in App Router
+- \\\`app/page.tsx\\\` (REQUIRED — Next.js won't serve anything without these)
 - \\\`tsconfig.json\\\` (REQUIRED for TypeScript)
 - Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
 
 **Next.js (Pages Router):**
+- \\\`styles/globals.css\\\` with CSS reset, imported in \\\`pages/_app.tsx\\\`
 - \\\`pages/index.tsx\\\` (or .jsx/.js) as the home route
 - Dev script: \\\`\\"dev\\": \\"next dev -H 0.0.0.0 -p 3000\\"\\\`
 
 **Astro:**
+- \\\`src/styles/global.css\\\` with CSS reset, imported in layout
 - \\\`src/pages/index.astro\\\` (REQUIRED — at least one page)
 - \\\`astro.config.mjs\\\` with \\\`server: { host: '0.0.0.0', port: 3000 }\\\`
 
 **Nuxt:**
+- \\\`assets/css/main.css\\\` with CSS reset, added to nuxt.config.ts css array
 - \\\`app.vue\\\` OR \\\`pages/index.vue\\\` (at least one)
 - \\\`nuxt.config.ts\\\` with \\\`devServer: { host: '0.0.0.0', port: 3000 }\\\`
 
-**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` — PORT env var used automatically
+**CRA:** \\\`public/index.html\\\` and \\\`src/index.tsx\\\` + \\\`src/index.css\\\` with CSS reset — PORT env var used automatically
 
-**Remix:** \\\`app/root.tsx\\\` + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
+**Remix:** \\\`app/root.tsx\\\` + \\\`app/globals.css\\\` with CSS reset (add to links() in root.tsx) + route files in \\\`app/routes/\\\` + Vite config with Remix plugin
 
 **General rule:** bind to 0.0.0.0:3000
 

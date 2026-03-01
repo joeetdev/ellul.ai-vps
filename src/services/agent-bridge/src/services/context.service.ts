@@ -329,11 +329,19 @@ Repeat poll/log until the CLI finishes. If you see meaningful progress in the lo
 
 STEP 4: Tell the user the result. If the CLI created or modified a web app, verify it's working before sharing the preview URL:
 1. \`pm2 list\` shows "online"
-2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` returns 200
-3. \`curl -s localhost:3000 | head -20\` shows actual HTML (<!DOCTYPE or <html>)
-4. \`pm2 logs preview --nostream --lines 20\` — check for any startup errors
+2. \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` → MUST return 200 (not 404, not 500)
+3. \`curl -s localhost:3000 | head -20\` → must show actual HTML content (not error pages, not stack traces)
+4. \`pm2 logs preview --nostream --lines 20\` → must have no errors
 ${buildPreviewHints(projectName ?? null) || 'Check for module script errors: `curl -sI localhost:3000/src/main.jsx 2>/dev/null | grep content-type` — must return `application/javascript`, not `text/jsx`. If wrong, install the missing Vite plugin and restart.'}
-If ANY check fails, fix the issue before reporting success.
+
+If ANY check fails:
+  a. Read the error from pm2 logs or curl output
+  b. Launch the CLI again to fix: "${info.cmd}" with "Fix this error: [paste the actual error]"
+  c. Wait for fix to complete, then re-verify ALL checks
+  d. Repeat up to 3 times
+
+NEVER tell the user "it's live" until ALL checks pass.
+If after 3 fix attempts it still fails, tell the user what's wrong and ask for guidance.
 
 ## Model Selection (opencode only)
 The CLI uses free models from OpenCode Zen. You can pick the model with the \`-m\` flag:
@@ -350,9 +358,17 @@ If the user asks to change models, use \`opencode models\` to show them what's a
 - For non-coding questions (general knowledge, platform questions), just answer directly.
 
 ## CSS Reset (REQUIRED for all web apps)
-ALWAYS include a CSS reset in a CSS file (index.css, App.css, etc.) — NEVER rely on inline styles on \`<body>\`. Vite strips inline body styles.
-At minimum: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body, #root { width: 100%; height: 100%; }\`
-Import this CSS in the entry point.`);
+ALWAYS create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
+Where to put it depends on your framework:
+- Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
+- Next.js App Router: app/globals.css → import in app/layout.tsx
+- Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
+- Astro: src/styles/global.css → import in layout
+- Nuxt: assets/css/main.css → add to nuxt.config.ts css array
+- CRA: src/index.css → import in src/index.tsx
+- Remix: app/globals.css → add to links() in app/root.tsx
+- Plain HTML: <style> in <head> of index.html
+NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — some bundlers strip them.`);
       }
     }
   } else {
@@ -434,13 +450,26 @@ export function buildClawSystemPrompt(
 - If something is ambiguous, make a reasonable decision and proceed. Pick the most popular/common option rather than asking.
 
 ## CSS Reset (REQUIRED for all web apps)
-ALWAYS include a CSS reset in your main CSS file (index.css, App.css, styles.css, or globals.css) — NEVER rely on inline styles on \`<body>\` or \`<html>\`. Vite's dev server strips inline styles from the body tag.
-At minimum, every web project must have this in its main CSS file:
-\`\`\`css
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body, #root { width: 100%; height: 100%; }
-\`\`\`
-Import this CSS file in your entry point (main.jsx/main.tsx).`);
+ALWAYS create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
+Where to put it depends on your framework:
+- Vite (React/Vue/Svelte): src/index.css → import in src/main.tsx
+- Next.js App Router: app/globals.css → import in app/layout.tsx
+- Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
+- Astro: src/styles/global.css → import in layout
+- Nuxt: assets/css/main.css → add to nuxt.config.ts css array
+- CRA: src/index.css → import in src/index.tsx
+- Remix: app/globals.css → add to links() in app/root.tsx
+- Plain HTML: <style> in <head> of index.html
+NEVER rely on inline styles on \`<body>\` or \`<html>\` for resets — some bundlers strip them.
+
+## After creating or modifying a web app, ALWAYS verify:
+1. Restart preview: \`pm2 delete preview 2>/dev/null && pm2 start npm --name preview -- run dev\`
+2. Wait: \`sleep 3\`
+3. Check: \`curl -s -o /dev/null -w '%{http_code}' localhost:3000\` → must be 200
+4. Check: \`curl -s localhost:3000 | head -10\` → must show HTML content, no errors
+5. Check: \`pm2 logs preview --nostream --lines 20\` → no errors
+If any check fails, read the error, fix the code, restart, and re-verify.
+Repeat until ALL checks pass. Do not report success until the preview works.`);
 
   if (projectName) {
     const projectPath = path.join(PROJECTS_DIR, projectName);

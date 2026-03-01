@@ -259,11 +259,20 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
    - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
    - For static HTML without a framework: use \`npx -y serve -l 3000\`
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000
-5. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
-6. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview -- run dev\`)
-7. Wait for startup: \`sleep 3\`
-8. Run the FULL verification protocol below — ALL 4 steps must pass
-9. Tell the user: preview is live at https://${devDomain}
+5. **REQUIRED CSS RESET**: Create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
+   Import location depends on framework:
+   - Vite: src/index.css → import in src/main.tsx
+   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document)
+   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
+   - Astro: src/styles/global.css → import in layout
+   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
+   - CRA: src/index.css → import in src/index.tsx
+   NEVER use inline styles on <body> for resets — some bundlers strip them.
+6. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
+7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name preview -- run dev\`)
+8. Wait for startup: \`sleep 3\`
+9. Run the FULL verification protocol below — ALL 4 steps must pass
+10. Tell the user: preview is live at https://${devDomain}
 
 ## Dev Server Config (CRITICAL)
 Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`
@@ -311,11 +320,20 @@ Apps on port 3000 are automatically served at this URL. Always tell the user the
    - If using Vite/React/Vue: verify binary exists: \`npx vite --version\` or \`npx next --version\`. If it fails, \`npm install\` again.
    - For static HTML without a framework: use \`npx -y serve -l 3000\`
 4. **REQUIRED**: Configure dev server to bind 0.0.0.0:3000
-5. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
-6. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\`)
-7. Wait for startup: \`sleep 3\`
-8. Run the FULL verification protocol below — ALL 4 steps must pass
-9. Tell the user: preview is live at https://${devDomain}
+5. **REQUIRED CSS RESET**: Create a global CSS file with: \`*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; } html, body { width: 100%; height: 100%; }\`
+   Import location depends on framework:
+   - Vite: src/index.css → import in src/main.tsx
+   - Next.js App Router: app/globals.css → import in app/layout.tsx (NEVER import from next/document)
+   - Next.js Pages Router: styles/globals.css → import in pages/_app.tsx
+   - Astro: src/styles/global.css → import in layout
+   - Nuxt: assets/css/main.css → add to nuxt.config.ts css array
+   - CRA: src/index.css → import in src/index.tsx
+   NEVER use inline styles on <body> for resets — some bundlers strip them.
+6. ALWAYS \`pm2 delete preview 2>/dev/null\` before starting a new preview
+7. **REQUIRED**: Start with pm2 (e.g., \`pm2 start npm --name NAME -- run dev\`)
+8. Wait for startup: \`sleep 3\`
+9. Run the FULL verification protocol below — ALL 4 steps must pass
+10. Tell the user: preview is live at https://${devDomain}
 
 ## Dev Server Config (CRITICAL)
 Vite: \`server: { host: true, port: 3000, allowedHosts: true }\`

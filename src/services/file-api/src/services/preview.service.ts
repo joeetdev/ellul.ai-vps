@@ -253,11 +253,11 @@ function waitForReady(maxWaitMs: number = 12000): ReadyResult {
             `curl -sI http://localhost:${PORTS.PREVIEW}/ 2>/dev/null`,
             { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
           );
-          // Check HTTP status — 404 means routes are missing
+          // Check HTTP status — 4xx/5xx means app is broken or routes missing
           const statusMatch = headers.match(/^HTTP\/[\d.]+ (\d{3})/i);
           const httpStatus = statusMatch ? parseInt(statusMatch[1]!, 10) : 0;
-          if (httpStatus === 404) {
-            return { status: 'http_error', httpStatus: 404 };
+          if (httpStatus >= 400) {
+            return { status: 'http_error', httpStatus };
           }
           if (/content-type:.*text\/html/i.test(headers)) {
             // HTML OK — now validate module entry points
@@ -473,6 +473,101 @@ function ensureFrameworkConfig(appPath: string): void {
       fs.writeFileSync(path.join(appPath, 'next.config.mjs'),
         '/** @type {import("next").NextConfig} */\nconst nextConfig = {};\nexport default nextConfig;\n');
     }
+
+    // Fix App Router layout.tsx importing from next/document (common LLM mistake)
+    const layoutPaths = [
+      path.join(appPath, 'app', 'layout.tsx'),
+      path.join(appPath, 'app', 'layout.jsx'),
+      path.join(appPath, 'src', 'app', 'layout.tsx'),
+      path.join(appPath, 'src', 'app', 'layout.jsx'),
+    ];
+    for (const layoutPath of layoutPaths) {
+      if (!fs.existsSync(layoutPath)) continue;
+      try {
+        const content = fs.readFileSync(layoutPath, 'utf8');
+        // If layout imports from next/document, it's using Pages Router patterns in App Router
+        if (content.includes('next/document')) {
+          const ext = layoutPath.endsWith('.tsx') ? 'tsx' : 'jsx';
+          const isTypescript = ext === 'tsx';
+          fs.writeFileSync(layoutPath, `${isTypescript ? "import type { Metadata } from 'next';\n" : ''}import './globals.css';
+
+${isTypescript ? 'export const metadata: Metadata = {\n  title: \'App\',\n  description: \'Created on ellul.ai\',\n};\n' : ''}
+export default function RootLayout({ children }${isTypescript ? ': { children: React.ReactNode }' : ''}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`);
+          // Ensure globals.css exists
+          const globalsPath = path.join(path.dirname(layoutPath), 'globals.css');
+          if (!fs.existsSync(globalsPath)) {
+            fs.writeFileSync(globalsPath, '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\nhtml, body { width: 100%; height: 100%; }\n');
+          }
+          console.log(`[preview] Fixed App Router layout importing from next/document: ${layoutPath}`);
+        }
+        // If layout doesn't have <html> and <body> tags, it's malformed
+        else if (!content.includes('<html') || !content.includes('<body')) {
+          const ext = layoutPath.endsWith('.tsx') ? 'tsx' : 'jsx';
+          const isTypescript = ext === 'tsx';
+          fs.writeFileSync(layoutPath, `${isTypescript ? "import type { Metadata } from 'next';\n" : ''}import './globals.css';
+
+${isTypescript ? 'export const metadata: Metadata = {\n  title: \'App\',\n  description: \'Created on ellul.ai\',\n};\n' : ''}
+export default function RootLayout({ children }${isTypescript ? ': { children: React.ReactNode }' : ''}) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`);
+          const globalsPath = path.join(path.dirname(layoutPath), 'globals.css');
+          if (!fs.existsSync(globalsPath)) {
+            fs.writeFileSync(globalsPath, '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\nhtml, body { width: 100%; height: 100%; }\n');
+          }
+          console.log(`[preview] Fixed App Router layout missing html/body structure: ${layoutPath}`);
+        }
+      } catch {}
+    }
+  }
+
+  // Vite: ensure index.html has <div id="root">
+  if (allDeps['vite']) {
+    const indexHtml = path.join(appPath, 'index.html');
+    if (fs.existsSync(indexHtml)) {
+      try {
+        const html = fs.readFileSync(indexHtml, 'utf8');
+        if (!html.includes('id="root"') && !html.includes("id='root'") && !html.includes('id="app"') && !html.includes("id='app'")) {
+          // Add <div id="root"></div> before the closing </body> or script tag
+          const updated = html.replace(
+            /(<script\s)/,
+            '    <div id="root"></div>\n    $1'
+          );
+          if (updated !== html) {
+            fs.writeFileSync(indexHtml, updated);
+            console.log('[preview] Added missing <div id="root"> to Vite index.html');
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // CRA: ensure public/index.html has <div id="root">
+  if (allDeps['react-scripts']) {
+    const publicHtml = path.join(appPath, 'public', 'index.html');
+    if (fs.existsSync(publicHtml)) {
+      try {
+        const html = fs.readFileSync(publicHtml, 'utf8');
+        if (!html.includes('id="root"') && !html.includes("id='root'")) {
+          const updated = html.replace('</body>', '    <div id="root"></div>\n  </body>');
+          if (updated !== html) {
+            fs.writeFileSync(publicHtml, updated);
+            console.log('[preview] Added missing <div id="root"> to CRA public/index.html');
+          }
+        }
+      } catch {}
+    }
   }
 
   // Astro
@@ -494,51 +589,6 @@ function ensureFrameworkConfig(appPath: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// CSS Reset Injection — guarantees no white border regardless of LLM output
-// ---------------------------------------------------------------------------
-
-/** Marker attribute to detect if reset was already injected (idempotent) */
-const CSS_RESET_MARKER = 'data-ellulai-reset';
-
-/** Minified CSS reset: removes all default margins/padding, ensures full-viewport coverage */
-const CSS_RESET_STYLE = `<style ${CSS_RESET_MARKER}>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}html,body,#root,#__next,#app{width:100%;height:100%;min-height:100vh}</style>`;
-
-/**
- * Inject a CSS reset <style> tag into the <head> of index.html.
- * Idempotent — skips if already injected. Works for all frameworks:
- * Vite preserves <style> tags in <head> (only strips body inline styles).
- * Also injects into dist/index.html if it exists (for deployments).
- */
-function ensureCssReset(appPath: string): void {
-  const htmlFiles = [
-    path.join(appPath, 'index.html'),
-    path.join(appPath, 'dist', 'index.html'),
-    path.join(appPath, 'build', 'index.html'),
-    path.join(appPath, 'out', 'index.html'),
-  ];
-
-  for (const htmlPath of htmlFiles) {
-    if (!fs.existsSync(htmlPath)) continue;
-    try {
-      let html = fs.readFileSync(htmlPath, 'utf8');
-      if (html.includes(CSS_RESET_MARKER)) continue; // Already injected
-      // Inject after <head> opening tag (or after <!DOCTYPE...><html...><head> patterns)
-      if (html.includes('<head>')) {
-        html = html.replace('<head>', `<head>\n${CSS_RESET_STYLE}`);
-      } else if (html.includes('<head ')) {
-        html = html.replace(/<head\s[^>]*>/, `$&\n${CSS_RESET_STYLE}`);
-      } else if (html.includes('<html')) {
-        // No <head> tag — inject after <html...>
-        html = html.replace(/<html[^>]*>/, `$&\n<head>${CSS_RESET_STYLE}</head>`);
-      } else {
-        // Bare HTML — prepend
-        html = `${CSS_RESET_STYLE}\n${html}`;
-      }
-      fs.writeFileSync(htmlPath, html);
-    } catch {}
-  }
-}
 
 /**
  * Check if the project has the minimum route/entry files for the detected framework.
@@ -681,10 +731,6 @@ export function startPreview(appDirectory: string, requestId?: number): PreviewS
 
   // Ensure framework-specific configs (tsconfig, next.config, astro.config, etc.)
   ensureFrameworkConfig(appPath);
-
-  // Inject CSS reset into index.html to eliminate white border from missing resets.
-  // Infrastructure-level fix — doesn't depend on LLM including CSS resets.
-  ensureCssReset(appPath);
 
   // Try ecosystem.config.js first
   if (fs.existsSync(ecosystemPath)) {
@@ -853,14 +899,20 @@ export function getPreviewHealth(): {
   }
 
   // 4. Check if it's actually serving responses (1s timeout)
-  // Accept any HTTP response (not just text/html) — backend APIs return JSON
+  // Only 2xx/3xx → ready. 4xx/5xx → error (broken app, missing routes, etc.)
   try {
     const headers = execSync(
       `curl -sI -m 1 http://localhost:${PORTS.PREVIEW}/ 2>/dev/null`,
       { encoding: 'utf8', timeout: 3000, env: EXEC_ENV }
     );
-    if (/^HTTP\/[\d.]+ \d{3}/i.test(headers)) {
-      return { app: current, phase: 'ready', active: true };
+    const statusMatch = headers.match(/^HTTP\/[\d.]+ (\d{3})/i);
+    if (statusMatch) {
+      const httpStatus = parseInt(statusMatch[1]!, 10);
+      if (httpStatus >= 200 && httpStatus < 400) {
+        return { app: current, phase: 'ready', active: true };
+      }
+      // 4xx/5xx — app is broken or routes are missing
+      return { app: current, phase: 'error', active: false };
     }
   } catch {}
 
